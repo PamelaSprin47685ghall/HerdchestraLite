@@ -24,6 +24,7 @@ import { createGoalFacade } from "./pi-goal/facade.mjs";
 import { installManualAcceptanceAuditor, isManualAcceptanceAuditorInstalled } from "./pi-goal/install-auditor.mjs";
 import { loadContextManagementSkill } from "./prompts/context-skill.mjs";
 import { MANUAL_ACCEPTANCE_PROTOCOL } from "./prompts/manual-protocol.mjs";
+import { METHOD_DISCIPLINE } from "./prompts/method-discipline.mjs";
 import { REPO_AWARE_RULES } from "./prompts/repo-aware-rules.mjs";
 
 // Read once: omp does not discover skills bundled inside an extension dependency.
@@ -37,6 +38,7 @@ export default function vibeWorkers(pi) {
 		systemPrompt: [
 			...event.systemPrompt,
 			...REPO_AWARE_RULES,
+			METHOD_DISCIPLINE,
 			...(contextManagementSkill ? [contextManagementSkill] : []),
 			MANUAL_ACCEPTANCE_PROTOCOL,
 		],
