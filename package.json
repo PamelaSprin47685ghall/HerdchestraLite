@@ -7,22 +7,24 @@
   "private": false,
   "omp": {
     "extensions": [
-      "./src/main.mjs",
+      "./src/bootstrap-main.mjs",
       "./src/tool-gate/index.mjs",
-      "./src/editor-theme/index.mjs"
+      "./src/bootstrap-editor-theme.mjs"
     ]
   },
   "pi": {
     "extensions": [
-      "./src/main.mjs",
+      "./src/bootstrap-main.mjs",
       "./src/tool-gate/index.mjs",
-      "./src/editor-theme/index.mjs"
+      "./src/bootstrap-editor-theme.mjs"
     ]
   },
   "exports": {
     ".": "./src/main.mjs",
+    "./bootstrap-main": "./src/bootstrap-main.mjs",
     "./tool-gate": "./src/tool-gate/index.mjs",
     "./editor-theme": "./src/editor-theme/index.mjs",
+    "./bootstrap-editor-theme": "./src/bootstrap-editor-theme.mjs",
     "./package.json": "./package.json"
   },
   "files": [

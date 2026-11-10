@@ -12,7 +12,7 @@
  */
 
 import { runGoalToolGuards } from "../manual-acceptance/guards.mjs";
-import { installManualAcceptanceAuditorOnCore } from "./install-auditor.mjs";
+import { clearManualAcceptanceApproval, installManualAcceptanceAuditorOnCore } from "./install-auditor.mjs";
 
 export { runGoalToolGuards };
 
@@ -46,6 +46,9 @@ export function wrapGoalTool(pi, getCore, tool) {
 						`manual acceptance gate unavailable: the visible auditor is not installed; refusing gated tool ${tool.name}.`,
 					);
 				}
+				// A completion attempt needs a fresh approval from the audit that
+				// runs inside this execute, not one left by an earlier attempt.
+				if (tool.name === "update_goal") clearManualAcceptanceApproval(core);
 			}
 			// Guards run before the original execute. A rejection is thrown so
 			// the guarded tool cannot continue past the gate.

@@ -68,6 +68,7 @@ export function buildManualAcceptancePrompt(goal, docs) {
 		"- Do not edit product code, tests, documentation, or configuration in the repository. You may read files, run commands, start services, and use temporary data outside the repository.",
 		"- Do not write report.md or any report file. The plugin writes the report from your yield.",
 		"- If a CASE cannot be executed because the environment, GUI, permission, or service is unavailable, record the failure and score it below its threshold. Never mark it PASS or skip it silently.",
+		"- For missing-dependency and invalid-entry branches, copy the repository to /tmp, break the copy, and run omp there; never modify the product or its dependencies to force a failure.",
 		"",
 		"When the audit is complete, call the yield tool exactly once with data that matches this JSON schema:",
 		JSON.stringify(MANUAL_REPORT_SCHEMA, null, 2),
