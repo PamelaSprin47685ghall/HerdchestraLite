@@ -14,7 +14,7 @@
 
 前置：
 
-- omp 18.18.6 或更高。`@oh-my-pi/pi-coding-agent` 与 `@oh-my-pi/pi-tui` 由宿主提供，本包不声明它们。
+- omp 18.18.6（本包按此版本开发；更高版本未经验证）。`@oh-my-pi/pi-coding-agent` 与 `@oh-my-pi/pi-tui` 由宿主提供，本包不声明它们。
 - Bun 1.4.4 或更高。
 
 ```bash
