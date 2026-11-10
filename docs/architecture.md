@@ -1,6 +1,6 @@
 # HerdchestraLite 当前架构
 
-> 快照：2026-11-10（S12 文档核对），取自工作树而非某个提交。目录以磁盘与 `git ls-files` 为准。
+> 快照：2026-11-10（S13 审计后核对），取自工作树而非某个提交。目录以磁盘与 `git ls-files` 为准。
 
 旧设计说明全文在 `docs/design.html`：由原 `README.html` 逐字节复制，原文未改（121466 字节，sha256 `972f28733c05e5713c770fb82d6b634527d17fa4b156296200061227c23977fb`）。本文件只记录当前实现，不转述、不压缩、不替代它的任何内容。
 
@@ -8,17 +8,19 @@
 
 `package.json` 的 `omp.extensions` 与 `pi.extensions` 按同一顺序列出三个入口：
 
-1. `./src/main.mjs`
+1. `./src/bootstrap-main.mjs`
 2. `./src/tool-gate/index.mjs`
-3. `./src/editor-theme/index.mjs`
+3. `./src/bootstrap-editor-theme.mjs`
 
-`.mjs` 只能经 `omp plugin link` 或 `config.yml#extensions` 加载，目录自动扫描不认它。每个入口的默认导出是 `(pi) => void`，工厂只注册事件、工具和命令；加载期副作用只有 P1 读取 `SKILL.md` 与 editor-theme 安装 TUI 原型面。
+`.mjs` 只能经 `omp plugin link` 或 `config.yml#extensions` 加载，目录自动扫描不认它。`bootstrap-*` 的默认导出是异步函数，调用时才动态加载真实模块；tool-gate 入口直接导出同步工厂。工厂只注册事件、工具和命令；真实模块求值期的副作用只有 P1 读取 `SKILL.md` 与 editor-theme 安装 TUI 原型面。
 
 ## 目录（当前）
 
 ```text
 src/
-├── main.mjs                     # 入口：组合五个域
+├── bootstrap-main.mjs           # 清单入口：惰性 import ./main.mjs
+├── bootstrap-editor-theme.mjs   # 清单入口：惰性 import ./editor-theme/index.mjs
+├── main.mjs                     # 真实主模块：组合五个域
 ├── context/
 │   ├── vibe-suffix.mjs          # 后缀常量与消息投影
 │   └── vibe-context-rewrite.mjs # 两段文案替换
@@ -66,20 +68,22 @@ src/
     └── objects.mjs              # isObject / unknownFields
 ```
 
-`src/` 共 37 个 `.mjs`。`docs/` 有 `architecture.md` 与 `design.html`；`tests/` 有五个测试文件，只测纯函数与文件工具。
+`src/` 共 40 个 `.mjs`。`docs/` 有 `architecture.md` 与 `design.html`；`tests/` 有六个测试文件，只测纯函数与文件工具。
 
 ## 入口现状
 
 | 入口 | 当前注册内容 | 状态 |
 | --- | --- | --- |
-| `src/main.mjs` | `before_agent_start` 拼 P2+P1+P3；`context` 改写 `vibe-mode-context` 与用户/工具结果后缀；`installLiveSessionCapture`；pi-context facade 与 `/acm`；goal facade 与 `/goal-x`；三个 `submit_*`；审计器安装与 `session_start` 重试 | 已接线 |
+| `src/bootstrap-main.mjs` | 惰性调用 `src/main.mjs` 的默认工厂；真实注册内容：`before_agent_start` 拼 P2+P1+P3；`context` 改写 `vibe-mode-context` 与用户/工具结果后缀；`installLiveSessionCapture`；pi-context facade 与 `/acm`；goal facade 与 `/goal-x`；三个 `submit_*`；审计器安装与 `session_start` 重试 | 已接线 |
 | `src/tool-gate/index.mjs` | `before_provider_request` 注入两个必填参数；`tool_call` 剥离它们 | 已接线 |
-| `src/editor-theme/index.mjs` | 模块求值时装 TUI 原型面；只有初次安装结果为 `unavailable` 时，才在每次 `session_start` 重试并向 `ctx.ui.notify` 报一次警告 | 已接线 |
+| `src/bootstrap-editor-theme.mjs` | 惰性调用 `src/editor-theme/index.mjs` 的默认工厂；真实模块求值时装 TUI 原型面；只有初次安装结果为 `unavailable` 时，才在每次 `session_start` 重试并向 `ctx.ui.notify` 报一次警告 | 已接线 |
 
 ## 模块导出
 
 | 文件 | 主要导出 | 职责 |
 | --- | --- | --- |
+| `bootstrap-main.mjs` | 默认异步工厂 | 只动态 `import("./main.mjs")`，把 `pi` 传给其默认导出 |
+| `bootstrap-editor-theme.mjs` | 默认异步工厂 | 只动态 `import("./editor-theme/index.mjs")`，把 `pi` 传给其默认导出 |
 | `main.mjs` | 默认工厂 | 按固定顺序装配五个域；不承载解析、审计或计分业务 |
 | `context/vibe-suffix.mjs` | `VIBE_CONTEXT_SUFFIX`、`projectVibeSuffix` | 只处理 `user` 与 `toolResult`；字符串内容拆成 `[text, suffix]`，数组内容追加 text 元素；始终构造新对象 |
 | `context/vibe-context-rewrite.mjs` | `rewriteVibeModeContext` | 按固定顺序做两段 `replace`；两段都未命中时返回原字符串 |
@@ -88,9 +92,9 @@ src/
 | `prompts/context-skill.mjs` | `loadContextManagementSkill` | 先按 `import.meta.resolve` 找，再回退相对路径；失败时 `console.error` 并返回空串 |
 | `prompts/plan-only.mjs` | `adaptGoalDraftPrompt` | 只在内容含 `[GOAL CONFIRMATION` 时追加 Plan-only 段落 |
 | `prompts/auditor.mjs` | `buildManualAcceptancePrompt` | 组装审计员提示词；XML 转义在本地，报告 schema 来自 `manual-acceptance/constants.mjs` |
-| `host/imports.mjs` | `AgentSession`、`Settings`、`goalExtension`、`loadBundledAgents`、`loadGoalSettingsFileConfig`、`piContextExtension`、`runSubprocess` | 全部宿主与依赖导入集中在此 |
+| `host/imports.mjs` | `AgentSession`、`Settings`、`goalExtension`、`goalSettingsPath`、`loadBundledAgents`、`loadGoalSettingsFileConfig`、`piContextExtension`、`runSubprocess` | 全部宿主与依赖导入集中在此 |
 | `host/capabilities.mjs` | `requireGoalCore`、`requireDependencies`、`confirmAuditorReplacement`、`settingsScope`、`bundledAgents`、三个错误文本 | 内部 API 能力探测；不可用时明确报错 |
-| `host/goal-settings.mjs` | `isGoalAuditorDisabled`、`GOAL_AUDITOR_DISABLED_MESSAGE` | 读取项目 goal 设置；缺失或非布尔时返回 `undefined` |
+| `host/goal-settings.mjs` | `isGoalAuditorDisabled`、`GOAL_AUDITOR_DISABLED_MESSAGE` | 读取项目 goal 设置；文件缺失返回 `false`，不可读、非法 JSON 或类型不符返回 `undefined` |
 | `host/subprocess.mjs` | `runAuditSubprocess` | 用旧参数集调用 `runSubprocess`，原样返回结果 |
 | `pi-context/facade.mjs` | `createPiFacade` | 补 PiFacade：`/acm`、自动激活、xdev 改写、entry label |
 | `pi-context/command-context.mjs` | `createPiContext`、`createCommandContext` | 构造命令上下文；`getBranch` 在 xdev pending 时返回改写副本 |
@@ -98,7 +102,7 @@ src/
 | `pi-context/xdev-compact.mjs` | `PENDING_XDEV_COMPACTS`、`beginXdevCompact`、`clearXdevCompact`、`pendingXdevCompact`、`isXdevCompactCall`、`rewriteXdevCompactBranch` | 记录并改写 `write xd://context_compact` 调用；30 秒定时器 |
 | `pi-goal/facade.mjs` | `createGoalFacade` | 五组 pending 容器在 `session_start` 前排队，之后一次性 flush；`/goal` 改名为 `/goal-x` |
 | `pi-goal/tool-wrap.mjs` | `wrapGoalTool`、`runGoalToolGuards` | gated 工具先重试安装审计器，再跑守卫；失败即抛错 |
-| `pi-goal/install-auditor.mjs` | `installManualAcceptanceAuditor`、`installManualAcceptanceAuditorOnCore`、`isManualAcceptanceAuditorInstalled` | 用 `WeakSet` 按 GoalCore 跟踪已安装的审计器 |
+| `pi-goal/install-auditor.mjs` | `installManualAcceptanceAuditor`、`installManualAcceptanceAuditorOnCore`、`isManualAcceptanceAuditorInstalled`、`clearManualAcceptanceApproval` | 用 `WeakSet` 按 GoalCore 跟踪已安装的审计器；包装 `goalService.apply`，拒绝没有本次批准（goal id + revision）的 `complete` 写入，`archive` 路径放行 |
 | `pi-goal/ui.mjs` | `goalUi`、`sleep` | 缺 `setWorkingVisible` 时用 Proxy 补空实现；`sleep` 用 `setTimeout` |
 | `manual-acceptance/constants.mjs` | 根目录与四个文件名、slug/CASE/阈值/路径/rubric 正则、`MANUAL_REPORT_SCHEMA`、允许字段、自动化验收模式、契约正则 | 常量集中处，不依赖其他域模块 |
 | `manual-acceptance/requirements.mjs` | `parseRequirementCases` | 解析 `### CASE-*` 标题、阈值、路径、rubric；失败时抛错 |
@@ -118,7 +122,7 @@ src/
 
 ## 现状与已知限制
 
-- 37 个模块均已落盘，`src/main.mjs` 已接线；`tests/` 五个测试只覆盖纯函数与文件工具，通过与否不代表验收结论。
+- 40 个模块均已落盘，`src/main.mjs` 与三个清单入口已接线；`tests/` 六个测试只覆盖纯函数与文件工具，通过与否不代表验收结论。
 - omp 18.18.6 是开发基线；PATH 默认的 18.16.0 未验证。
 - `pi-context` 与 `pi-goal-x` 的深路径导入依赖 omp 对 `@earendil-works/*` 的重写；脱离 omp 加载器时不保证可解析。
 - 审计器替换依赖 pi-goal-x 的 `_goalCore` 与 `core.dependencies.runCompletionAuditor`；审计子进程依赖 `runSubprocess`。这些是内部 API，omp 升级后需重新冒烟。

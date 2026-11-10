@@ -1,6 +1,6 @@
 # HerdchestraLite
 
-一个 omp 插件包：把原 `vibe-workers.ts` 的提示词、上下文投影、pi-context、pi-goal 与手动验收拆成 37 个单职责 `.mjs` 模块。没有构建步骤，运行即源码；三个入口各自独立加载，单个入口失败不影响另外两个。
+一个 omp 插件包：把原 `vibe-workers.ts` 的提示词、上下文投影、pi-context、pi-goal 与手动验收拆成 40 个单职责 `.mjs` 模块。没有构建步骤，运行即源码；三个入口各自独立加载，单个入口失败不影响另外两个。
 
 ## 安装
 
@@ -36,11 +36,14 @@ HerdchestraLite/
 ├── tests/
 │   ├── atomic-write.test.mjs
 │   ├── contract.test.mjs
+│   ├── goal-settings.test.mjs
 │   ├── requirements.test.mjs
 │   ├── scores.test.mjs
 │   └── tool-gate.test.mjs
 └── src/
-    ├── main.mjs                  # 入口：组合 prompts、context、pi-context、pi-goal、手动验收
+    ├── bootstrap-main.mjs        # 清单入口：惰性 import ./main.mjs 后调用默认工厂
+    ├── bootstrap-editor-theme.mjs # 清单入口：惰性 import ./editor-theme/index.mjs
+    ├── main.mjs                  # 真实主模块：组合 prompts、context、pi-context、pi-goal、手动验收
     ├── context/
     │   ├── vibe-suffix.mjs       # P4：后缀常量与消息投影
     │   └── vibe-context-rewrite.mjs # vibe-mode-context 两段文案替换
@@ -88,17 +91,19 @@ HerdchestraLite/
         └── objects.mjs           # isObject / unknownFields
 ```
 
-`src/` 下共 37 个 `.mjs`。三个入口是：
+`src/` 下共 40 个 `.mjs`。三个清单入口是：
 
-1. `src/main.mjs`
+1. `src/bootstrap-main.mjs`
 2. `src/tool-gate/index.mjs`
-3. `src/editor-theme/index.mjs`
+3. `src/bootstrap-editor-theme.mjs`
 
 `package.json` 的 `omp.extensions` 与 `pi.extensions` 按同一顺序列出它们。
 
+`bootstrap-*` 入口只声明一个异步默认函数，函数被调用时才 `import()` 真实模块。Node 可以直接 `import` 三个清单入口并取得函数；真实实现仍在 omp 加载器内执行。
+
 ## 使用
 
-三个工厂只注册事件、工具和命令，不在加载期发送消息或切换活动工具。加载期的副作用只有两处：`prompts/context-skill.mjs` 读取 pi-context 的 `SKILL.md`，`editor-theme/surface.mjs` 安装 TUI 原型面。
+清单入口本身只做动态 `import`，没有其他副作用。真实模块的工厂只注册事件、工具和命令，不在加载期发送消息或切换活动工具。真实模块求值期的副作用只有两处：`prompts/context-skill.mjs` 读取 pi-context 的 `SKILL.md`，`editor-theme/surface.mjs` 安装 TUI 原型面。
 
 ### 命令
 
@@ -123,7 +128,7 @@ HerdchestraLite/
 ## 兼容性
 
 - omp 18.18.6 是开发基线；PATH 默认的 18.16.0 未验证。
-- `pi-context` 2.3.0 与 `pi-goal-x` 0.34.1 固定。它们的深路径导入依赖 omp 对 `@earendil-works/*` 的重写，只在 omp 扩展加载器内成立；在普通 Node 进程里直接 import 入口不保证可用。
+- `pi-context` 2.3.0 与 `pi-goal-x` 0.34.1 固定。它们的深路径导入依赖 omp 对 `@earendil-works/*` 的重写，只在 omp 扩展加载器内成立。三个清单入口在普通 Node 进程里可以 `import` 并取得函数（`bootstrap-*` 惰性加载），但调用后会加载真实模块，仍需 omp 的加载器重写。
 - 内部 API 风险：审计子进程使用 `@oh-my-pi/pi-coding-agent/task/executor` 的 `runSubprocess`；审计器替换依赖 pi-goal-x 的 `_goalCore` 与 `core.dependencies.runCompletionAuditor`；设置读取优先 `pi.pi.settings`，回退 `Settings.instance`。omp 升级可能改变这些接口。失败时审计器返回 disapproved，gated 工具 fail-closed，不会静默放行。
 - 两套清单 `omp.extensions` 与 `pi.extensions` 指向同一组三个入口，便于 omp 与 Pi 兼容加载。
 
