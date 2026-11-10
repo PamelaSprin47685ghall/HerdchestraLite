@@ -11,10 +11,10 @@
 - `@oh-my-pi/pi-coding-agent` 与 `@oh-my-pi/pi-tui` 由 omp 宿主提供，本包不声明它们。
 
 ```bash
-cd /home/kunweiz/Desktop/vibe/HerdchestraLite
+cd /path/to/HerdchestraLite
 bun install
-/home/kunweiz/.local/bin/omp plugin link /home/kunweiz/Desktop/vibe/HerdchestraLite
-/home/kunweiz/.local/bin/omp plugin list
+omp plugin link /path/to/HerdchestraLite
+omp plugin list
 ```
 
 把 `plugin link` 的路径换成你的实际仓库路径。必须通过 `omp plugin link` 或 `config.yml#extensions` 挂载；omp 的原生目录扫描只认 `.ts`/`.js`，不会加载 `.mjs`。
