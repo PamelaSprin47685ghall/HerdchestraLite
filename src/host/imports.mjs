@@ -37,9 +37,9 @@
 
 import { AgentSession, Settings } from "@oh-my-pi/pi-coding-agent";
 import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
+import piContextExtension from "pi-context/src/index.ts";
 import goalExtension from "pi-goal-x/extensions/goal.ts";
 import { loadGoalSettingsFileConfig } from "pi-goal-x/extensions/goal-settings.ts";
-import piContextExtension from "pi-context/src/index.ts";
 
 /**
  * Resolve the bundled agent roster loader.
@@ -75,10 +75,10 @@ const loadBundledAgents = await resolveBundledAgentsLoader();
 
 export {
 	AgentSession,
-	Settings,
 	goalExtension,
 	loadBundledAgents,
 	loadGoalSettingsFileConfig,
 	piContextExtension,
 	runSubprocess,
+	Settings,
 };

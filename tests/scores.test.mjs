@@ -43,10 +43,7 @@ describe("verdictFromScores", () => {
 	});
 
 	it("fails a CASE when either perspective is below the threshold", () => {
-		const verdict = verdictFromScores(
-			requirements,
-			scoresFor({ "CASE-01": { user_score: 60, developer_score: 100 } }),
-		);
+		const verdict = verdictFromScores(requirements, scoresFor({ "CASE-01": { user_score: 60, developer_score: 100 } }));
 
 		expect(verdict.passed).toBe(false);
 		expect(verdict.rows[0]).toMatchObject({ score: 60, threshold: 80, passed: false });
@@ -146,8 +143,8 @@ describe("verdictFromScores", () => {
 
 		expect(verdict.passed).toBe(false);
 		expect(verdict.invalid).toEqual([
-			'CASE-01: user_score NaN is not a finite number',
-			'CASE-02: user_score Infinity is not a finite number',
+			"CASE-01: user_score NaN is not a finite number",
+			"CASE-02: user_score Infinity is not a finite number",
 			'CASE-03: user_score "90" is not a finite number',
 			"CASE-04: developer_score null is not a finite number",
 		]);

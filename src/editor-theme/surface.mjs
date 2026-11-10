@@ -49,7 +49,7 @@ import * as piTui from "@oh-my-pi/pi-tui";
  */
 
 /** @type {StyleFn} */
-const passthrough = text => text;
+const passthrough = (text) => text;
 
 /**
  * ASCII box, copied from pi-tui's own pre-theme fallback in getSymbolTheme().

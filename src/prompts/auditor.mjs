@@ -1,5 +1,6 @@
-import { manualAcceptanceEffectiveContract } from "../manual-acceptance/contract.mjs";
 import { MANUAL_REPORT_SCHEMA } from "../manual-acceptance/constants.mjs";
+import { manualAcceptanceEffectiveContract } from "../manual-acceptance/contract.mjs";
+import { METHOD_DISCIPLINE } from "./method-discipline.mjs";
 
 /**
  * P6: the visible manual acceptance auditor prompt.
@@ -57,6 +58,9 @@ export function buildManualAcceptancePrompt(goal, docs) {
 		"Wow is folded into these two subjective willingness-to-pay estimates, not a separate threshold. They are not actual market probabilities or fabricated user testimony, and cannot replace real behavioral evidence; both must rest on what you actually observed.",
 		"",
 		"Cover every path listed in the requirements, including normal, error, compatibility, concurrency, security, recovery, and process-order cases. Do not sample only the happy path. Where the product exposes them, also exercise empty, loading, error, cancellation, retry, permission-denied, slow-network, narrow-screen, keyboard-only, screen-reader, overflow, and destructive-confirmation paths.",
+		"",
+		"",
+		METHOD_DISCIPLINE,
 		"",
 		"Rules:",
 		"- Automated tests, CI results, type checks, linters, builds, and coverage are NOT acceptance evidence. They must never raise a score.",

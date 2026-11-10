@@ -34,14 +34,8 @@ export function verdictFromScores(requirements, scores) {
 		// parseRequirementCases already refuses duplicate headings. Keep the
 		// lookup set without a second, unreachable rejection branch.
 		requiredIds.add(requirement.id);
-		if (
-			!Number.isFinite(requirement.threshold) ||
-			requirement.threshold < 0 ||
-			requirement.threshold > 100
-		) {
-			invalid.push(
-				`${requirement.id}: invalid threshold ${describe(requirement.threshold)} (must be 0..100)`,
-			);
+		if (!Number.isFinite(requirement.threshold) || requirement.threshold < 0 || requirement.threshold > 100) {
+			invalid.push(`${requirement.id}: invalid threshold ${describe(requirement.threshold)} (must be 0..100)`);
 			invalidThresholds.add(requirement.id);
 		}
 	}
@@ -125,10 +119,7 @@ export function verdictFromScores(requirements, scores) {
 			developerScore: developerScore.value,
 			score: finalScore,
 			threshold: requirement.threshold,
-			passed:
-				scoresValid &&
-				!invalidThresholds.has(requirement.id) &&
-				finalScore >= requirement.threshold,
+			passed: scoresValid && !invalidThresholds.has(requirement.id) && finalScore >= requirement.threshold,
 		});
 	}
 

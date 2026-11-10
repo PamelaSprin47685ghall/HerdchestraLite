@@ -12,6 +12,8 @@
  * rejection and success text is copied verbatim from the old implementation.
  */
 
+import { messageOf } from "../util/errors.mjs";
+import { unknownFields } from "../util/objects.mjs";
 import {
 	MANUAL_ACCEPTANCE_COORDINATION_FILE,
 	MANUAL_ACCEPTANCE_GUIDE_FILE,
@@ -26,8 +28,6 @@ import {
 	manualAcceptanceWriteErrorText,
 } from "./documents.mjs";
 import { parseRequirementCases } from "./requirements.mjs";
-import { messageOf } from "../util/errors.mjs";
-import { unknownFields } from "../util/objects.mjs";
 
 function rawToolArguments(ctx, toolCallId, toolName) {
 	for (const entry of ctx.sessionManager.getBranch()) {
@@ -115,12 +115,7 @@ function manualAcceptanceValidateCases(cases, markdown) {
 			return { ok: false, error: `cases contains duplicate id ${id}.` };
 		}
 		seen.add(id);
-		if (
-			typeof threshold !== "number" ||
-			!Number.isFinite(threshold) ||
-			threshold < 0 ||
-			threshold > 100
-		) {
+		if (typeof threshold !== "number" || !Number.isFinite(threshold) || threshold < 0 || threshold > 100) {
 			return { ok: false, error: `cases[${index}].threshold must be a number from 0 to 100.` };
 		}
 		if (typeof path !== "string" || path.trim().length === 0) {
@@ -258,9 +253,7 @@ export function registerManualAcceptanceTools(pi) {
 			try {
 				dir = manualAcceptanceDir(ctx.cwd, params.goal_slug);
 			} catch (error) {
-				return manualAcceptanceToolError(
-					`submit_manual_requirements rejected: ${messageOf(error)}.`,
-				);
+				return manualAcceptanceToolError(`submit_manual_requirements rejected: ${messageOf(error)}.`);
 			}
 			if (typeof params.requirements_markdown !== "string" || params.requirements_markdown.trim().length === 0) {
 				return manualAcceptanceToolError(
@@ -274,11 +267,7 @@ export function registerManualAcceptanceTools(pi) {
 			const relativePath = manualAcceptanceRelativePath(params.goal_slug, MANUAL_ACCEPTANCE_REQUIREMENTS_FILE);
 			let existed = false;
 			try {
-				existed = manualAcceptanceWriteDocument(
-					dir,
-					MANUAL_ACCEPTANCE_REQUIREMENTS_FILE,
-					params.requirements_markdown,
-				);
+				existed = manualAcceptanceWriteDocument(dir, MANUAL_ACCEPTANCE_REQUIREMENTS_FILE, params.requirements_markdown);
 			} catch (error) {
 				return manualAcceptanceToolError(
 					`submit_manual_requirements failed: ${manualAcceptanceWriteErrorText(relativePath, error)}.`,
@@ -310,17 +299,13 @@ export function registerManualAcceptanceTools(pi) {
 			}
 			const unknown = unknownFields(params, ["i", "goal_slug", "guide_markdown"]);
 			if (unknown.length > 0) {
-				return manualAcceptanceToolError(
-					`submit_development_guide rejected: unknown field(s): ${unknown.join(", ")}.`,
-				);
+				return manualAcceptanceToolError(`submit_development_guide rejected: unknown field(s): ${unknown.join(", ")}.`);
 			}
 			let dir;
 			try {
 				dir = manualAcceptanceDir(ctx.cwd, params.goal_slug);
 			} catch (error) {
-				return manualAcceptanceToolError(
-					`submit_development_guide rejected: ${messageOf(error)}.`,
-				);
+				return manualAcceptanceToolError(`submit_development_guide rejected: ${messageOf(error)}.`);
 			}
 			const invalid = manualAcceptanceDocumentError(params.guide_markdown, "guide_markdown");
 			if (invalid !== undefined) {
@@ -359,9 +344,7 @@ export function registerManualAcceptanceTools(pi) {
 			}
 			const unknown = unknownFields(params, ["i", "goal_slug", "coordination_markdown"]);
 			if (unknown.length > 0) {
-				return manualAcceptanceToolError(
-					`submit_coordination rejected: unknown field(s): ${unknown.join(", ")}.`,
-				);
+				return manualAcceptanceToolError(`submit_coordination rejected: unknown field(s): ${unknown.join(", ")}.`);
 			}
 			let dir;
 			try {
@@ -373,17 +356,10 @@ export function registerManualAcceptanceTools(pi) {
 			if (invalid !== undefined) {
 				return manualAcceptanceToolError(`submit_coordination rejected: ${invalid}`);
 			}
-			const relativePath = manualAcceptanceRelativePath(
-				params.goal_slug,
-				MANUAL_ACCEPTANCE_COORDINATION_FILE,
-			);
+			const relativePath = manualAcceptanceRelativePath(params.goal_slug, MANUAL_ACCEPTANCE_COORDINATION_FILE);
 			let existed = false;
 			try {
-				existed = manualAcceptanceWriteDocument(
-					dir,
-					MANUAL_ACCEPTANCE_COORDINATION_FILE,
-					params.coordination_markdown,
-				);
+				existed = manualAcceptanceWriteDocument(dir, MANUAL_ACCEPTANCE_COORDINATION_FILE, params.coordination_markdown);
 			} catch (error) {
 				return manualAcceptanceToolError(
 					`submit_coordination failed: ${manualAcceptanceWriteErrorText(relativePath, error)}.`,

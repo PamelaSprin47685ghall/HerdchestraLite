@@ -6,7 +6,7 @@
  * must not drift during the migration.
  */
 
-import { Settings, loadBundledAgents } from "./imports.mjs";
+import { loadBundledAgents, Settings } from "./imports.mjs";
 
 /** @typedef {import("./imports.mjs").ExtensionAPI} ExtensionAPI */
 

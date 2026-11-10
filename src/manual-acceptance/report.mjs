@@ -10,26 +10,16 @@
  * frozen contract is refused instead of writing a misleading file.
  */
 
-import { MANUAL_ACCEPTANCE_REPORT_FILE } from "./constants.mjs";
-import {
-	manualAcceptanceContractLine,
-	manualAcceptanceEffectiveContract,
-	parseManualContract,
-} from "./contract.mjs";
-import {
-	manualAcceptanceDir,
-	manualAcceptanceRelativePath,
-	manualAcceptanceWriteErrorText,
-} from "./documents.mjs";
 import { writeFileAtomic } from "../util/atomic-write.mjs";
+import { MANUAL_ACCEPTANCE_REPORT_FILE } from "./constants.mjs";
+import { manualAcceptanceContractLine, manualAcceptanceEffectiveContract, parseManualContract } from "./contract.mjs";
+import { manualAcceptanceDir, manualAcceptanceRelativePath, manualAcceptanceWriteErrorText } from "./documents.mjs";
 
 export function buildReport(goal, payload, verdict, model) {
 	const tableRows = verdict.rows.map((row) => ({
 		...row,
 		userScoreText: Number.isFinite(row.userScore) ? String(row.userScore) : "invalid",
-		developerScoreText: Number.isFinite(row.developerScore)
-			? String(row.developerScore)
-			: "invalid",
+		developerScoreText: Number.isFinite(row.developerScore) ? String(row.developerScore) : "invalid",
 		scoreText: Number.isFinite(row.score) ? String(row.score) : "invalid",
 	}));
 	const problems = [];
@@ -82,9 +72,7 @@ export function writeManualReport(cwd, goal, report) {
 	if (!report.trim()) throw new Error("manual acceptance report is empty");
 	const embeddedContract = manualAcceptanceContractLine(goal.objective ?? "");
 	const contract = parseManualContract(
-		embeddedContract
-			? goal.objective
-			: (manualAcceptanceEffectiveContract(goal) ?? goal.objective),
+		embeddedContract ? goal.objective : (manualAcceptanceEffectiveContract(goal) ?? goal.objective),
 	);
 	if (!contract) {
 		throw new Error("manual acceptance report: the goal has no valid manual acceptance contract");

@@ -37,7 +37,8 @@ function injectObjectSchema(schema) {
 	if (schema.type !== "object" && properties === undefined) return false;
 
 	let changed = false;
-	const target = properties ?? (schema.properties = {});
+	const target = properties ?? {};
+	if (properties === undefined) schema.properties = target;
 	for (const [name, definition] of Object.entries(REQUIRED_PROPERTIES)) {
 		if (!(name in target)) {
 			target[name] = definition;
@@ -45,7 +46,8 @@ function injectObjectSchema(schema) {
 		}
 	}
 
-	const required = Array.isArray(schema.required) ? schema.required : (schema.required = []);
+	const required = Array.isArray(schema.required) ? schema.required : [];
+	if (!Array.isArray(schema.required)) schema.required = required;
 	for (const name of Object.keys(REQUIRED_PROPERTIES)) {
 		if (!required.includes(name)) {
 			required.push(name);

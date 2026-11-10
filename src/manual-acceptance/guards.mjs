@@ -12,6 +12,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { GOAL_AUDITOR_DISABLED_MESSAGE, isGoalAuditorDisabled } from "../host/goal-settings.mjs";
 import {
 	AUTOMATED_ACCEPTANCE_PATTERNS,
 	MANUAL_ACCEPTANCE_CONTRACT_MISSING,
@@ -29,7 +30,6 @@ import {
 	validateManualDocuments,
 } from "./contract.mjs";
 import { manualAcceptanceDocumentSlots, readManualAcceptanceDocuments } from "./documents.mjs";
-import { GOAL_AUDITOR_DISABLED_MESSAGE, isGoalAuditorDisabled } from "../host/goal-settings.mjs";
 
 const GOAL_SETTINGS_UNREADABLE_MESSAGE =
 	'The project goal settings file (.pi/pi-goal-x-settings.json) could not be read, so the visible manual acceptance auditor state is unknown. Fix or remove the file, set "disabled": false, then retry completion.';
@@ -77,7 +77,9 @@ export function proposeManualAcceptanceGuard(input) {
 	try {
 		params.objective = frozenObjective;
 	} catch {
-		return manualProposeGateRejection("a writable objective (the contract line could not be frozen with document hashes)");
+		return manualProposeGateRejection(
+			"a writable objective (the contract line could not be frozen with document hashes)",
+		);
 	}
 	const validation = validateManualDocuments(input.ctx.cwd, frozenObjective);
 	if (!validation.ok) return manualProposeGateRejection(validation.error);

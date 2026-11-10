@@ -141,6 +141,10 @@ HerdchestraLite/
 - 本 README 与 CHANGELOG 只描述当前包；它们不替代 `docs/design.html`，也不把旧结论改写成新说法。
 - 提示词、用户可见文案、错误消息、工具 label/description 以旧实现原文为准；迁移时逐字复制，不做“顺手润色”。
 
+## 方法论
+
+方法论是运行时提示词规则，不只是文档：`src/prompts/method-discipline.mjs` 的 `METHOD_DISCIPLINE` 按 S1/S2/S3 分阶段进入主系统提示与审计员提示，模型必须按它决策和检查。模块按变化原因拆，而不是按行数拆：提示词、宿主适配、手动验收、工具门、主题各归一处，入口只组合。切片与合并不靠口头约定，而靠 S3 的 G0–G4 门禁、所有权矩阵与 FREEZE WINDOW。文案逐字保留，因为 CASE-15 用 grep 与文本哈希验收，任何改写都会让旧行为失去证据。完整映射见 [`docs/methodology.md`](docs/methodology.md)。
+
 ## 开发检查
 
 ```bash

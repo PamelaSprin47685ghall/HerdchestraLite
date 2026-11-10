@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import toolCallGate from "../src/tool-gate/index.mjs";
-import { THINK_PARAMETER, WORKERS_PARAMETER, injectToolSchemas } from "../src/tool-gate/schema.mjs";
+import { injectToolSchemas, THINK_PARAMETER, WORKERS_PARAMETER } from "../src/tool-gate/schema.mjs";
 import { stripGateParameters } from "../src/tool-gate/strip.mjs";
 
 const WORKERS = "how-many-more-workers-are-allowed-without-hitting-mythical-man-month";

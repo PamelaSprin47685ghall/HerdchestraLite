@@ -48,7 +48,7 @@ export function parseRequirementCases(markdown) {
 		const rawLine = lines[index];
 		if (fence) {
 			const closing = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(rawLine);
-			if (closing && closing[1].startsWith(fence.marker) && closing[1].length >= fence.length) {
+			if (closing?.[1].startsWith(fence.marker) && closing[1].length >= fence.length) {
 				fence = undefined;
 			}
 			continue;

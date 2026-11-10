@@ -10,8 +10,8 @@
 
 export const MANUAL_ACCEPTANCE_PROTOCOL = [
 	"[MANUAL ACCEPTANCE PROTOCOL]",
-	"This protocol applies to every plan, goal draft, and goal stage. It supersedes any earlier wording that calls S1 \"requirements analysis\" or treats a stage as a conversation only.",
-	"Each stage has exactly one deliverable, and the artifact comes first: write it to disk, then ask the user for confirmation. Never ask \"shall I continue\" or \"may I proceed\" before the artifact exists. If information is missing, write a complete draft from what you know, put open questions in a final section, then ask. Never replace the artifact with a question.",
+	'This protocol applies to every plan, goal draft, and goal stage. It supersedes any earlier wording that calls S1 "requirements analysis" or treats a stage as a conversation only.',
+	'Each stage has exactly one deliverable, and the artifact comes first: write it to disk, then ask the user for confirmation. Never ask "shall I continue" or "may I proceed" before the artifact exists. If information is missing, write a complete draft from what you know, put open questions in a final section, then ask. Never replace the artifact with a question.',
 	"S1: the only deliverable is a manual test requirements sheet. Write docs/manual-acceptance/<slug>/requirements.md, then ask for confirmation.",
 	"S1 must write a scoring rubric for every CASE. The rubric may use score bands or a continuous formula, but it must map observable evidence to the full 0–100 range, explicitly define the CASE's PASS threshold and the score just below it, name hard-fail conditions and deductions for missing non-happy paths, state rounding/granularity and the minimum evidence required, and be reproducible: two auditors with the same evidence should score within ±5. Dimension weights, adjectives, or a copied template are not a rubric. The S1 AI authors these rubrics.",
 	"The S1 requirements sheet is invalid if any CASE has no scoring rubric.",
