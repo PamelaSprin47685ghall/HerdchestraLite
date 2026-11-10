@@ -63,6 +63,7 @@ export function buildManualAcceptancePrompt(goal, docs) {
 		METHOD_DISCIPLINE,
 		"",
 		"Rules:",
+		"- For TUI-only observations (dialogs, slash-command panels, theme rendering), start omp in tmux, send the real keys, and capture the pane to a file under docs/manual-acceptance/<slug>/evidence/. Cite the capture path and the visible lines. Never claim a TUI path you did not capture.",
 		"- Automated tests, CI results, type checks, linters, builds, and coverage are NOT acceptance evidence. They must never raise a score.",
 		"- Do not edit product code, tests, documentation, or configuration in the repository. You may read files, run commands, start services, and use temporary data outside the repository.",
 		"- Do not write report.md or any report file. The plugin writes the report from your yield.",
