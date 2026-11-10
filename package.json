@@ -1,0 +1,50 @@
+{
+  "name": "herdchestra-lite",
+  "version": "1.0.0",
+  "description": "vibe-workers as a proper multi-file omp plugin",
+  "type": "module",
+  "license": "MIT",
+  "private": false,
+  "omp": {
+    "extensions": [
+      "./src/main.mjs",
+      "./src/tool-gate/index.mjs",
+      "./src/editor-theme/index.mjs"
+    ]
+  },
+  "pi": {
+    "extensions": [
+      "./src/main.mjs",
+      "./src/tool-gate/index.mjs",
+      "./src/editor-theme/index.mjs"
+    ]
+  },
+  "exports": {
+    ".": "./src/main.mjs",
+    "./tool-gate": "./src/tool-gate/index.mjs",
+    "./editor-theme": "./src/editor-theme/index.mjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/",
+    "docs/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "bun": ">=1.4.4"
+  },
+  "dependencies": {
+    "pi-context": "2.3.0",
+    "pi-goal-x": "0.34.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15"
+  },
+  "scripts": {
+    "test": "bun test",
+    "check": "biome check .",
+    "format": "biome format --write ."
+  }
+}
