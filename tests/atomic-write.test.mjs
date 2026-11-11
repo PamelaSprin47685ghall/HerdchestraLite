@@ -15,6 +15,10 @@ import { writeFileAtomic } from "../src/util/atomic-write.mjs";
 
 const roots = [];
 
+// root ignores the 0o555 directory bit (CAP_DAC_OVERRIDE), so the write would
+// succeed and the permission case would assert nothing real.
+const isRoot = process.getuid?.() === 0;
+
 function sandbox() {
 	const root = mkdtempSync(join(tmpdir(), "herd-atomic-"));
 	roots.push(root);
@@ -58,7 +62,7 @@ describe("writeFileAtomic", () => {
 		expect(leftoverTemps(root)).toEqual([]);
 	});
 
-	it("keeps the previous file and rethrows the original error", () => {
+	it.skipIf(isRoot)("keeps the previous file and rethrows the original error", () => {
 		const root = sandbox();
 		const target = join(root, "report.md");
 		writeFileSync(target, "old\n", "utf8");
