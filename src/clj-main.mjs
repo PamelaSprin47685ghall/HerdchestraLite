@@ -62,7 +62,14 @@ const WORKERS_FIELD = "more_workers_without_hitting_mythical_man_month";
 const WORKERS_FIELD_DESCRIPTION =
 	"自检：按 Brooks《人月神话》推导此刻还能增派多少工人。只数与既有契约互不相交、跨切片通信成本 O(1) 且现在已就绪的切片；无法证明互不相交的一律计 0。";
 const FORK_ALLOWED_FIELDS = new Set(["name", "code", "i", WORKERS_FIELD, ARIADNE_THREAD_FIELD, ARIADNE_GOAL_FIELD]);
-const VERSE_JUMP_ALLOWED_FIELDS = new Set(["target", "experience", ARIADNE_THREAD_FIELD, ARIADNE_GOAL_FIELD, "i"]);
+const VERSE_JUMP_ALLOWED_FIELDS = new Set([
+	"target",
+	"experience",
+	"beacon",
+	ARIADNE_THREAD_FIELD,
+	ARIADNE_GOAL_FIELD,
+	"i",
+]);
 const JOIN_ALLOWED_FIELDS = new Set(["otherwise_independent_work", "i", WORKERS_FIELD]);
 
 /**
@@ -168,6 +175,12 @@ const VERSE_JUMP_PARAMETERS = Object.freeze({
 			minLength: 1,
 			description:
 				"Your full subjective lived experience to pour into the target self (write generously—this is full Verse-Jumping, NOT a cramped 36-byte D-Mail!): bring every hard-won intuition, exact file path, line/symbol, falsified dead end, and the decisive next move so your alternate self wakes up already battle-hardened.",
+		},
+		beacon: {
+			type: "string",
+			minLength: 1,
+			description:
+				"Leave a luminous Beacon on the universe you are departing from: tell future alternate selves what specialty, partial state, or impasse makes THIS universe worth jumping back to (overwrites any previous beacon on the leaving universe; omit to keep its existing beacon).",
 		},
 		[ARIADNE_THREAD_FIELD]: {
 			type: "integer",

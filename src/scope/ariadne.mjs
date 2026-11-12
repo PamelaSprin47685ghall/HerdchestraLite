@@ -186,7 +186,7 @@ export function createAriadneStore() {
 		for (const verse of s.activatedVerses.values()) {
 			if (verse.verseName === s.active.verseName) continue;
 			if (!verse.cutCallId && s.active.indexByProgram.has(verse.verseName)) continue;
-			hidden.push({ verseName: verse.verseName, goal: verse.goal });
+			hidden.push({ verseName: verse.verseName, goal: verse.goal, beacon: verse.beacon ?? null });
 		}
 		return hidden;
 	}
@@ -202,6 +202,11 @@ export function createAriadneStore() {
 		if (typeof experience !== "string" || experience.trim().length === 0) {
 			throw herdError("INVALID_ARGUMENT", "verse_jump requires a non-empty experience string", {
 				field: "experience",
+			});
+		}
+		if (params.beacon !== undefined && (typeof params.beacon !== "string" || params.beacon.trim().length === 0)) {
+			throw herdError("INVALID_ARGUMENT", "verse_jump beacon must be a non-empty string when provided", {
+				field: "beacon",
 			});
 		}
 
@@ -240,9 +245,12 @@ export function createAriadneStore() {
 			leavingTop && leavingTop.minDeadline !== null ? leavingTop.minDeadline - leavingVerse.currentTurn : null;
 
 		if (leavingName !== targetProgram) {
+			const prevBeacon = s.activatedVerses.get(leavingName)?.beacon ?? null;
+			const beacon = params.beacon !== undefined ? params.beacon.trim() : prevBeacon;
 			s.activatedVerses.set(leavingName, {
 				verseName: leavingName,
 				goal: leavingGoal,
+				beacon,
 				cutCallId: jumpCallId,
 				leafId,
 				messagesSnapshot: null,
@@ -273,6 +281,7 @@ export function createAriadneStore() {
 			s.activatedVerses.set(targetProgram, {
 				verseName: targetProgram,
 				goal: targetGoal,
+				beacon: null,
 				cutCallId: null,
 				leafId: null,
 				messagesSnapshot: null,
@@ -379,9 +388,7 @@ export function createAriadneStore() {
 			parts.push(lines.join("\n"));
 		}
 		if (st.otherVerses.length > 0) {
-			const verseLines = st.otherVerses.map((v) =>
-				v.goal ? `- ${v.verseName}（Goal: ${v.goal}）` : `- ${v.verseName}`,
-			);
+			const verseLines = st.otherVerses.map(formatVerseEntry);
 			parts.push(
 				[
 					"<OTHER-VERSES>",
@@ -406,6 +413,12 @@ export function createAriadneStore() {
 	};
 }
 
+function formatVerseEntry(v) {
+	const goalPart = v.goal ? `（Goal: ${v.goal}）` : "";
+	const beaconPart = v.beacon ? ` — Beacon: ${v.beacon}` : "";
+	return `- ${v.verseName}${goalPart}${beaconPart}`;
+}
+
 function buildVerseJumpUserMessage({ targetGoal, experience, otherVerses = [] }) {
 	const sections = [];
 	if (targetGoal) sections.push(`Goal: ${targetGoal}`);
@@ -415,7 +428,7 @@ function buildVerseJumpUserMessage({ targetGoal, experience, otherVerses = [] })
 			[
 				"<OTHER-VERSES>",
 				"以下平行宇宙曾主动接过或交出过聚光灯令牌，但不在当前历史内可见：",
-				...otherVerses.map((v) => (v.goal ? `- ${v.verseName}（Goal: ${v.goal}）` : `- ${v.verseName}`)),
+				...otherVerses.map(formatVerseEntry),
 				"</OTHER-VERSES>",
 			].join("\n"),
 		);

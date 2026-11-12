@@ -194,4 +194,35 @@ describe("Everything Everywhere Verse-Jumping + Ariadne's Thread", () => {
 		);
 		expect(ok.kind).toBe("fork-history");
 	});
+
+	it("renders and overwrites per-universe beacon ads in <OTHER-VERSES>", () => {
+		const store = createAriadneStore();
+		const sk = "s-beacon";
+
+		store.validateAndApplyFork(sk, { ariadne_thread: 5, ariadne_goal: "alpha-goal" }, "p1", "c1", "clj_plan");
+		store.settleTurn(sk);
+
+		// Leave alpha with a beacon
+		store.verseJump(
+			sk,
+			{ target: "p1", experience: "fork p1", beacon: "Call me back if Redis lock fails" },
+			{ jumpCallId: "vj-1", leafId: "leaf-alpha" },
+		);
+		expect(store.formatAriadneBlock(sk)).toContain("Beacon: Call me back if Redis lock fails");
+
+		// Jump back to alpha without overwriting p1's beacon, then leave alpha again with an updated beacon
+		store.verseJump(
+			sk,
+			{ target: "alpha", experience: "back to alpha", beacon: "p1 specialty" },
+			{ jumpCallId: "vj-2" },
+		);
+		store.verseJump(
+			sk,
+			{ target: "p1", experience: "try p1 again", beacon: "Updated alpha beacon" },
+			{ jumpCallId: "vj-3" },
+		);
+		const block = store.formatAriadneBlock(sk);
+		expect(block).toContain("Beacon: Updated alpha beacon");
+		expect(block).not.toContain("Call me back if Redis lock fails");
+	});
 });
