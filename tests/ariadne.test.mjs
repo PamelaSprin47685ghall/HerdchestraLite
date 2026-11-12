@@ -74,7 +74,6 @@ describe("Everything Everywhere Verse-Jumping + Ariadne's Thread", () => {
 			{ jumpCallId: "vj-1", leafId: "leaf-alpha" },
 		);
 		expect(j1.kind).toBe("fork-history");
-		expect(j1.lcaDistance).toBe(2); // [p2-ordinary, p3]
 		expect(j1.otherVerses.map((v) => v.verseName)).toEqual(["alpha"]);
 		const block = store.formatAriadneBlock(sk);
 		expect(block).toContain("<OTHER-VERSES>");
@@ -286,5 +285,23 @@ describe("Everything Everywhere Verse-Jumping + Ariadne's Thread", () => {
 		store.validateAndApplyFork(sk, { ariadne_thread: 5, ariadne_goal: "sub-goal-2" }, "p3", "c3", "clj_plan");
 		store.settleTurn(sk);
 		expect(store.status(sk).remaining).toBe(1);
+	});
+
+	it("keeps activated side branches out of the active thread", () => {
+		const store = createAriadneStore();
+		const sk = "s-side-branch";
+
+		store.validateAndApplyFork(sk, {}, "alpha-step", "c1", "clj_plan");
+		store.settleTurn(sk);
+		store.verseJump(sk, { target: "alpha-step", experience: "fork the side branch" }, { jumpCallId: "vj-side-1" });
+
+		store.validateAndApplyFork(sk, { ariadne_thread: 1, ariadne_goal: "side-only" }, "side-tight", "c2", "clj_plan");
+		store.settleTurn(sk);
+		expect(store.status(sk).remaining).toBe(1);
+
+		store.verseJump(sk, { target: "alpha", experience: "return to alpha" }, { jumpCallId: "vj-side-2" });
+		expect(store.status(sk).remaining).toBeNull();
+		expect(store.status(sk).tightest).toEqual([]);
+		expect(store.status(sk).otherVerses.map((v) => v.verseName)).toContain("alpha-step");
 	});
 });

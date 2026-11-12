@@ -51,15 +51,6 @@ function topFrame(verse) {
 	return verse.stack.length > 0 ? verse.stack[verse.stack.length - 1] : null;
 }
 
-function lcaDepth(stackA, stackB) {
-	const limit = Math.min(stackA.length, stackB.length);
-	let i = 0;
-	while (i < limit && stackA[i].programName === stackB[i].programName) {
-		i += 1;
-	}
-	return i;
-}
-
 export function createAriadneStore() {
 	const sessions = new Map();
 
@@ -234,9 +225,6 @@ export function createAriadneStore() {
 		const leavingTop = topFrame(leavingVerse);
 		const leavingName = leavingVerse.verseName || ALPHA_VERSE;
 		const leavingGoal = leavingTop?.ownGoal ?? leavingTop?.tightest?.[0]?.goal ?? null;
-		const prevRemaining =
-			leavingTop && leavingTop.minDeadline !== null ? leavingTop.minDeadline - leavingVerse.currentTurn : null;
-
 		if (leavingName !== targetProgram) {
 			const prevBeacon = s.activatedVerses.get(leavingName)?.beacon ?? null;
 			const beacon = params.beacon !== undefined ? params.beacon.trim() : prevBeacon;
@@ -253,19 +241,16 @@ export function createAriadneStore() {
 
 		let cutCallId;
 		let targetGoal;
-		let lca;
 		let kind;
 
 		if (existingActivated && stackIdx === undefined) {
 			kind = "resume-verse";
-			lca = lcaDepth(leavingVerse.stack, existingActivated.verse.stack);
 			s.active = cloneVerse(existingActivated.verse, targetProgram);
 			cutCallId = existingActivated.cutCallId;
 			targetGoal = existingActivated.goal;
 		} else {
 			kind = "fork-history";
 			const targetFrame = leavingVerse.stack[stackIdx];
-			lca = stackIdx;
 			s.active = cloneVerse(leavingVerse, targetProgram, stackIdx);
 			s.active.currentTurn = targetFrame.turnAtCall;
 			cutCallId = targetFrame.toolCallId;
@@ -290,9 +275,6 @@ export function createAriadneStore() {
 
 		const nextTop = topFrame(s.active);
 		const nextRemaining = nextTop && nextTop.minDeadline !== null ? nextTop.minDeadline - s.active.currentTurn : null;
-		const lcaDistance = Math.max(0, leavingVerse.stack.length - lca);
-		const refunded =
-			nextRemaining !== null && prevRemaining !== null ? Math.max(0, nextRemaining - prevRemaining) : lcaDistance;
 		const otherVerses = hiddenActivatedVerses(s);
 
 		s.pendingJump = {
@@ -310,10 +292,7 @@ export function createAriadneStore() {
 		return {
 			kind,
 			target: targetProgram,
-			lcaDepth: lca,
-			lcaDistance,
 			remaining: nextRemaining,
-			refunded,
 			tightest: nextTop ? nextTop.tightest : [],
 			otherVerses,
 		};
