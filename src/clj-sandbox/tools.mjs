@@ -23,6 +23,7 @@ import {
 	createBatch,
 	runCall,
 	commit as vfsCommit,
+	glob as vfsGlob,
 	list as vfsList,
 	mkdir as vfsMkdir,
 	move as vfsMove,
@@ -59,6 +60,7 @@ const WORKER_CAPABILITIES = Object.freeze([
 	"cat",
 	"stat",
 	"ls",
+	"glob",
 	"write",
 	"mkdir",
 	"rm",
@@ -79,8 +81,8 @@ const WORKER_CAPABILITIES = Object.freeze([
  */
 export const CAPABILITY_MATRIX = Object.freeze({
 	plan: Object.freeze(["cat", "where", "whereAll", "park", "unpark", "abandon"]),
-	devops: Object.freeze(["cat", "stat", "ls", "where", "whereAll", "park", "unpark", "abandon", "call"]),
-	review: Object.freeze(["cat", "stat", "ls", "where", "whereAll", "unpark", "abandon"]),
+	devops: Object.freeze(["cat", "stat", "ls", "glob", "where", "whereAll", "park", "unpark", "abandon", "call"]),
+	review: Object.freeze(["cat", "stat", "ls", "glob", "where", "whereAll", "unpark", "abandon"]),
 	worker: WORKER_CAPABILITIES,
 	holder: Object.freeze([...WORKER_CAPABILITIES, "call"]),
 	auditor: Object.freeze([...WORKER_CAPABILITIES, "call"]),
@@ -90,6 +92,7 @@ const CAPABILITY_NAMES = new Set([
 	"cat",
 	"stat",
 	"ls",
+	"glob",
 	"write",
 	"mkdir",
 	"rm",
@@ -782,6 +785,22 @@ function makeCapabilityTable(context, ports, execution) {
 			const requested = requireArgumentString(args, "path");
 			const target = classifyRead(context, requested);
 			return listValue(vfsList(target.batch, target.path));
+		};
+	}
+	if (capabilities.has("glob")) {
+		table.glob = async (args) => {
+			const pattern = requireArgumentString(args, "pattern");
+			if (pattern.length === 0) {
+				throw invalidArgument("pattern must be a non-empty string", { field: "pattern", value: pattern });
+			}
+			const requested = args.path === undefined || args.path === null ? "" : requireArgumentString(args, "path");
+			const dot = args.dot === true;
+			const onlyFiles = args.onlyFiles !== false && args["only-files"] !== false;
+			const result = await vfsGlob(context.primary, pattern, requested, { dot, onlyFiles });
+			return new Map([
+				[kw("exists"), result.exists],
+				[kw("entries"), result.entries],
+			]);
 		};
 	}
 	if (capabilities.has("write")) {

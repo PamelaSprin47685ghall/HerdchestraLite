@@ -13,6 +13,7 @@ const MAX_CANDIDATES = 8;
 const CONTEXT_RADIUS = 80;
 const NEAREST_DISTANCE_BAND = 64;
 const DP_CELL_BUDGET = 10_000_000;
+const DP_INF = 0x3fffffff;
 
 function invalidArgument(message, data = {}) {
 	return herdError("INVALID_ARGUMENT", message, data);
@@ -92,11 +93,26 @@ export function findAll(content, needle) {
 	}
 }
 
+function hasNonWhitespace(content, start, end) {
+	for (let i = start; i < end; i += 1) {
+		const code = content.charCodeAt(i);
+		if (code > 32 && code !== 160 && code !== 0xfeff) {
+			return true;
+		}
+	}
+	return start < end && content.slice(start, end).trim().length > 0;
+}
+
 function findNearestLine(content, needle) {
 	let nearest = null;
 	let remaining = DP_CELL_BUDGET;
 	let budgetExhausted = false;
 	let lineStart = 0;
+	const needleLen = needle.length;
+	const scratch = {
+		prev: new Int32Array(needleLen + NEAREST_DISTANCE_BAND + 2),
+		curr: new Int32Array(needleLen + NEAREST_DISTANCE_BAND + 2),
+	};
 
 	while (lineStart <= content.length) {
 		let lineEnd = content.indexOf("\n", lineStart);
@@ -104,21 +120,23 @@ function findNearestLine(content, needle) {
 			lineEnd = content.length;
 		}
 
-		const line = content.slice(lineStart, lineEnd);
-		if (line.length > 0 && line.trim().length > 0) {
-			const measure = boundedDistance(needle, line, remaining);
-			remaining = measure.remaining;
-			if (measure.exhausted) {
-				budgetExhausted = true;
-				break;
-			}
-			if (measure.distance <= NEAREST_DISTANCE_BAND) {
-				if (nearest === null || measure.distance < nearest.distance) {
-					nearest = {
-						span: [lineStart, lineEnd],
-						text: line,
-						distance: measure.distance,
-					};
+		const lineLen = lineEnd - lineStart;
+		if (lineLen > 0 && hasNonWhitespace(content, lineStart, lineEnd)) {
+			if (Math.abs(needleLen - lineLen) <= NEAREST_DISTANCE_BAND) {
+				const measure = boundedDistanceRange(needle, content, lineStart, lineEnd, remaining, scratch);
+				remaining = measure.remaining;
+				if (measure.exhausted) {
+					budgetExhausted = true;
+					break;
+				}
+				if (measure.distance <= NEAREST_DISTANCE_BAND) {
+					if (nearest === null || measure.distance < nearest.distance) {
+						nearest = {
+							span: [lineStart, lineEnd],
+							text: content.slice(lineStart, lineEnd),
+							distance: measure.distance,
+						};
+					}
 				}
 			}
 		}
@@ -133,77 +151,85 @@ function findNearestLine(content, needle) {
 }
 
 /**
- * Levenshtein distance within the K band.
- *
- * Returns `distance: Infinity` when the real distance exceeds K or the line
- * length difference already exceeds K. The caller treats exhaustion as a stop
- * signal and keeps the best nearest line found so far.
+ * Zero-allocation Ukkonen banded Levenshtein distance between `left` and
+ * `rightContent[rightStart..rightEnd)`.
  */
-function boundedDistance(left, right, remaining) {
-	if (Math.abs(left.length - right.length) > NEAREST_DISTANCE_BAND) {
-		return { distance: Infinity, remaining, exhausted: false };
+function boundedDistanceRange(left, rightContent, rightStart, rightEnd, remaining, scratch) {
+	const leftLen = left.length;
+	const rightLen = rightEnd - rightStart;
+	if (Math.abs(leftLen - rightLen) > NEAREST_DISTANCE_BAND) {
+		return { distance: DP_INF, remaining, exhausted: false };
 	}
 
 	let prefix = 0;
-	while (prefix < left.length && prefix < right.length && left[prefix] === right[prefix]) {
+	const minLen = leftLen < rightLen ? leftLen : rightLen;
+	while (prefix < minLen && left.charCodeAt(prefix) === rightContent.charCodeAt(rightStart + prefix)) {
 		prefix += 1;
 	}
 
-	let leftEnd = left.length;
-	let rightEnd = right.length;
-	while (leftEnd > prefix && rightEnd > prefix && left[leftEnd - 1] === right[rightEnd - 1]) {
+	let leftEnd = leftLen;
+	let rEnd = rightEnd;
+	while (
+		leftEnd > prefix &&
+		rEnd > rightStart + prefix &&
+		left.charCodeAt(leftEnd - 1) === rightContent.charCodeAt(rEnd - 1)
+	) {
 		leftEnd -= 1;
-		rightEnd -= 1;
+		rEnd -= 1;
 	}
 
-	const leftMiddle = left.slice(prefix, leftEnd);
-	const rightMiddle = right.slice(prefix, rightEnd);
-	if (leftMiddle.length === 0 || rightMiddle.length === 0) {
-		const distance = Math.max(leftMiddle.length, rightMiddle.length);
+	const leftMiddleLen = leftEnd - prefix;
+	const rightMiddleLen = rEnd - (rightStart + prefix);
+	if (leftMiddleLen === 0 || rightMiddleLen === 0) {
+		const distance = leftMiddleLen > rightMiddleLen ? leftMiddleLen : rightMiddleLen;
 		return {
-			distance: distance <= NEAREST_DISTANCE_BAND ? distance : Infinity,
+			distance: distance <= NEAREST_DISTANCE_BAND ? distance : DP_INF,
 			remaining,
 			exhausted: false,
 		};
 	}
 
-	const leftLength = leftMiddle.length;
-	const rightLength = rightMiddle.length;
-	const infinity = Number.POSITIVE_INFINITY;
-	let previous = new Float64Array(rightLength + 1).fill(infinity);
-	let current = new Float64Array(rightLength + 1).fill(infinity);
+	const needed = rightMiddleLen + 1;
+	if (scratch.prev.length < needed) {
+		scratch.prev = new Int32Array(needed);
+		scratch.curr = new Int32Array(needed);
+	}
+	let previous = scratch.prev;
+	let current = scratch.curr;
+	previous.fill(DP_INF, 0, needed);
+	current.fill(DP_INF, 0, needed);
 	previous[0] = 0;
-	for (let column = 1; column <= Math.min(rightLength, NEAREST_DISTANCE_BAND); column += 1) {
+	const initLimit = rightMiddleLen < NEAREST_DISTANCE_BAND ? rightMiddleLen : NEAREST_DISTANCE_BAND;
+	for (let column = 1; column <= initLimit; column += 1) {
 		previous[column] = column;
 	}
 
-	for (let row = 1; row <= leftLength; row += 1) {
-		const low = Math.max(0, row - NEAREST_DISTANCE_BAND);
-		const high = Math.min(rightLength, row + NEAREST_DISTANCE_BAND);
+	const rightBase = rightStart + prefix;
+	for (let row = 1; row <= leftMiddleLen; row += 1) {
+		const low = row > NEAREST_DISTANCE_BAND ? row - NEAREST_DISTANCE_BAND : 0;
+		const highRaw = row + NEAREST_DISTANCE_BAND;
+		const high = highRaw < rightMiddleLen ? highRaw : rightMiddleLen;
 
 		if (low === 0) {
 			current[0] = row;
 		} else {
-			current[low - 1] = infinity;
+			current[low - 1] = DP_INF;
 		}
 
+		const leftCode = left.charCodeAt(prefix + row - 1);
 		const first = low === 0 ? 1 : low;
 		for (let column = first; column <= high; column += 1) {
 			if (remaining <= 0) {
-				return { distance: Infinity, remaining: 0, exhausted: true };
+				return { distance: DP_INF, remaining: 0, exhausted: true };
 			}
 			remaining -= 1;
 
-			const replaceCost = leftMiddle.charCodeAt(row - 1) === rightMiddle.charCodeAt(column - 1) ? 0 : 1;
+			const replaceCost = leftCode === rightContent.charCodeAt(rightBase + column - 1) ? 0 : 1;
 			let best = previous[column] + 1;
 			const insert = current[column - 1] + 1;
-			if (insert < best) {
-				best = insert;
-			}
+			if (insert < best) best = insert;
 			const replace = previous[column - 1] + replaceCost;
-			if (replace < best) {
-				best = replace;
-			}
+			if (replace < best) best = replace;
 			current[column] = best;
 		}
 
@@ -212,9 +238,9 @@ function boundedDistance(left, right, remaining) {
 		current = swap;
 	}
 
-	const distance = previous[rightLength];
+	const distance = previous[rightMiddleLen];
 	return {
-		distance: distance <= NEAREST_DISTANCE_BAND ? distance : Infinity,
+		distance: distance <= NEAREST_DISTANCE_BAND ? distance : DP_INF,
 		remaining,
 		exhausted: false,
 	};

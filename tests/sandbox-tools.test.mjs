@@ -159,6 +159,7 @@ describe("capability matrix", () => {
 			"cat",
 			"stat",
 			"ls",
+			"glob",
 			"where",
 			"whereAll",
 			"park",
@@ -166,11 +167,21 @@ describe("capability matrix", () => {
 			"abandon",
 			"call",
 		]);
-		expect([...CAPABILITY_MATRIX.review]).toEqual(["cat", "stat", "ls", "where", "whereAll", "unpark", "abandon"]);
+		expect([...CAPABILITY_MATRIX.review]).toEqual([
+			"cat",
+			"stat",
+			"ls",
+			"glob",
+			"where",
+			"whereAll",
+			"unpark",
+			"abandon",
+		]);
 		expect([...CAPABILITY_MATRIX.worker]).toEqual([
 			"cat",
 			"stat",
 			"ls",
+			"glob",
 			"write",
 			"mkdir",
 			"rm",

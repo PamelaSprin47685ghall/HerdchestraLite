@@ -6,7 +6,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -674,6 +674,29 @@ describe("clj-only async dogfood surface", () => {
 
 		const afterAbandon = await ctxHandler({ messages: [{ role: "user", content: "hi" }] }, { cwd: root });
 		expect(afterAbandon).toBeUndefined();
+	});
+	it("supports async glob + cat composition without creating control dirs or taking W", async () => {
+		mkdirSync(join(root, "sub"), { recursive: true });
+		writeFileSync(join(root, "sub", "a.mjs"), "alpha");
+		writeFileSync(join(root, "sub", "b.mjs"), "beta");
+		writeFileSync(join(root, "sub", "c.txt"), "gamma");
+		const { tools } = fakeHost();
+		const res = await callTool(
+			tools,
+			"clj_review",
+			"glob-1",
+			{
+				name: "glob-cat",
+				code: `(let [g (glob {:pattern "**/*.mjs" :path "sub"})]
+  (mapv (fn [p] [p (cat {:path (str "sub/" p)})]) (:entries g)))`,
+			},
+			root,
+		);
+		expect(res.isError).not.toBe(true);
+		expect(res.content[0].text).toContain('["a.mjs" "alpha"]');
+		expect(res.content[0].text).toContain('["b.mjs" "beta"]');
+		expect(res.content[0].text).not.toContain("c.txt");
+		expect(existsSync(join(root, ".herd"))).toBe(false);
 	});
 	it("rejects a write capability in the plan role", async () => {
 		const { tools } = fakeHost();

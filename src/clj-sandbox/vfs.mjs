@@ -44,6 +44,7 @@ import {
 	rmdirSync,
 	unlinkSync,
 } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { writeFileAtomic } from "../util/atomic-write.mjs";
 import { ERROR_CODES, herdError, isHerdError, messageOf } from "../util/errors.mjs";
@@ -827,6 +828,80 @@ function emptyStat(virtual) {
  * The result merges real entries with overlay additions and removals. A
  * virtual file or a real non-directory throws `:STRUCTURE_CONFLICT`.
  */
+function globToRegExp(pattern) {
+	let regex = "^";
+	let i = 0;
+	while (i < pattern.length) {
+		const ch = pattern[i];
+		if (ch === "*") {
+			if (pattern[i + 1] === "*") {
+				if (pattern[i + 2] === "/") {
+					regex += "(?:.*/)?";
+					i += 3;
+					continue;
+				}
+				regex += ".*";
+				i += 2;
+				continue;
+			}
+			regex += "[^/]*";
+		} else if (ch === "?") {
+			regex += "[^/]";
+		} else if ("\\^$.|+()[]{}".includes(ch)) {
+			regex += `\\${ch}`;
+		} else {
+			regex += ch;
+		}
+		i += 1;
+	}
+	regex += "$";
+	return new RegExp(regex);
+}
+
+/**
+ * Pure async glob probe using `Bun.Glob` when available (falling back to
+ * `node:fs/promises` recursive readdir). Does not acquire $W$ and does not
+ * join `readSet`.
+ */
+export async function glob(batch, pattern, path = "", options = {}) {
+	assertBatch(batch);
+	if (typeof pattern !== "string" || pattern.length === 0) {
+		throw invalidArgument("pattern", "a non-empty glob string", pattern);
+	}
+	const target = resolveReadPath(batch, path);
+	const dot = options.dot === true;
+	const onlyFiles = options.onlyFiles !== false;
+	const snapshot = batch.io.lstat(target);
+	if (!snapshot) {
+		return { exists: false, entries: [] };
+	}
+	if (!snapshot.isDirectory()) {
+		throw structureConflict(target, "path is not a directory", undefined);
+	}
+	const entries = [];
+	if (typeof Bun !== "undefined" && typeof Bun.Glob === "function") {
+		const globber = new Bun.Glob(pattern);
+		for await (const entry of globber.scan({ cwd: target, onlyFiles, dot })) {
+			entries.push(entry.replace(/\\/g, "/"));
+		}
+	} else {
+		const matcher = globToRegExp(pattern.replace(/\\/g, "/"));
+		const items = await readdir(target, { withFileTypes: true, recursive: true });
+		for (const item of items) {
+			if (onlyFiles && !item.isFile()) continue;
+			const parent = item.parentPath ?? item.path ?? target;
+			const relParent = parent === target ? "" : parent.slice(target.length + 1).replace(/\\/g, "/");
+			const rel = relParent.length > 0 ? `${relParent}/${item.name}` : item.name;
+			if (!dot && rel.split("/").some((seg) => seg.startsWith("."))) continue;
+			if (matcher.test(rel)) {
+				entries.push(rel);
+			}
+		}
+	}
+	entries.sort();
+	return { exists: true, entries };
+}
+
 export function list(batch, path) {
 	assertBatch(batch);
 	const target = resolveReadPath(batch, path);
