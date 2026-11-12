@@ -1120,11 +1120,16 @@ export function registerCljTools(pi, deps = {}) {
 				);
 				const applied = applyVerseJumpToMessages(event?.messages, jump, ctx?.sessionManager);
 				baseMessages = applied.messages;
-				if (applied.branchSwitched && ctx?.sessionManager && typeof ctx.sessionManager.getBranch === "function") {
-					branchBaseMessages = ctx.sessionManager
-						.getBranch()
-						.filter((e) => e && e.type === "message" && e.message)
-						.map((e) => e.message);
+				if (applied.branchSwitched && ctx?.sessionManager) {
+					if (typeof ctx.sessionManager.buildSessionContext === "function") {
+						const built = ctx.sessionManager.buildSessionContext();
+						if (Array.isArray(built?.messages)) branchBaseMessages = built.messages;
+					} else if (typeof ctx.sessionManager.getBranch === "function") {
+						branchBaseMessages = ctx.sessionManager
+							.getBranch()
+							.filter((e) => e && e.type === "message" && e.message)
+							.map((e) => e.message);
+					}
 				}
 			}
 			const ariadneBlock = ariadne ? ariadne.formatAriadneBlock(sessionKey) : null;

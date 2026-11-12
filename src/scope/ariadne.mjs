@@ -482,17 +482,17 @@ export function applyVerseJumpToMessages(messages, jump, sessionManager = null) 
 	if (jump.kind === "resume-verse") {
 		let base = Array.isArray(jump.fallbackMessages) ? [...jump.fallbackMessages] : [];
 		let branchSwitched = false;
-		if (
-			jump.targetLeafId &&
-			sessionManager &&
-			typeof sessionManager.getBranch === "function" &&
-			typeof sessionManager.branch === "function"
-		) {
+		if (jump.targetLeafId && sessionManager && typeof sessionManager.branch === "function") {
 			sessionManager.branch(jump.targetLeafId);
 			branchSwitched = true;
-			const entries = sessionManager.getBranch();
-			if (Array.isArray(entries)) {
-				base = entries.filter((e) => e && e.type === "message" && e.message).map((e) => e.message);
+			if (typeof sessionManager.buildSessionContext === "function") {
+				const built = sessionManager.buildSessionContext();
+				if (Array.isArray(built?.messages)) base = built.messages;
+			} else if (typeof sessionManager.getBranch === "function") {
+				const entries = sessionManager.getBranch();
+				if (Array.isArray(entries)) {
+					base = entries.filter((e) => e && e.type === "message" && e.message).map((e) => e.message);
+				}
 			}
 		}
 		const next = cutFromToolCall(base, jump.cutCallId, jump.targetProgram, userMessage);

@@ -223,4 +223,48 @@ describe("Everything Everywhere Verse-Jumping + Ariadne's Thread", () => {
 		expect(block).toContain("Beacon: Updated alpha beacon");
 		expect(block).not.toContain("Call me back if Redis lock fails");
 	});
+
+	it("uses buildSessionContext() on resume-verse so pre-compaction messages are never resurrected", () => {
+		let branchedTo = null;
+		const fakeSm = {
+			branch(id) {
+				branchedTo = id;
+			},
+			getBranch() {
+				// Simulates raw full-history entries before compaction
+				return [
+					{ type: "message", message: { role: "user", content: "pre-compaction-giant-1" } },
+					{ type: "message", message: { role: "user", content: "pre-compaction-giant-2" } },
+					{ type: "message", message: { role: "user", content: "post-compaction" } },
+				];
+			},
+			buildSessionContext() {
+				// Resolved context respects compaction boundary
+				return {
+					messages: [
+						{ role: "user", content: "compaction-summary" },
+						{ role: "user", content: "post-compaction" },
+					],
+				};
+			},
+		};
+
+		const res = applyVerseJumpToMessages(
+			[],
+			{
+				kind: "resume-verse",
+				targetProgram: "alpha",
+				targetLeafId: "leaf-alpha",
+				cutCallId: "vj-missing",
+				experience: "back with findings",
+			},
+			fakeSm,
+		);
+
+		expect(branchedTo).toBe("leaf-alpha");
+		expect(res.branchSwitched).toBe(true);
+		expect(res.messages).toHaveLength(3);
+		expect(res.messages[0].content).toBe("compaction-summary");
+		expect(res.messages.some((m) => m.content === "pre-compaction-giant-1")).toBe(false);
+	});
 });
