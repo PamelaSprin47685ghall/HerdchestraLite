@@ -949,9 +949,11 @@ Lite 保留标准版的 REPL 程序化工具面（内部仍用命名程序承载
 每次调用沙箱工具，模型提交：
 
 ```text
-clj_<role>({ code[, name] })
-join({ otherwise_independent_work })
+clj_<role>({ code[, name][, more_workers_without_hitting_mythical_man_month] })
+join({ otherwise_independent_work[, more_workers_without_hitting_mythical_man_month] })
 ```
+
+`more_workers_without_hitting_mythical_man_month` 是 Brooks《人月神话》自检：只数与既有契约互不相交、跨切片通信成本 $O(1)$ 且现在已就绪的切片，无法证明互不相交的一律计 0。`join` 的反事实参数 `otherwise_independent_work` 的描述要求从人月神话推导出该量并给出证明。该量为正时，工具回执末尾追加“你刚刚在工具参数中说还可以增派 X 个工人，现在请你立刻兑现。”；为 0 时该句不出现。
 
 `code` 是 REPL 输入：任意数量的顶层表达式，最后一个值作为回执返回；`name` 可选；省略时框架生成 `repl-<id>`，内部命名只服务 `park`/`unpark`。**单一写法铁律**：同一个能力只有一种调用写法——**裸函数名 + 单个 EDN map 参数**。不存在接收者写法或位置参数；`this` 不绑定。顶层结构化原语是**独立工具**，不在 REPL 内调用；也不要在聊天正文里“调用”沙箱函数。
 
@@ -1195,7 +1197,7 @@ COMMON_RULES
 |---|---|---|
 | `intent` | `string`，非空 | 本步动作的简明中文意图；用于期限核定（1000ms + UTF-8 字节数 × 50ms）。必须在通过三闸门后写。 |
 | `scope` | `object` | 上下文所有权注解；字段形状见 §5.3。 |
-| `how_many_more_workers_are_allowed_without_hitting_mythical_man_month` | `integer` | 兼容旧版的自检字段：提示模型按因果最大化并发，不要越干越少。它是调度自检，不改变协议语义；可通过 `/herd-settings` 关闭注入。设计讨论中的连字符写法是同一字段的别名。 |
+| `more_workers_without_hitting_mythical_man_month` | `integer` | 人月神话自检：只数与既有契约互不相交、通信成本 $O(1)$ 且已就绪的切片，无法证明的计 0。当前在线 `clj_*` / `join` 面把它声明为真实工具参数，`join` 的反事实参数须从人月神话推导该量并给出证明；该量为正时回执追加“你刚刚在工具参数中说还可以增派 X 个工人，现在请你立刻兑现。”，为 0 时不出现。设计讨论中的连字符写法是同一字段的别名。 |
 
 **注入范围**：所有非豁免工具。豁免工具仅 `ask_previous_scope` 与 `assume`（它们本身是 Scope 机制的一部分，不能再要求 Scope）。`ask_user`、`submit_*`、`advance_*`、`board_*`、`clj_*` 都需要 `scope` 与 `intent`。
 
@@ -1920,7 +1922,7 @@ export function rewriteVibeModeContext(content) {
 
 ```text
 export const TOOL_GATE_DEFINITIONS = Object.freeze({
-  how_many_more_workers_are_allowed_without_hitting_mythical_man_month: {
+  more_workers_without_hitting_mythical_man_month: {
     type: "integer",
     description:
       "Maintain aggressive causal parallelism (Brooks check: disjoint contracts/slices ready to run concurrently; target total workload in turns / 100). Never skimp on dispatching independent work.",

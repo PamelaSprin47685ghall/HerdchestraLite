@@ -10,11 +10,11 @@ import {
 	stripGateFields,
 } from "../src/tool-gate/schema.mjs";
 
-const WORKERS = "how_many_more_workers_are_allowed_without_hitting_mythical_man_month";
+const WORKERS = "more_workers_without_hitting_mythical_man_month";
 const INTENT = "intent";
 const SCOPE = "scope";
 
-const LEGACY_WORKERS = "how-many-more-workers-are-allowed-without-hitting-mythical-man-month";
+const LEGACY_WORKERS = "more-workers-without-hitting-mythical-man-month";
 
 function objectSchema() {
 	return { type: "object", properties: { query: { type: "string" } } };

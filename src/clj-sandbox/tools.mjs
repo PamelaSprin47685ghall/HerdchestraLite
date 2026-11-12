@@ -143,11 +143,7 @@ const TOOL_NAMES = Object.freeze({
 	auditor: "clj_auditor",
 });
 
-const GATE_FIELDS = new Set([
-	"scope",
-	"intent",
-	"how_many_more_workers_are_allowed_without_hitting_mythical_man_month",
-]);
+const GATE_FIELDS = new Set(["scope", "intent", "more_workers_without_hitting_mythical_man_month"]);
 
 const TOOL_FIELDS = new Set(["name", "code", "i"]);
 const CONFIGURED_SESSIONS = new WeakSet();

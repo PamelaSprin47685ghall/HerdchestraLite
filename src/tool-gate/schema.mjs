@@ -11,7 +11,7 @@
  * never overwrites a definition that a tool already declares.
  */
 
-const WORKERS = "how_many_more_workers_are_allowed_without_hitting_mythical_man_month";
+const WORKERS = "more_workers_without_hitting_mythical_man_month";
 const INTENT = "intent";
 const SCOPE = "scope";
 
@@ -437,7 +437,7 @@ export function stripGateFields(input) {
 	for (const key of GATE_KEYS) {
 		if (Object.hasOwn(input, key)) present.push(key);
 	}
-	for (const key of ["how-many-more-workers-are-allowed-without-hitting-mythical-man-month"]) {
+	for (const key of ["more-workers-without-hitting-mythical-man-month"]) {
 		if (Object.hasOwn(input, key) && !present.includes(key)) present.push(key);
 	}
 	if (present.length === 0) return undefined;

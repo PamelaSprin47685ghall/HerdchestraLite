@@ -34,7 +34,7 @@ export function rewriteVibeModeContext(content) {
 }
 
 export const TOOL_GATE_DEFINITIONS = Object.freeze({
-	how_many_more_workers_are_allowed_without_hitting_mythical_man_month: {
+	more_workers_without_hitting_mythical_man_month: {
 		type: "integer",
 		description:
 			"Maintain aggressive causal parallelism (Brooks check: disjoint contracts/slices ready to run concurrently; target total workload in turns / 100). Never skimp on dispatching independent work.",

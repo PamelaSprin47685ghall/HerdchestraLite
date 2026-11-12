@@ -36,8 +36,11 @@ const ROLE_LABELS = Object.freeze({
 	worker: "Worker / read-write",
 });
 const DEFAULT_FORK_DEADLINE_MS = 3_600_000;
-const FORK_ALLOWED_FIELDS = new Set(["name", "code", "i"]);
-const JOIN_ALLOWED_FIELDS = new Set(["otherwise_independent_work", "i"]);
+const WORKERS_FIELD = "more_workers_without_hitting_mythical_man_month";
+const WORKERS_FIELD_DESCRIPTION =
+	"自检：按 Brooks《人月神话》推导此刻还能增派多少工人。只数与既有契约互不相交、跨切片通信成本 O(1) 且现在已就绪的切片；无法证明互不相交的一律计 0。";
+const FORK_ALLOWED_FIELDS = new Set(["name", "code", "i", WORKERS_FIELD]);
+const JOIN_ALLOWED_FIELDS = new Set(["otherwise_independent_work", "i", WORKERS_FIELD]);
 
 /**
  * Join wait budget: 50ms per UTF-8 byte (the free 1s grace is spent at fork time).
@@ -66,6 +69,11 @@ const SANDBOX_PARAMETERS = Object.freeze({
 			minLength: 1,
 			description: "Bare ClojureScript REPL input; runs in a Worker thread.",
 		},
+		[WORKERS_FIELD]: {
+			type: "integer",
+			minimum: 0,
+			description: WORKERS_FIELD_DESCRIPTION,
+		},
 	},
 });
 
@@ -78,7 +86,12 @@ const JOIN_PARAMETERS = Object.freeze({
 			type: "string",
 			minLength: 1,
 			description:
-				"Counterfactually explain what independent work could otherwise be dispatched right now instead of calling join to wait idly. If you decide not to join after thinking about this, GREAT! Wait deadline = 1000ms + UTF-8 bytes * 50ms (plus 1000ms free grace at clj_* fork time).",
+				"Counterfactually explain what independent work could otherwise be dispatched right now instead of calling join to wait idly. If you decide not to join after thinking about this, GREAT! You MUST also derive `more_workers_without_hitting_mythical_man_month` from Brooks' Mythical Man-Month here and prove it: each extra worker needs a slice with a disjoint contract and O(1) cross-slice communication; count only slices ready right now, and any slice you cannot prove disjoint counts as 0. Wait deadline = 1000ms + UTF-8 bytes * 50ms (plus 1000ms free grace at clj_* fork time).",
+		},
+		[WORKERS_FIELD]: {
+			type: "integer",
+			minimum: 0,
+			description: WORKERS_FIELD_DESCRIPTION,
 		},
 	},
 });
@@ -166,6 +179,26 @@ function getPool(state, sessionKey) {
 	return pool;
 }
 
+function parseWorkerCount(params) {
+	const value = params[WORKERS_FIELD];
+	if (value === undefined) return 0;
+	if (!Number.isInteger(value) || value < 0) {
+		throw herdError("INVALID_ARGUMENT", `${WORKERS_FIELD} must be a non-negative integer`, {
+			field: WORKERS_FIELD,
+			received: value,
+		});
+	}
+	return value;
+}
+
+function withWorkerNudge(result, workers) {
+	if (!Number.isInteger(workers) || workers <= 0) return result;
+	if (result === null || typeof result !== "object" || result.isError === true) return result;
+	const content = Array.isArray(result.content) ? result.content : [];
+	const nudge = `你刚刚在工具参数中说还可以增派 ${workers} 个工人，现在请你立刻兑现。`;
+	return { ...result, content: [...content, { type: "text", text: nudge }] };
+}
+
 function validateForkParams(params) {
 	if (!isPlainObject(params)) {
 		throw herdError("INVALID_ARGUMENT", "sandbox tool parameters must be an object", {
@@ -193,6 +226,7 @@ function validateForkParams(params) {
 	return {
 		programName: params.name ?? `repl-${randomUUID().slice(0, 12)}`,
 		code: params.code,
+		workers: parseWorkerCount(params),
 	};
 }
 
@@ -212,7 +246,10 @@ function validateJoinParams(params) {
 			field: "otherwise_independent_work",
 		});
 	}
-	return params.otherwise_independent_work;
+	return {
+		counterfactual: params.otherwise_independent_work,
+		workers: parseWorkerCount(params),
+	};
 }
 
 function formatForkReceipt({ toolName, programName, inFlight, backlog }) {
@@ -685,7 +722,7 @@ export function registerCljTools(pi, deps = {}) {
 						});
 
 					entry.donePromise = runPromise;
-					return await Promise.race([runPromise, bgPromise]);
+					return withWorkerNudge(await Promise.race([runPromise, bgPromise]), validated.workers);
 				},
 			});
 		} catch (error) {
@@ -716,6 +753,7 @@ export function registerCljTools(pi, deps = {}) {
 				} catch (error) {
 					return toolFailure(error);
 				}
+				const finish = (result) => withWorkerNudge(result, plan.workers);
 				const root = rootFor(ctx);
 				const sessionKey = hostSessionKey(ctx, root);
 				const pool = getPool(state, sessionKey);
@@ -724,17 +762,17 @@ export function registerCljTools(pi, deps = {}) {
 				}
 				if (pool.backlog.length > 0) {
 					const items = pool.backlog.splice(0, pool.backlog.length);
-					return formatJoinedResults(items, pool);
+					return finish(formatJoinedResults(items, pool));
 				}
 				if (pool.inFlight.size === 0) {
-					return formatIdleReceipt();
+					return finish(formatIdleReceipt());
 				}
 				if (signal?.aborted === true) {
-					return toolFailure(herdError("UPSTREAM_ABORTED", "join was cancelled before waiting"));
+					return finish(toolFailure(herdError("UPSTREAM_ABORTED", "join was cancelled before waiting")));
 				}
 
-				const waitMs = waitMsFor(plan, baseWaitMs);
-				return await new Promise((resolvePromise) => {
+				const waitMs = waitMsFor(plan.counterfactual, baseWaitMs);
+				const joined = await new Promise((resolvePromise) => {
 					let settled = false;
 					let remainingMs = waitMs;
 					let tickingSince = null;
@@ -838,6 +876,7 @@ export function registerCljTools(pi, deps = {}) {
 						signal.addEventListener("abort", abortListener, { once: true });
 					}
 				});
+				return finish(joined);
 			},
 		});
 	} catch (error) {

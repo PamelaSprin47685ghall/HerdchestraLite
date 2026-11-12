@@ -9,7 +9,7 @@ import activate, {
 	writeCallMeta,
 } from "../src/tool-gate/index.mjs";
 
-const WORKERS = "how_many_more_workers_are_allowed_without_hitting_mythical_man_month";
+const WORKERS = "more_workers_without_hitting_mythical_man_month";
 const INTENT = "intent";
 const SCOPE = "scope";
 
