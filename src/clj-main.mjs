@@ -20,7 +20,7 @@ import { recordHealth } from "./host/health.mjs";
 import { appendOutboundContextTail } from "./prompts/runtime-wires.mjs";
 import {
 	ARIADNE_GOAL_FIELD,
-	ARIADNE_THREAD_FIELD,
+	ARIADNE_BUDGET_FIELD,
 	applyVerseJumpToMessages,
 	createAriadneStore,
 } from "./scope/ariadne.mjs";
@@ -61,12 +61,12 @@ function getSharedWorkerHost() {
 const WORKERS_FIELD = "more_workers_without_hitting_mythical_man_month";
 const WORKERS_FIELD_DESCRIPTION =
 	"自检：按 Brooks《人月神话》推导此刻还能增派多少工人。只数与既有契约互不相交、跨切片通信成本 O(1) 且现在已就绪的切片；无法证明互不相交的一律计 0。";
-const FORK_ALLOWED_FIELDS = new Set(["name", "code", "i", WORKERS_FIELD, ARIADNE_THREAD_FIELD, ARIADNE_GOAL_FIELD]);
+const FORK_ALLOWED_FIELDS = new Set(["name", "code", "i", WORKERS_FIELD, ARIADNE_BUDGET_FIELD, ARIADNE_GOAL_FIELD]);
 const VERSE_JUMP_ALLOWED_FIELDS = new Set([
 	"target",
 	"experience",
 	"beacon",
-	ARIADNE_THREAD_FIELD,
+	ARIADNE_BUDGET_FIELD,
 	ARIADNE_GOAL_FIELD,
 	"i",
 ]);
@@ -104,7 +104,7 @@ const SANDBOX_PARAMETERS = Object.freeze({
 			minimum: 0,
 			description: WORKERS_FIELD_DESCRIPTION,
 		},
-		[ARIADNE_THREAD_FIELD]: {
+		[ARIADNE_BUDGET_FIELD]: {
 			type: "integer",
 			minimum: 1,
 			description:
@@ -114,7 +114,7 @@ const SANDBOX_PARAMETERS = Object.freeze({
 			type: "string",
 			minLength: 1,
 			description:
-				"Ariadne's Goal — name the exact dragon you are slaying or proof you are hunting within this thread (required whenever ariadne_thread is set; becomes your north star if you later Verse-Jump back here).",
+				"Ariadne's Goal — name the exact dragon you are slaying or proof you are hunting within this thread (required whenever ariadne_budget is set; becomes your north star if you later Verse-Jump back here).",
 		},
 	},
 });
@@ -182,7 +182,7 @@ const VERSE_JUMP_PARAMETERS = Object.freeze({
 			description:
 				"Leave a luminous Beacon on the universe you are departing from: tell future alternate selves what specialty, partial state, or impasse makes THIS universe worth jumping back to (overwrites any previous beacon on the leaving universe; omit to keep its existing beacon).",
 		},
-		[ARIADNE_THREAD_FIELD]: {
+		[ARIADNE_BUDGET_FIELD]: {
 			type: "integer",
 			minimum: 1,
 			description: "Optional Ariadne's Thread turn budget to unspool upon arriving in the target universe.",
@@ -190,7 +190,7 @@ const VERSE_JUMP_PARAMETERS = Object.freeze({
 		[ARIADNE_GOAL_FIELD]: {
 			type: "string",
 			minLength: 1,
-			description: "Optional Ariadne's Goal for the target universe (required when ariadne_thread is set).",
+			description: "Optional Ariadne's Goal for the target universe (required when ariadne_budget is set).",
 		},
 	},
 });
@@ -234,6 +234,14 @@ function hostSessionKey(ctx, root) {
 		ctx?.id ??
 		`pid-${process.pid}`;
 	return `${identity}\u0000${root}`;
+}
+
+function recoverAriadneHistory(ariadne, sessionKey, ctx, currentCallId = null) {
+	const manager = ctx?.sessionManager;
+	if (!manager) return;
+	const all = typeof manager.getEntries === "function" ? manager.getEntries() : manager.getBranch?.();
+	const active = manager.getBranch?.() ?? all;
+	if (Array.isArray(all) && Array.isArray(active)) ariadne.recoverHistory(sessionKey, all, active, (id) => manager.getBranch(id), currentCallId);
 }
 
 function getPool(state, sessionKey) {
@@ -656,6 +664,7 @@ export function registerCljTools(pi, deps = {}) {
 					const pool = getPool(state, sessionKey);
 					if (ariadne) {
 						try {
+							recoverAriadneHistory(ariadne, sessionKey, ctx, callId);
 							ariadne.validateAndApplyFork(sessionKey, params, validated.programName, callId, toolName);
 						} catch (error) {
 							return toolFailure(error);
@@ -839,7 +848,8 @@ export function registerCljTools(pi, deps = {}) {
 						});
 
 					entry.donePromise = runPromise;
-					return withWorkerNudge(await Promise.race([runPromise, bgPromise]), validated.workers);
+					const result = await Promise.race([runPromise, bgPromise]);
+					return withWorkerNudge({ ...result, details: { ...result.details, programName: validated.programName } }, validated.workers);
 				},
 			});
 		} catch (error) {
@@ -1040,6 +1050,7 @@ export function registerCljTools(pi, deps = {}) {
 						typeof toolCallId === "string" && toolCallId.length > 0 ? toolCallId : `vj-${randomUUID().slice(0, 12)}`;
 					const leafId = ctx?.sessionManager?.getLeafId?.() ?? null;
 					const parkedNames = (pool.parkedList ?? []).map((item) => item.name);
+					recoverAriadneHistory(ariadne, sessionKey, ctx);
 					const res = ariadne.verseJump(sessionKey, params, { jumpCallId, leafId, parkedNames });
 					const text = `{:state :verse-jumped :kind ${JSON.stringify(res.kind)} :target ${JSON.stringify(res.target)} :remaining-turns ${res.remaining === null ? "nil" : res.remaining}}`;
 					return { content: [{ type: "text", text }], details: res };

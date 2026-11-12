@@ -41,7 +41,7 @@ describe("Everything Everywhere Verse-Jumping + Ariadne's Thread", () => {
 		rmSync(root, { recursive: true, force: true });
 	});
 
-	it("tracks only activated parallel verses hidden from current history, computes LCA distance, and shares ariadne_thread/ariadne_goal DRYly", () => {
+	it("tracks only activated parallel verses hidden from current history, computes LCA distance, and shares ariadne_budget/ariadne_goal DRYly", () => {
 		const store = createAriadneStore();
 		const sk = "s1";
 
@@ -49,26 +49,26 @@ describe("Everything Everywhere Verse-Jumping + Ariadne's Thread", () => {
 		store.validateAndApplyFork(sk, {}, "p0", "c0", "clj_plan");
 		store.settleTurn(sk);
 
-		store.validateAndApplyFork(sk, { ariadne_thread: 5, ariadne_goal: "goal-1" }, "p1", "c1", "clj_plan");
+		store.validateAndApplyFork(sk, { ariadne_budget: 5, ariadne_goal: "goal-1" }, "p1", "c1", "clj_plan");
 		store.settleTurn(sk);
 		store.markTurnActive(sk);
 		store.settleTurn(sk); // currentTurn = 2
 
 		store.validateAndApplyFork(sk, {}, "p2-ordinary", "c2", "clj_plan");
 		store.settleTurn(sk);
-		store.validateAndApplyFork(sk, { ariadne_thread: 2, ariadne_goal: "goal-3" }, "p3", "c3", "clj_plan");
+		store.validateAndApplyFork(sk, { ariadne_budget: 2, ariadne_goal: "goal-3" }, "p3", "c3", "clj_plan");
 		store.settleTurn(sk);
 
 		expect(store.status(sk).verseName).toBe(ALPHA_VERSE);
 		expect(store.status(sk).otherVerses).toEqual([]);
 
-		// Jump to p2-ordinary with a fresh ariadne_thread+ariadne_goal: alpha is frozen as activated; p0 is NOT surfaced!
+		// Jump to p2-ordinary with a fresh ariadne_budget+ariadne_goal: alpha is frozen as activated; p0 is NOT surfaced!
 		const j1 = store.verseJump(
 			sk,
 			{
 				target: "p2-ordinary",
 				experience: "try B with full subjective experience",
-				ariadne_thread: 4,
+				ariadne_budget: 4,
 				ariadne_goal: "approach-B",
 			},
 			{ jumpCallId: "vj-1", leafId: "leaf-alpha" },
@@ -90,6 +90,46 @@ describe("Everything Everywhere Verse-Jumping + Ariadne's Thread", () => {
 		expect(j2.otherVerses.map((v) => v.verseName)).toEqual(["p2-ordinary"]);
 	});
 
+	it("recovers historical names and prevents reuse after restart", () => {
+		const store = createAriadneStore();
+		const entries = [{ type: "message", message: { role: "assistant", content: [
+			{ type: "toolCall", id: "old-call", name: "clj_plan", arguments: { name: "old-anchor", code: "1" } },
+		] } }];
+		store.recoverHistory("session", entries, entries);
+		expect(() => store.validateAndApplyFork("session", {}, "old-anchor", "new-call", "clj_plan")).toThrow();
+		expect(store.verseJump("session", { target: "old-anchor", experience: "return" }, { jumpCallId: "jump" }).kind).toBe("fork-history");
+	});
+
+	it("finds an anchor on another persisted branch after restart", () => {
+		const store = createAriadneStore();
+		const entry = { id: "side-entry", type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "side-call", name: "clj_plan", arguments: { name: "side-anchor", code: "1" } }] } };
+		store.recoverHistory("s", [entry], [], () => [entry]);
+		const result = store.verseJump("s", { target: "side-anchor", experience: "return" }, { jumpCallId: "jump" });
+		expect(result.kind).toBe("resume-verse");
+		const jump = store.consumePendingJump("s");
+		expect(jump.targetLeafId).toBe("side-entry");
+		const manager = { branch() {}, buildSessionContext: () => ({ messages: [] }), getBranch: () => [entry] };
+		const applied = applyVerseJumpToMessages([], jump, manager);
+		expect(applied.messages).toHaveLength(1);
+		expect(applied.messages[0].content[0].text).toContain("return");
+	});
+
+	it("recovers generated names from persisted tool result details", () => {
+		const store = createAriadneStore();
+		const call = { id: "entry", message: { role: "assistant", content: [{ type: "toolCall", id: "auto-call", name: "clj_plan", arguments: { code: "1" } }] } };
+		const result = { id: "result", message: { role: "toolResult", toolCallId: "auto-call", details: { programName: "repl-generated" } } };
+		store.recoverHistory("s", [call, result], [call, result]);
+		expect(store.verseJump("s", { target: "repl-generated", experience: "return" }).kind).toBe("fork-history");
+	});
+
+	it("keeps later historical anchors reachable after forking earlier", () => {
+		const store = createAriadneStore();
+		store.validateAndApplyFork("s", {}, "early", "c1", "clj_plan");
+		store.validateAndApplyFork("s", {}, "later", "c2", "clj_plan");
+		store.verseJump("s", { target: "early", experience: "fork" }, { jumpCallId: "j1", leafId: "leaf" });
+		expect(store.verseJump("s", { target: "later", experience: "return" }, { jumpCallId: "j2" }).target).toBe("later");
+	});
+
 	it("acts as a soft gate at remaining <= 0 without blocking tools", async () => {
 		const { tools, hooks } = fakeHost();
 		const cljPlan = tools.get("clj_plan");
@@ -97,7 +137,7 @@ describe("Everything Everywhere Verse-Jumping + Ariadne's Thread", () => {
 
 		await cljPlan.execute(
 			"c1",
-			{ name: "start", code: "1", ariadne_thread: 1, ariadne_goal: "finish quickly" },
+			{ name: "start", code: "1", ariadne_budget: 1, ariadne_goal: "finish quickly" },
 			undefined,
 			undefined,
 			ctx,
@@ -196,7 +236,7 @@ describe("Everything Everywhere Verse-Jumping + Ariadne's Thread", () => {
 		const store = createAriadneStore();
 		const sk = "s-beacon";
 
-		store.validateAndApplyFork(sk, { ariadne_thread: 5, ariadne_goal: "alpha-goal" }, "p1", "c1", "clj_plan");
+		store.validateAndApplyFork(sk, { ariadne_budget: 5, ariadne_goal: "alpha-goal" }, "p1", "c1", "clj_plan");
 		store.settleTurn(sk);
 
 		// Leave alpha with a beacon
@@ -267,22 +307,22 @@ describe("Everything Everywhere Verse-Jumping + Ariadne's Thread", () => {
 		expect(res.messages.some((m) => m.content === "pre-compaction-giant-1")).toBe(false);
 	});
 
-	it("keeps aging older anchors even when newer clj_* calls set their own ariadne_thread", () => {
+	it("keeps aging older anchors even when newer clj_* calls set their own ariadne_budget", () => {
 		const store = createAriadneStore();
 		const sk = "s-age";
 
-		store.validateAndApplyFork(sk, { ariadne_thread: 3, ariadne_goal: "root-goal" }, "p1", "c1", "clj_plan");
+		store.validateAndApplyFork(sk, { ariadne_budget: 3, ariadne_goal: "root-goal" }, "p1", "c1", "clj_plan");
 		store.settleTurn(sk);
 		expect(store.status(sk).remaining).toBe(3);
 
-		// Subsequent turn ALSO sets ariadne_thread: 5 -> p1 must still age from 3 -> 2!
-		store.validateAndApplyFork(sk, { ariadne_thread: 5, ariadne_goal: "sub-goal" }, "p2", "c2", "clj_plan");
+		// Subsequent turn ALSO sets ariadne_budget: 5 -> p1 must still age from 3 -> 2!
+		store.validateAndApplyFork(sk, { ariadne_budget: 5, ariadne_goal: "sub-goal" }, "p2", "c2", "clj_plan");
 		store.settleTurn(sk);
 		expect(store.status(sk).remaining).toBe(2);
 		expect(store.status(sk).tightest.map((t) => t.programName)).toEqual(["p1"]);
 
-		// Another turn setting ariadne_thread: 5 -> p1 ages from 2 -> 1!
-		store.validateAndApplyFork(sk, { ariadne_thread: 5, ariadne_goal: "sub-goal-2" }, "p3", "c3", "clj_plan");
+		// Another turn setting ariadne_budget: 5 -> p1 ages from 2 -> 1!
+		store.validateAndApplyFork(sk, { ariadne_budget: 5, ariadne_goal: "sub-goal-2" }, "p3", "c3", "clj_plan");
 		store.settleTurn(sk);
 		expect(store.status(sk).remaining).toBe(1);
 	});
@@ -295,7 +335,7 @@ describe("Everything Everywhere Verse-Jumping + Ariadne's Thread", () => {
 		store.settleTurn(sk);
 		store.verseJump(sk, { target: "alpha-step", experience: "fork the side branch" }, { jumpCallId: "vj-side-1" });
 
-		store.validateAndApplyFork(sk, { ariadne_thread: 1, ariadne_goal: "side-only" }, "side-tight", "c2", "clj_plan");
+		store.validateAndApplyFork(sk, { ariadne_budget: 1, ariadne_goal: "side-only" }, "side-tight", "c2", "clj_plan");
 		store.settleTurn(sk);
 		expect(store.status(sk).remaining).toBe(1);
 

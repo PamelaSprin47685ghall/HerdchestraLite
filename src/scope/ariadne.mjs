@@ -18,7 +18,7 @@
 
 import { herdError } from "../util/errors.mjs";
 
-export const ARIADNE_THREAD_FIELD = "ariadne_thread";
+export const ARIADNE_BUDGET_FIELD = "ariadne_budget";
 export const ARIADNE_GOAL_FIELD = "ariadne_goal";
 export const ALPHA_VERSE = "alpha";
 
@@ -60,6 +60,10 @@ export function createAriadneStore() {
 			s = {
 				active: createEmptyVerse(ALPHA_VERSE),
 				activatedVerses: new Map(),
+				usedNames: new Map(),
+				historical: new Map(),
+				anchors: new Map(),
+				historyRecovered: false,
 				pendingJump: null,
 			};
 			sessions.set(sessionKey, s);
@@ -68,11 +72,11 @@ export function createAriadneStore() {
 	}
 
 	function pushStackFrame(v, params, programName, toolCallId, toolName, { isVerseJump = false } = {}) {
-		const hasThread = params[ARIADNE_THREAD_FIELD] !== undefined;
+		const hasThread = params[ARIADNE_BUDGET_FIELD] !== undefined;
 		const hasGoal = params[ARIADNE_GOAL_FIELD] !== undefined;
 
 		if (hasGoal && !hasThread) {
-			throw herdError("INVALID_ARGUMENT", `${ARIADNE_GOAL_FIELD} requires ${ARIADNE_THREAD_FIELD}`, {
+			throw herdError("INVALID_ARGUMENT", `${ARIADNE_GOAL_FIELD} requires ${ARIADNE_BUDGET_FIELD}`, {
 				field: ARIADNE_GOAL_FIELD,
 			});
 		}
@@ -80,10 +84,10 @@ export function createAriadneStore() {
 		const prev = topFrame(v);
 
 		if (hasThread) {
-			const turns = params[ARIADNE_THREAD_FIELD];
+			const turns = params[ARIADNE_BUDGET_FIELD];
 			if (!Number.isInteger(turns) || turns < 1) {
-				throw herdError("INVALID_ARGUMENT", `${ARIADNE_THREAD_FIELD} must be an integer >= 1`, {
-					field: ARIADNE_THREAD_FIELD,
+				throw herdError("INVALID_ARGUMENT", `${ARIADNE_BUDGET_FIELD} must be an integer >= 1`, {
+					field: ARIADNE_BUDGET_FIELD,
 					received: turns,
 				});
 			}
@@ -91,7 +95,7 @@ export function createAriadneStore() {
 			if (typeof rawGoal !== "string" || rawGoal.trim().length === 0) {
 				throw herdError(
 					"INVALID_ARGUMENT",
-					`${ARIADNE_GOAL_FIELD} must be a non-empty string when ${ARIADNE_THREAD_FIELD} is set`,
+					`${ARIADNE_GOAL_FIELD} must be a non-empty string when ${ARIADNE_BUDGET_FIELD} is set`,
 					{
 						field: ARIADNE_GOAL_FIELD,
 					},
@@ -150,7 +154,55 @@ export function createAriadneStore() {
 
 	function validateAndApplyFork(sessionKey, params, programName, toolCallId, toolName) {
 		const s = getSession(sessionKey);
-		return pushStackFrame(s.active, params, programName, toolCallId, toolName);
+		const old = s.usedNames.get(programName);
+		if (old && old !== toolCallId) throw herdError("NAME_TAKEN", `Program name already used: ${programName}`);
+		if (old) return {};
+		const prefix = cloneVerse(s.active, programName);
+		const result = pushStackFrame(s.active, params, programName, toolCallId, toolName);
+		s.anchors.set(programName, { verse: prefix, toolCallId, goal: params[ARIADNE_GOAL_FIELD] ?? null });
+		s.usedNames.set(programName, toolCallId);
+		return result;
+	}
+
+	function recoverHistory(sessionKey, entries, activeEntries = entries, getBranch = null, currentCallId = null) {
+		const s = getSession(sessionKey);
+		const resultNames = new Map();
+		for (const entry of entries ?? []) {
+			const m = entry?.message ?? entry;
+			if (m?.role !== "toolResult" || typeof m.toolCallId !== "string") continue;
+			const text = Array.isArray(m.content) ? m.content.map((block) => block?.text ?? "").join("\n") : "";
+			const match = /:(?:program-name|name)\s+("(?:[^"\\]|\\.)*")/.exec(text);
+			let name = m.details?.programName ?? m.details?.name;
+			if (name === undefined && match) {
+				try { name = JSON.parse(match[1]); } catch { /* Invalid receipt is not an anchor. */ }
+			}
+			if (typeof name === "string") resultNames.set(m.toolCallId, name);
+		}
+		const calls = (items) => (items ?? []).flatMap((entry) => {
+			const message = entry?.message ?? entry;
+			return message?.role === "assistant" && Array.isArray(message.content)
+				? message.content.filter((block) => block?.type === "toolCall" && /^clj_(plan|devops|review|worker)$/.test(block.name) && typeof block.id === "string" && (typeof block.arguments?.name === "string" || resultNames.has(block.id))).map((block) => ({ ...block, arguments: { ...block.arguments, name: block.arguments?.name ?? resultNames.get(block.id) } }))
+				: [];
+		});
+		for (const entry of entries ?? []) {
+			for (const call of calls([entry])) {
+				if (call.id === currentCallId) continue;
+				if (!s.usedNames.has(call.arguments.name)) s.usedNames.set(call.arguments.name, call.id);
+				if (!s.historical.has(call.arguments.name) && typeof getBranch === "function" && entry.id) {
+					const branch = getBranch(entry.id);
+					if (Array.isArray(branch)) s.historical.set(call.arguments.name, { call, branch, leafId: entry.id });
+				}
+			}
+		}
+		if (s.historyRecovered) return;
+		s.historyRecovered = true;
+		for (const call of calls(activeEntries)) {
+			if (call.id === currentCallId) continue;
+			if (s.active.indexByProgram.has(call.arguments.name)) continue;
+			pushStackFrame(s.active, call.arguments, call.arguments.name, call.id, call.name);
+			s.active.currentTurn += 1;
+			s.active.turnDirty = false;
+		}
 	}
 
 	function markTurnActive(sessionKey) {
@@ -196,9 +248,37 @@ export function createAriadneStore() {
 
 		const s = getSession(sessionKey);
 		const existingActivated = s.activatedVerses.get(targetProgram);
-		const stackIdx = s.active.indexByProgram.get(targetProgram);
+		let stackIdx = s.active.indexByProgram.get(targetProgram);
+		const historical = s.historical.get(targetProgram);
+		const savedAnchor = s.anchors.get(targetProgram);
+		if (!existingActivated && stackIdx === undefined && savedAnchor && !historical) {
+			const owner = [...s.activatedVerses.values()].find((v) => v.verse.indexByProgram.has(targetProgram));
+			if (owner) s.activatedVerses.set(targetProgram, { verseName: targetProgram, goal: savedAnchor.goal, beacon: null, cutCallId: savedAnchor.toolCallId, leafId: owner.leafId, messagesSnapshot: owner.messagesSnapshot, verse: cloneVerse(savedAnchor.verse, targetProgram) });
+		}
+		if (!existingActivated && !s.activatedVerses.has(targetProgram) && stackIdx === undefined && historical) {
+			const verse = createEmptyVerse(targetProgram);
+			for (const entry of historical.branch) {
+				const message = entry?.message;
+				if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+				for (const call of message.content) {
+					if (call?.type !== "toolCall" || !/^clj_(plan|devops|review|worker)$/.test(call.name)) continue;
+					const name = call.arguments?.name ?? (call.id === historical.call.id ? targetProgram : null);
+					if (name) pushStackFrame(verse, call.arguments ?? {}, name, call.id, call.name);
+				}
+				verse.currentTurn += 1;
+				verse.turnDirty = false;
+			}
+			const index = verse.indexByProgram.get(targetProgram);
+			if (index !== undefined) {
+				const frame = verse.stack[index];
+				const prefix = cloneVerse(verse, targetProgram, index);
+				prefix.currentTurn = frame.turnAtCall;
+				s.activatedVerses.set(targetProgram, { verseName: targetProgram, goal: frame.ownGoal, beacon: null, cutCallId: frame.toolCallId, leafId: historical.leafId, messagesSnapshot: null, verse: prefix });
+			}
+		}
+		const resolvedActivated = existingActivated ?? s.activatedVerses.get(targetProgram);
 
-		if (!existingActivated && stackIdx === undefined) {
+		if (!resolvedActivated && stackIdx === undefined) {
 			throw herdError("PROGRAM_UNKNOWN", `Unknown target for verse_jump: ${targetProgram}`, {
 				target: targetProgram,
 				activatedVerses: [...s.activatedVerses.keys()],
@@ -208,8 +288,8 @@ export function createAriadneStore() {
 
 		if (Array.isArray(parkedNames) && parkedNames.length > 0) {
 			const targetIndex =
-				existingActivated && stackIdx === undefined
-					? existingActivated.verse.indexByProgram
+				resolvedActivated && stackIdx === undefined
+					? resolvedActivated.verse.indexByProgram
 					: new Map(s.active.stack.slice(0, stackIdx).map((f, i) => [f.programName, i]));
 			const orphans = parkedNames.filter((name) => typeof name === "string" && !targetIndex.has(name));
 			if (orphans.length > 0) {
@@ -243,11 +323,11 @@ export function createAriadneStore() {
 		let targetGoal;
 		let kind;
 
-		if (existingActivated && stackIdx === undefined) {
+		if (resolvedActivated && stackIdx === undefined) {
 			kind = "resume-verse";
-			s.active = cloneVerse(existingActivated.verse, targetProgram);
-			cutCallId = existingActivated.cutCallId;
-			targetGoal = existingActivated.goal;
+			s.active = cloneVerse(resolvedActivated.verse, targetProgram);
+			cutCallId = resolvedActivated.cutCallId;
+			targetGoal = resolvedActivated.goal;
 		} else {
 			kind = "fork-history";
 			const targetFrame = leavingVerse.stack[stackIdx];
@@ -268,7 +348,7 @@ export function createAriadneStore() {
 		}
 
 		// DRY: if verse_jump carries `thread` + `goal`, apply it identically to `clj_*`!
-		if (params[ARIADNE_THREAD_FIELD] !== undefined || params[ARIADNE_GOAL_FIELD] !== undefined) {
+		if (params[ARIADNE_BUDGET_FIELD] !== undefined || params[ARIADNE_GOAL_FIELD] !== undefined) {
 			pushStackFrame(s.active, params, `${targetProgram}#jump`, jumpCallId, "verse_jump", { isVerseJump: true });
 			s.active.turnDirty = false;
 		}
@@ -282,8 +362,9 @@ export function createAriadneStore() {
 			leavingName,
 			targetProgram,
 			cutCallId,
-			targetLeafId: existingActivated?.leafId ?? null,
-			fallbackMessages: existingActivated?.messagesSnapshot ?? null,
+			targetLeafId: resolvedActivated?.leafId ?? null,
+			fallbackMessages: resolvedActivated?.messagesSnapshot ?? null,
+			historicalTarget: Boolean(stackIdx === undefined && !existingActivated && (historical || savedAnchor)),
 			targetGoal: params[ARIADNE_GOAL_FIELD]?.trim() || targetGoal,
 			experience: experience.trim(),
 			otherVerses,
@@ -352,7 +433,8 @@ export function createAriadneStore() {
 					"线团早已放尽，你还在迷宫深处独自打转——最危险的不是走错，而是忘了最初为什么要出发。",
 					"此刻在时间线上勒得最紧的祖先锚点：",
 					anchors,
-					"在当前时间线上设置新目标无法重置已绷断的线——**唯一的解法就是用 `verse_jump` 回到过去的分叉点或平行宇宙**，把你踩坑换来的**完整主观体验（已证实什么、已证伪什么、精确文件/符号、剩余计划）**写进 `experience` 带回去，在那里重新系上一根清晰的 `ariadne_thread` 与 `ariadne_goal`！",
+					"在当前时间线上设置新目标无法重置已绷断的线——**唯一的解法就是用 `verse_jump` 回到过去的分叉点或平行宇宙**，把你踩坑换来的**完整主观体验（已证实什么、已证伪什么、精确文件/符号、剩余计划）**写进 `experience` 带回去，在那里重新系上一根清晰的 `ariadne_budget` 与 `ariadne_goal`。",
+					"任何暂时没有关键路径工作的 idle 时刻（等待工具返回、等待用户确认、任务告一段落）都必须优先考虑立刻 `verse_jump`：超期线每多留一回合，上下文越长、跳转成本越高，等于持续烧钱。不要等到回合耗尽或被迫跳转才行动。",
 				);
 			} else {
 				lines.push(`【阿里阿德涅之线 · 距最紧锚点还剩 ${st.remaining} 回合】`, anchors);
@@ -376,6 +458,7 @@ export function createAriadneStore() {
 
 	return {
 		validateAndApplyFork,
+		recoverHistory,
 		markTurnActive,
 		settleTurn,
 		verseJump,
@@ -467,6 +550,10 @@ export function applyVerseJumpToMessages(messages, jump, sessionManager = null) 
 					base = entries.filter((e) => e && e.type === "message" && e.message).map((e) => e.message);
 				}
 			}
+		}
+		if (jump.historicalTarget && sessionManager && typeof sessionManager.getBranch === "function") {
+			const branch = sessionManager.getBranch();
+			if (Array.isArray(branch)) base = branch.filter((entry) => entry?.type === "message" && entry.message).map((entry) => entry.message);
 		}
 		const next = cutFromToolCall(base, jump.cutCallId, jump.targetProgram, userMessage);
 		return { messages: next, branchSwitched };
