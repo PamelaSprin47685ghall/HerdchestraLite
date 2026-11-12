@@ -1,110 +1,89 @@
 # Herdchestra Lite
 
-Herdchestra Lite 是面向 `omp` 终端宿主的轻量多智能体研发插件。它把一次使命组织为 S1 头脑风暴、S2 手工测试方法论、S3 开发指南、S4 协调手册与 S5 蜂群自治开发，并用文件门禁、看板、ClojureScript 沙箱、Scope 投影与并发手工审计约束过程。
+Herdchestra Lite 是面向 `omp` 终端宿主的轻量多智能体研发插件。完整规格（S1–S5、门禁、看板、worktree、K 路审计）在仓库根 `AGENTS.md` 中；当前安装面只启用 ClojureScript 沙箱执行器，先验证最小可 dogfood 核心，再按扩张顺序接回编排层。
 
-> **当前状态：clean-break 改造进行中，未完成实现验收。**
-> 本文件只描述当前工作区里可核对的结构与缺口，不声称功能已经交付，也不把任何测试结果当作验收证据。唯一规格是仓库根 `AGENTS.md`；宿主与依赖的实测事实在 `HACK.md`；未关闭的规格偏差在 `DEBT.md`；架构装配笔记在 `src/AGENTS.md`。
+> **当前状态：clj 执行器 dogfood。** 清单入口只有 `src/clj-main.mjs`，注册 `clj_plan`、`clj_devops`、`clj_review`、`clj_worker` 四个工具。`/herd`、五阶段门禁、Scope 工具门、看板、worktree、审计与 TUI 均未装配。它们是保留代码，不是当前可用功能。
 >
-> 核对时间：2026-11-11。并发 cutover 仍在进行，文件可能继续变化；以工作区当前内容和 `DEBT.md` 为准。
+> 唯一规格仍是根 `AGENTS.md`；未关闭缺口在 `DEBT.md`；宿主与依赖实测在 `HACK.md`；架构装配笔记在 `src/AGENTS.md`。本 README 只描述当前可核对的事实，不把测试或冒烟当成验收。
 
-## 当前可核对的事实
+## 当前启用面
 
-- `package.json` 的 `omp.extensions` 与 `pi.extensions` 都只声明两个入口：`./src/bootstrap-main.mjs` 与 `./src/tool-gate/index.mjs`。
-- 运行时依赖只声明 `cherry-cljs@0.6.38`；`engines.bun` 为 `>=1.4.4`。
-- `src/main.mjs` 当前装配新模块：`host/`、`util/`、`clj-sandbox/`、`tool-gate/`、`scope/`、`stages/`、`swarm/`、`prompts/`、`tui/`。它不导入旧的 `pi-goal`、`pi-context`、`editor-theme` 或 `manual-acceptance` 运行时；这不等于行为验收完成。
-- `tests/` 下有新模块的开发者测试；这些测试只保护内部不变量，不是手工验收证据。
-- 旧实现目录 `src/pi-goal/`、`src/pi-context/`、`src/editor-theme/`、`src/context/`、`src/manual-acceptance/`、旧提示词模块、`src/util/objects.mjs` 与旧 manual-acceptance 测试已从工作树删除；当前 `src/` 只保留新模块，且不再引用这些旧路径。
-- 真实宿主当前加载的插件路径、宿主版本三元组、`cherry-cljs` 实测与未验证项以 `HACK.md` 为准。`HACK.md` 记录到当前 `omp plugin list` 仍指向 `/home/kunweiz/public/HerdchestraLite`，不是本工作区；因此“本工作区被真实宿主加载”尚未证明。
-- `docs/manual-acceptance/clean-break/` 是开发本产品的验收文档；它没有 `report.md`，没有完成手工验收。产品运行时自己的交付路径是 `plans/<slug>/`，当前也没有端到端使命产物。
+- 清单入口：`package.json` 的 `omp.extensions` / `pi.extensions` 都只声明 `./src/clj-main.mjs`。
+- 运行时依赖：`cherry-cljs@0.6.38`。
+- 工具：`clj_plan`（只读）、`clj_devops`（只读 + `call`）、`clj_review`（只读）、`clj_worker`（读写）。
+- 宿主工具黑名单：`read`、`write`、`edit`、`apply_patch`、`ast_edit`、`ast_grep`、`bash`、`exec`、`eval`、`glob`、`grep`、`find`。这些工具在 `session_start` 与 `before_agent_start` 时从当前 active 集合中移除；其他工具（`task`、`todo`、`web_search`、`lsp`、`debug` 等）保持原有激活状态。
+- 命令：`/clj-status`（显示 Cherry 加载状态、黑名单与工具列表）。
+- 未装配：`/herd*` 命令、`advance_s1..s4`、`ask_user`、`devops` 子代理、`realign_frozen`、`board_*`、`fork_slices`/`join_slice`、`submit_case_audit`、TUI 看板、Scope 注入/裁剪、tool-gate 入口。
+- 同一会话内，程序续体（`park`/`unpark`）与 VFS 按工具角色缓存；不同角色不共享续体。
+- 黑名单是减法的，不是白名单：实现只从 `getActiveTools()` 过滤，不重建一个“只允许这些工具”的列表；四个 `clj_*` 工具由注册方显式激活。
+- `call` 子进程使用清洗后的环境：移除 `BUN_OPTIONS`、`NODE_OPTIONS`、`BASH_ENV`、`ENV`、`PROMPT_COMMAND`，避免宿主预加载钩子改变普通命令。每次调用的期限是 `1000ms + intent UTF-8 字节数 × 50ms`，固定白送 1 秒，不按角色加码。
+- 普通 VFS 不再限制路径：`..`、绝对路径、越界符号链接、盲写与覆盖 `AGENTS.md` 都允许；写锁 `$W$`、批内 VFS 与已读文件的 `stamp` 冲突检查保留。
 
-## 模块与装配
+## 启用
 
-新模块按单向依赖组织，入口只装配。实际导入关系见 `src/AGENTS.md`；当前主干如下：
-
-```text
-src/
-├── bootstrap-main.mjs              # 入口 1：惰性加载 main.mjs，记录 health
-├── main.mjs                        # 主装配：命令、工具、hook、TUI、runner 端口
-├── tool-gate/
-│   ├── index.mjs                   # 入口 2：注入/准入/剥离 gate 字段
-│   └── schema.mjs                  # 多传输 schema 注入与 strip
-├── host/
-│   ├── imports.mjs                 # 宿主与 cherry-cljs 的唯一导入集中处
-│   ├── subprocess.mjs              # AgentDefinition、runSubprocess、取消树
-│   └── health.mjs                  # 跨入口 health 注册表
-├── util/
-│   ├── atomic-write.mjs            # 同目录 .tmp + fsync + rename
-│   ├── file-lock.mjs               # wx 锁、判活、陈旧锁
-│   └── errors.mjs                  # 错误码与 EDN 诊断
-├── clj-sandbox/
-│   ├── ufss.mjs                    # EDN + UFSS 读取/打印
-│   ├── where.mjs                   # UTF-16 精确匹配与最近行诊断
-│   ├── evaluator.mjs               # Promise-CPS 解释器与续体
-│   ├── vfs.mjs                     # 批内 VFS、stamp、W 提交
-│   └── tools.mjs                   # clj_plan/devops/review/worker/auditor
-├── scope/
-│   ├── ledger.mjs                  # Scope 四型、预算、assume
-│   └── projection.mjs              # 出站裁剪、简报钉住、缓存断点
-├── stages/
-│   ├── disclosures.mjs             # S1–S5 简报
-│   ├── parsers.mjs                 # S1–S4 结构校验
-│   ├── contract.mjs                # mission.edn、冻结、重对齐、批准
-│   ├── gate-tools.mjs              # advance_s1..s4、ask_user、devops、submit_review
-│   └── scores.mjs                  # K 路审计汇总与 s5-report
-├── swarm/
-│   ├── board.mjs                   # 看板短事务与 board_* 内核
-│   ├── worktree.mjs                # fork/join/abandon/GC
-│   ├── runner.mjs                  # Reviewer ⇄ Swarm、槽位、Nudge、Oracle
-│   └── auditors.mjs                # K 路 Manual Auditor 批次
-├── prompts/
-│   ├── common.mjs                  # COMMON（无 S2–S5 剧透）
-│   ├── roles.mjs                   # 固定角色提示词与审计员模板
-│   └── runtime-wires.mjs           # 语言后缀、gate 字段、Nudge
-└── tui/
-    ├── dashboard-model.mjs         # 纯数据双态/审计矩阵
-    └── dashboard-widget.mjs        # aboveEditor 组件与文本降级
+```bash
+omp plugin link /absolute/path/to/HerdchestraLite
+omp plugin list --json
 ```
 
-`tools/dev-acceptance/` 是独立的开发验收提交包，只服务 `docs/manual-acceptance/**`；它不是产品运行时入口，也不是 K 路审计执行器。
+之后启动 `omp`，四个 `clj_*` 工具即出现在工具列表中。`/clj-status` 可在交互会话中查看 Cherry 是否加载。
 
-旧模块已删除，不要恢复或重新 import。`src/` 当前只保留新模块；独立开发验收包仍只位于 `tools/dev-acceptance/`。
+直接提交 REPL 输入：任意数量的顶层表达式，最后一个值作为回执返回；不需要 `(defprogram ...)` 壳。`program_name` 可选，省略时自动生成。例：
 
-角色收窄由宿主报告的子会话身份（`ctx.agent`）与 M0 发布的 role surfaces 决定；`tool-gate/schema.mjs` 不再注册 `role-auth`/nonce 凭据，也没有独立的 `tool-gate/role-auth.mjs`。首行 `[HERD_ROLE: ...]` token 仍作为父进程写入的角色声明被解析和核对。
+```clojure
+(let [src (cat {:path "src/config.mjs"})
+      [b e] (where {:content src
+                    :needle #"(def timeout-ms 30000)"#})]
+  (write {:path "src/config.mjs"
+          :content (str (subs src 0 b)
+                        "(def timeout-ms 60000)"
+                        (subs src e))))
+```
 
-## 命令与工具
+`where` 零匹配或多匹配会挂起程序；用 `(unpark {:name "fix-timeout" :value [b e]})` 恢复。程序正常返回时，批内 VFS 在写锁内复核 `stamp` 后原子落盘；冲突返回 `:FILE_CONFLICT`，磁盘保持外部修改。
 
-以下名称来自当前源码注册表，尚未在真实宿主上完成用户可见验收：
+## 已做的真实冒烟（2026-11-12，不是验收）
 
-- 命令：`/herd`、`/herd-status`、`/herd-list`、`/herd-focus`、`/herd-unfocus`、`/herd-cancel`、`/herd-recovery`、`/herd-settings`。
-- 阶段门禁：`advance_s1`、`advance_s2`、`advance_s3`、`advance_s4`、`ask_user`、`devops`、`submit_devops_report`、`submit_review`。
-- 看板与令牌：`board_split`、`board_claim`、`board_finish`、`board_cancel`、`board_replace`、`board_release`、`board_reopen`、`board_comment`、`board_update`、`board_park_slot`、`board_take_or_die` 等。
-- Worktree：`fork_slices`、`join_slice`、`abandon_slice`、`gc_worktrees`。
-- 沙箱：`clj_plan`、`clj_devops`、`clj_review`、`clj_worker`、`clj_auditor`。
-- 审计与会诊：`submit_case_audit`、`submit_oracle_advice`。
-- Scope：`ask_previous_scope`、`assume`。
+- 宿主：`omp 18.19.0`；模型：`ctyun/deepseek-v4.1-flash`。
+- `omp plugin link` 后，自动发现的插件入口成功注册四个工具。
+- 真实模型调用 `clj_worker` 写入 `LINKED_PROBE.txt`；调用 `clj_plan` 写文件被 `:CAPABILITY_DENIED` 拒绝且未创建文件；调用 `clj_devops` 的 `(call {:command "printf devops-ok"})` 返回 `:completed` 与日志路径。
+- 真实模型在同一会话中先让 `where` 多匹配挂起，再 `unpark` 恢复并成功落盘。
+- 最终源码在独立 `/tmp` 工作区嵌套 omp 中执行裸 REPL：无 `program_name`、写 `/tmp` 根外文件、覆盖 `AGENTS.md`，返回 `:state :completed` 与两个文件内容。
+- 真实宿主 `getActiveTools()` 捕获结果：`task`、`wait`、`todo`、`web_search`、`debug` 与四个 `clj_*`；黑名单中的 `read`/`write`/`edit`/`bash`/`grep`/`glob`/`find`/`eval` 均不在集合中。
+- 本地直接测试覆盖 `cat`/`write` 的受保护提交、`where` 挂起/恢复、只读拒绝、`stamp` 冲突、黑名单过滤、环境清洗、期限下限与 `stat` 类型：`tests/clj-core.test.mjs` 15 pass / 0 fail。
 
-工具参数与回执的规范形状以根 `AGENTS.md` §4、§5、§8 为准。`fork_slices` 会创建 worktree 并启动 Slice runner；`join_slice` 在 FIFO 队列耗尽时调用 `runMissionAudit`，源码路径已连接 `startAuditBatch`、`aggregate`、`writeS5Report` 与修复切片，但真实宿主、重启和全 Slice 场景尚未验收，见 `DEBT.md`。
+这些只证明最小执行器在真实宿主可调用，不构成根规格的 CASE 验收，也不证明 `/herd` 可用。
 
 ## 本地开发检查（不是验收）
 
 ```bash
-bun install
-bun test
+bun test tests/clj-core.test.mjs
 bun run check
 ```
 
-这些命令只用于开发者自查，不构成手册验收证据，也不提高任何 CASE 的分数。真实宿主挂载尚未证明；在 `DEBT.md` 的“真实宿主加载与端到端使命”关闭前，不要把本仓库当作可发布安装包，也不要照旧版 README 的三入口/18.18.6/`pi-context`/`pi-goal-x` 说明操作。
+`tests/clj-core.test.mjs` 只依赖 `cherry-cljs`，不需要宿主包或模型。全量 `bun test` 仍需要宿主包链接；在 `DEBT.md` 的真实宿主与全量矩阵条目关闭前，不要把全量测试结果当成验收。
+
+## 为什么先做这一层
+
+Gall's Law 要求先让一个简单系统真正工作。当前最小闭环是：宿主能加载插件 → 模型能发现 `clj_*` → 解释器能执行 REPL 输入 → VFS 能在写锁与 `stamp` 下安全落盘 → 冲突与挂起可观察。只有这些真实成立后，接回阶段门禁和蜂群才有可靠地基。
+
+扩张顺序（每步都必须先真实 dogfood 通过，再进入下一步）：
+
+1. 恢复 tool-gate 的 Scope/intent 注入与剥离，验证真实出站 schema 与工具执行参数。
+2. 接回 `advance_s1..s4`、`ask_user`、`devops` 与 S1 手工批准，先跑 S1–S4 规划闭环。
+3. 接回看板、单 Slice Reviewer/Worker 与 `clj_review`/`clj_worker` 角色面。
+4. 接回多 worktree、K 路审计与结案批准。
 
 ## 仍未完成/未验证的主要缺口
 
-完整队列见 `DEBT.md`；这里只列影响判断的前几项：
+完整队列见 `DEBT.md`；当前最关键的是：
 
-1. S5 审计源码已接入 `main.mjs`，但触发只依赖 `join_slice` 队列耗尽；真实宿主中的全 Slice、重启恢复、批准与报告尚未验收。
-2. 角色收窄依赖宿主 `ctx.agent` 的子会话身份；`HACK.md` 记录的实际宿主/类型包版本不一致，真实 17.x/16.x 形状未验证。首行 role token 仍存在，但没有独立 role-auth 注册表可作为回退。
-3. 真实宿主加载、真实 `tmux`/TUI 交互、完整 S1→S5 使命与手工验收报告均未完成。
-4. 全量 `bun test` 与根规格 V01–V08/T01–T13/F01–F15 交错矩阵尚未逐项核对；测试不是验收证据。
-5. `sessionFile` 父链在宿主 `artifactsDir` 下不可兑现；不要向用户宣称 `history://` 可重放父链，详见 `DEBT.md` 与 `HACK.md`。
-6. 真实出站零剧透与提示词工具名一致性测试仍缺席；静态提示词拷贝测试不会替代它。
+1. `/herd` 与五阶段门禁未装配；根规格的完整流程尚不可用。
+2. tool-gate、Scope、角色收窄、`devops` 子代理未装配；当前四个工具是主会话可直接调用的 dogfood 面。
+3. `clj-main` 没有角色 admission；任何会话都能选择任一 `clj_*` 工具。角色边界要随使命层回来。
+4. 全量宿主测试矩阵、真实 TUI、worktree join、K 路审计与批准均未验收。
+5. 当前真实冒烟只覆盖 18.19.0 主会话的四个工具，不覆盖 16.x/17.x、子代理、取消树与重启恢复。
+6. 禁用 `read`/`write` 同时切断了宿主的 `xd://` 传输设备；当前 clj-only 有意接受这一代价。`eval` 被禁用后，宿主的 JS 求值面也不可用。
 
 ## 文档边界
 
@@ -118,4 +97,4 @@ bun run check
 | `docs/manual-acceptance/clean-break/` | 开发本产品的 MANUAL ACCEPTANCE 文档；不是产品运行时 `plans/<slug>/` |
 | `docs/旧的方法论.md`、`docs/旧的架构.md`、`docs/旧的设计.html`、`docs/讨论纪要.md`、`docs/兄弟项目参考.md` | 用户既有历史资料，保留只读，不因 clean-break 删除或改写 |
 
-本 README 与 `CHANGELOG.md` 只描述当前工作区，不替代根规格，也不声称验收完成。
+旧模块 `src/pi-goal/`、`src/pi-context/`、`src/editor-theme/`、`src/context/`、`src/manual-acceptance/` 已从工作树删除；不要恢复或重新 import。`src/main.mjs`、`src/bootstrap-main.mjs` 与 `src/tool-gate/index.mjs` 是完整装配的保留代码，当前清单不加载它们。

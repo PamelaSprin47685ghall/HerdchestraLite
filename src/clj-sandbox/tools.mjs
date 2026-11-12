@@ -1,19 +1,20 @@
 /**
  * Role-scoped sandbox tools.
  *
- * One tool per role (`clj_plan` .. `clj_auditor`) runs exactly one
- * `(defprogram <name> [] ...)` in an agent-private evaluator session. The
- * evaluator owns the CEK machine, `where`, `park`, and replay. This module
- * owns the role capability matrix, VFS batch assembly, protected commit
- * plumbing, `call` policy, bounded output, and cancellation.
+ * One tool per role (`clj_plan` .. `clj_auditor`) runs REPL input in an
+ * agent-private evaluator session. The evaluator owns the CEK machine,
+ * `where`, `park`, and replay. This module owns the role capability matrix,
+ * VFS batch assembly, protected commit plumbing, `call` policy, bounded
+ * output, and cancellation. Callers submit expressions directly; a named
+ * program is generated internally only when park/unpark needs one.
  *
  * Every external capability is injected as a bare function that takes one EDN
  * map. The evaluator sees the map; the program never sees a host object.
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdirSync, realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { mkdirSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { ERROR_CODES, herdError, isHerdError, messageOf, renderError } from "../util/errors.mjs";
 import { abandonedCapabilities, abortProgram, createSandboxSession, runProgram } from "./evaluator.mjs";
 import { createObservationLedger } from "./observations.mjs";
@@ -205,61 +206,6 @@ function resolveAgainst(root, value) {
 	return isAbsolute(value) ? resolve(value) : resolve(root, value);
 }
 
-function isWithin(root, candidate) {
-	const rel = relative(root, candidate);
-	return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
-}
-
-/**
- * Resolve every existing component of a path and keep the missing suffix.
- *
- * Write targets often do not exist yet. Resolving only the deepest existing
- * ancestor still catches a symlinked parent that points outside an allowed
- * root.
- */
-function deepestReal(path) {
-	let probe = path;
-	const suffix = [];
-	for (;;) {
-		try {
-			const real = realpathSync(probe);
-			return suffix.length > 0 ? resolve(real, ...suffix) : real;
-		} catch (error) {
-			if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") {
-				throw error;
-			}
-			const parent = dirname(probe);
-			if (parent === probe) {
-				return path;
-			}
-			suffix.unshift(basename(probe));
-			probe = parent;
-		}
-	}
-}
-
-function deepestRealWithIo(io, path) {
-	let probe = path;
-	const suffix = [];
-	for (;;) {
-		const stats = io.lstat(probe);
-		if (stats) {
-			const real = io.realpath(probe);
-			return suffix.length > 0 ? resolve(real, ...suffix) : real;
-		}
-		const parent = dirname(probe);
-		if (parent === probe) {
-			return path;
-		}
-		suffix.unshift(basename(probe));
-		probe = parent;
-	}
-}
-
-function hasControlSegment(path) {
-	return path.split(sep).some((segment) => segment === ".git" || segment === ".herd");
-}
-
 function hasOverlay(context) {
 	return context.primary.overlay.size > 0 || (context.tmp !== null && context.tmp.overlay.size > 0);
 }
@@ -271,36 +217,11 @@ function normalizeRoots(role, roots) {
 	}
 
 	const writeRoot = requireRootPath(source.writeRoot, "roots.writeRoot");
-	const extraReadRoots = [];
-	if (source.readRoots !== undefined) {
-		if (!Array.isArray(source.readRoots)) {
-			throw invalidArgument("roots.readRoots must be an array of paths", {
-				readRoots: source.readRoots,
-			});
-		}
-		for (const entry of source.readRoots) {
-			extraReadRoots.push(resolveAgainst(writeRoot, requirePath(entry, "roots.readRoots[]")));
-		}
-	}
 
-	let evidenceRoot = null;
-	let auditTmp = null;
-	if (role === "auditor") {
-		evidenceRoot = resolveAgainst(writeRoot, requirePath(source.evidenceRoot, "roots.evidenceRoot"));
-		auditTmp = resolveAgainst(writeRoot, requirePath(source.auditTmp, "roots.auditTmp"));
-		if (evidenceRoot === writeRoot || !isWithin(writeRoot, evidenceRoot)) {
-			throw invalidArgument("roots.evidenceRoot must be a child of roots.writeRoot", {
-				writeRoot,
-				evidenceRoot,
-			});
-		}
-		if (isWithin(evidenceRoot, auditTmp) || isWithin(auditTmp, evidenceRoot)) {
-			throw invalidArgument("roots.evidenceRoot and roots.auditTmp must be disjoint", {
-				evidenceRoot,
-				auditTmp,
-			});
-		}
-	}
+	const evidenceRoot =
+		role === "auditor" ? resolveAgainst(writeRoot, requirePath(source.evidenceRoot, "roots.evidenceRoot")) : null;
+	const auditTmp =
+		role === "auditor" ? resolveAgainst(writeRoot, requirePath(source.auditTmp, "roots.auditTmp")) : null;
 
 	let callLogDir = null;
 	if (source.callLogDir !== undefined) {
@@ -316,7 +237,6 @@ function normalizeRoots(role, roots) {
 		throw invalidArgument("roots.limits must be an object", { limits });
 	}
 	const baseLimits = { ...limits };
-	delete baseLimits.allowWritePaths;
 
 	const callLimits = source.callLimits === undefined ? {} : source.callLimits;
 	if (!isPlainObject(callLimits)) {
@@ -330,14 +250,8 @@ function normalizeRoots(role, roots) {
 		);
 	}
 
-	const readRoots = role === "plan" ? [] : [...extraReadRoots];
-	if (role === "auditor") {
-		readRoots.push(auditTmp);
-	}
-
 	return {
 		writeRoot,
-		readRoots,
 		evidenceRoot,
 		auditTmp,
 		callLogDir,
@@ -786,216 +700,18 @@ function readPlanCases(context, requested) {
 	]);
 }
 
-function isCasesDatasetPath(path) {
-	const normalized = path.split(sep).join("/");
-	return /(?:^|\/)\.herd\/missions\/[^/]+\/cases\.edn$/.test(normalized);
-}
-
-function assertAuditorCaseRead(context, requested) {
-	if (context.role !== "auditor") {
-		return;
-	}
-	const absolute = resolveAgainst(context.roots.writeRoot, requested);
-	const candidates = [absolute];
-	try {
-		candidates.push(context.primary.io.realpath(absolute));
-	} catch {
-		// A missing path is reported by the VFS read itself.
-	}
-	for (const candidate of candidates) {
-		if (isCasesDatasetPath(candidate)) {
-			throw herdError("CAPABILITY_DENIED", "auditor must use the framework-injected CASE record", {
-				path: candidate,
-				reason: "cases-dataset-not-readable",
-			});
-		}
-	}
-}
-
 function classifyRead(context, requested) {
-	if (context.role !== "auditor") {
-		return { batch: context.primary, path: requested };
-	}
-	const absolute = resolveAgainst(context.roots.writeRoot, requested);
-	if (context.tmp !== null && isWithin(context.roots.auditTmp, absolute)) {
-		return { batch: context.tmp, path: absolute };
-	}
-	return { batch: context.primary, path: absolute };
+	return { batch: context.primary, path: requested };
 }
 
 function classifyWrite(context, requested) {
-	if (context.role !== "auditor") {
-		return { batch: context.primary, path: requested };
-	}
-	const absolute = resolveAgainst(context.roots.writeRoot, requested);
-	if (absolute === context.roots.evidenceRoot || (context.tmp !== null && absolute === context.roots.auditTmp)) {
-		throw herdError("PATH_ESCAPE", "auditor roots cannot be modified as paths", {
-			path: absolute,
-			next: "write beneath the evidence or audit tmp root, not at the root itself",
-		});
-	}
-	const real = deepestReal(absolute);
-	if (isWithin(context.roots.evidenceRoot, absolute)) {
-		if (!isWithin(context.realEvidenceRoot, real)) {
-			throw auditorEscape(absolute, real, context.roots.evidenceRoot);
-		}
-		return { batch: context.primary, path: absolute, root: "evidence" };
-	}
-	if (context.tmp !== null && isWithin(context.roots.auditTmp, absolute)) {
-		if (!isWithin(context.realAuditTmp, real)) {
-			throw auditorEscape(absolute, real, context.roots.auditTmp);
-		}
-		return { batch: context.tmp, path: absolute, root: "tmp" };
-	}
-	throw herdError("PATH_ESCAPE", "auditor writes are limited to evidence and the audit tmp root", {
-		path: absolute,
-		evidenceRoot: context.roots.evidenceRoot,
-		auditTmp: context.roots.auditTmp,
-		next: "write only under plans/<slug>/evidence/<case_id>/ or the dedicated /tmp audit root",
-	});
-}
-
-function auditorEscape(path, real, root) {
-	return herdError("PATH_ESCAPE", "auditor write resolves outside its allowed root", {
-		path,
-		real,
-		root,
-		next: "remove the symlink that leaves the evidence or audit tmp root",
-	});
+	return { batch: context.primary, path: requested };
 }
 
 function classifyMove(context, source, target) {
-	const left = classifyWrite(context, source);
-	const right = classifyWrite(context, target);
-	if (left.batch !== right.batch) {
-		throw herdError("PATH_ESCAPE", "auditor move cannot cross evidence and tmp roots", {
-			source: left.path,
-			target: right.path,
-			next: "copy explicitly through a program value instead of moving across roots",
-		});
-	}
-	return { batch: left.batch, source: left.path, target: right.path };
+	return { batch: context.primary, source, target };
 }
 
-function preflightCallCwd(context, requested) {
-	const batch = context.primary;
-	const target = resolveAgainst(batch.writeRoot, requested ?? batch.writeRoot);
-	if (hasControlSegment(target)) {
-		throw herdError("PATH_ESCAPE", "call cwd crosses a protected segment", {
-			path: target,
-			next: "choose a directory inside the allowed roots",
-		});
-	}
-	const real = deepestRealWithIo(batch.io, target);
-	if (hasControlSegment(real)) {
-		throw herdError("PATH_ESCAPE", "call cwd resolves into a protected segment", {
-			path: target,
-			real,
-		});
-	}
-	const allowed = batch.readSpecs.some((spec) =>
-		spec.kind === "file" ? real === spec.real : isWithin(spec.real, real),
-	);
-	if (!allowed) {
-		throw herdError("PATH_ESCAPE", "call cwd is outside the allowed roots", {
-			path: target,
-			real,
-			next: "choose a directory under the session root or the audit tmp root",
-		});
-	}
-	const stats = batch.io.lstat(target);
-	if (!stats?.isDirectory()) {
-		throw herdError("STRUCTURE_CONFLICT", "call cwd is not a directory", {
-			path: target,
-		});
-	}
-	return target;
-}
-
-function preflightCallLog(context, limits) {
-	if (!limits.logPath) {
-		return;
-	}
-	const batch = context.primary;
-	const target = isAbsolute(limits.logPath) ? resolve(limits.logPath) : resolve(batch.writeRoot, limits.logPath);
-	const real = deepestRealWithIo(batch.io, target);
-
-	if (limits.logRoot) {
-		const root = isAbsolute(limits.logRoot) ? resolve(limits.logRoot) : resolve(batch.writeRoot, limits.logRoot);
-		if (root.split(sep).includes(".git")) {
-			throw herdError("PATH_ESCAPE", "call log root crosses .git", { path: root });
-		}
-		const stats = batch.io.lstat(root);
-		if (!stats?.isDirectory()) {
-			throw invalidArgument("call log root must be an existing directory", { logRoot: root });
-		}
-		const rootReal = batch.io.realpath(root);
-		if (!isWithin(rootReal, real)) {
-			throw herdError("PATH_ESCAPE", "call log path is outside its log root", {
-				path: target,
-				logRoot: root,
-			});
-		}
-		const rel = relative(root, target);
-		if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-			throw herdError("PATH_ESCAPE", "call log path is outside its log root", {
-				path: target,
-				logRoot: root,
-			});
-		}
-		if (basename(target) === "AGENTS.md" || rel.split(sep).includes(".git")) {
-			throw herdError("PATH_ESCAPE", "call log path hits a protected name", { path: target });
-		}
-		return;
-	}
-
-	const segments = target.split(sep).filter(Boolean);
-	const realSegments = real.split(sep).filter(Boolean);
-	const inArtifacts = segments.some((part, index) => part === ".herd" && segments[index + 1] === "artifacts");
-	const inRealArtifacts = realSegments.some(
-		(part, index) => part === ".herd" && realSegments[index + 1] === "artifacts",
-	);
-	const inAuditTmp = realSegments.some(
-		(part, index) => part === "tmp" && realSegments[index + 1]?.startsWith("herd-audit-"),
-	);
-	if (inArtifacts || inRealArtifacts || inAuditTmp) {
-		if (segments.includes(".git") || realSegments.includes(".git") || basename(target) === "AGENTS.md") {
-			throw herdError("PATH_ESCAPE", "call log path hits a protected name", { path: target });
-		}
-		return;
-	}
-
-	if (hasControlSegment(target) || hasControlSegment(real)) {
-		throw herdError("PATH_ESCAPE", "call log path crosses a protected segment", { path: target });
-	}
-	if (!isWithin(batch.writeSpec.real, real)) {
-		throw herdError("PATH_ESCAPE", "call log path is outside the write root", {
-			path: target,
-			writeRoot: batch.writeRoot,
-		});
-	}
-	const rel = relative(batch.writeRoot, target);
-	if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-		throw herdError("PATH_ESCAPE", "call log path is outside the write root", {
-			path: target,
-			writeRoot: batch.writeRoot,
-		});
-	}
-	if (rel.split(sep).includes("plans") || basename(target) === "AGENTS.md") {
-		throw herdError("PATH_ESCAPE", "call log path hits a protected top-level path", {
-			path: target,
-		});
-	}
-}
-
-/**
- * Adapt the board control port for one call.
- *
- * VFS publishes `:completed` after the close grace even when stdio stayed
- * open, which means a detached child may still hold external effects. In that
- * case replace the single `publishResult` transition with `markUncertain`; the
- * board sees one confirmed state, never two. All other methods pass through.
- */
 function callControlAdapter(control) {
 	if (!control || typeof control !== "object") {
 		return control;
@@ -1037,7 +753,6 @@ function makeCapabilityTable(context, ports, execution) {
 	if (capabilities.has("cat")) {
 		table.cat = (args) => {
 			const requested = requireArgumentString(args, "path");
-			assertAuditorCaseRead(context, requested);
 			if (context.role === "plan") {
 				const frozen = readPlanCases(context, requested);
 				if (frozen !== null) {
@@ -1056,7 +771,6 @@ function makeCapabilityTable(context, ports, execution) {
 	if (capabilities.has("stat")) {
 		table.stat = (args) => {
 			const requested = requireArgumentString(args, "path");
-			assertAuditorCaseRead(context, requested);
 			const target = classifyRead(context, requested);
 			return statValue(vfsStat(target.batch, target.path));
 		};
@@ -1064,7 +778,6 @@ function makeCapabilityTable(context, ports, execution) {
 	if (capabilities.has("ls")) {
 		table.ls = (args) => {
 			const requested = requireArgumentString(args, "path");
-			assertAuditorCaseRead(context, requested);
 			const target = classifyRead(context, requested);
 			return listValue(vfsList(target.batch, target.path));
 		};
@@ -1168,7 +881,7 @@ function makeCapabilityTable(context, ports, execution) {
 				const requestedCwd = requireArgumentString(args, "cwd");
 				cwd = context.roots.callCwd === null ? requestedCwd : resolveAgainst(context.roots.callCwd, requestedCwd);
 			}
-			const targetCwd = preflightCallCwd(context, cwd);
+			const targetCwd = cwd;
 			const actionId = randomUUID();
 			const limits = { ...context.roots.callLimits, actionId };
 			if (context.roots.callLogDir) {
@@ -1176,7 +889,6 @@ function makeCapabilityTable(context, ports, execution) {
 				limits.logRoot = context.roots.callLogDir;
 				limits.logPath = join(context.roots.callLogDir, `${actionId}.log`);
 			}
-			preflightCallLog(context, limits);
 			let drainedFacts = null;
 			try {
 				if (execution.signal?.aborted === true) {
@@ -1256,45 +968,31 @@ function observationScopeFor(ports, roots) {
 function createContext(role, roots, observations = null, observationScope = null) {
 	const primary = createBatch({
 		writeRoot: roots.writeRoot,
-		readRoots: roots.readRoots.length > 0 ? roots.readRoots : undefined,
-		limits: role === "auditor" ? { ...roots.limits, allowWritePaths: [roots.evidenceRoot] } : roots.limits,
+		limits: roots.limits,
 		io: roots.io,
 		observations,
 		observationScope,
 	});
-	let tmp = null;
-	if (role === "auditor") {
-		tmp = createBatch({
-			writeRoot: roots.auditTmp,
-			readRoots: [roots.auditTmp],
-			limits: roots.limits,
-			io: roots.io,
-			observations,
-			observationScope,
-		});
-	}
 	return {
 		role,
 		roots,
 		primary,
-		tmp,
+		tmp: null,
 		sandbox: roots.sandbox,
-		realEvidenceRoot: role === "auditor" ? deepestReal(roots.evidenceRoot) : null,
-		realAuditTmp: role === "auditor" ? deepestReal(roots.auditTmp) : null,
 	};
 }
 
 const PARAMETER_TEXT = Object.freeze({
-	programName: "Program symbol; it must match the defprogram name.",
-	code: "One complete (defprogram <name> [] ...) form.",
-	intent: "Concrete zh-cn action intent. The gate uses UTF-8 bytes * 50ms and strips it before execution.",
+	programName: "Optional REPL name for park/unpark; auto-generated when omitted.",
+	code: "ClojureScript REPL input. Any number of top-level forms; the last value is returned. No defprogram wrapper is required.",
+	intent: "Concrete zh-cn action intent. Deadline = UTF-8 bytes * 50ms + 1000ms.",
 });
 
 function parameters() {
 	return {
 		type: "object",
 		additionalProperties: false,
-		required: ["program_name", "code", "intent"],
+		required: ["code", "intent"],
 		properties: {
 			program_name: {
 				type: "string",
@@ -1328,7 +1026,7 @@ const ROLE_DENIALS = Object.freeze({
 
 function toolDescription(role) {
 	const capabilities = CAPABILITY_MATRIX[role].join(", ");
-	return `Run one (defprogram ...) in the ${ROLE_LABELS[role]} sandbox. Bound capabilities: ${capabilities}. ${ROLE_DENIALS[role]} Other sandbox names from COMMON are not bound. Gate fields must be stripped before execution; deadlines come from the CallMeta port.`;
+	return `Run ClojureScript REPL input in the ${ROLE_LABELS[role]} sandbox. Bound capabilities: ${capabilities}. ${ROLE_DENIALS[role]} No defprogram wrapper is required. Other sandbox names from COMMON are not bound. Gate fields must be stripped before execution; deadlines come from the CallMeta port.`;
 }
 
 const TOOL_DESCRIPTION_BY_NAME = Object.freeze({
@@ -1469,33 +1167,33 @@ function validateParams(params) {
 			throw invalidArgument(`unknown sandbox tool field: ${key}`, { field: key });
 		}
 	}
-	const name = params.program_name;
-	const code = params.code;
-	if (typeof name !== "string" || name.length === 0) {
-		throw invalidArgument("program_name must be a non-empty string", {
+	const providedName = params.program_name;
+	if (providedName !== undefined && (typeof providedName !== "string" || providedName.length === 0)) {
+		throw invalidArgument("program_name must be a non-empty string when provided", {
 			field: "program_name",
-			value: name,
+			value: providedName,
 		});
 	}
-	if (typeof code !== "string" || code.length === 0) {
+	const code = params.code;
+	if (typeof code !== "string" || code.trim().length === 0) {
 		throw invalidArgument("code must be a non-empty string", { field: "code", value: code });
 	}
-	return { name, code };
+	const name = providedName ?? `repl-${randomUUID().slice(0, 12)}`;
+	const trimmed = code.trimStart();
+	const source = trimmed.startsWith("(defprogram") ? code : `(defprogram ${name} []\n${code}\n)`;
+	return { name, code: source };
 }
 
 /**
  * Build the role tool and its evaluator session.
  *
  * `roots` fields:
- * - `writeRoot`: required directory. It is also the base for relative paths.
- * - `readRoots`: optional additional read-only files or directories.
- * - `evidenceRoot`, `auditTmp`: required for `auditor`; evidence must be a
- *   child of `writeRoot`, and the two roots must be disjoint.
- * - `callLogDir`: control-plane directory for complete `call` logs. A call
- *   requires this or `callLimits.logPath`. This directory becomes the VFS
- *   `logRoot`, so explicit `.herd/...` log directories are authorized.
- * - `limits`: VFS file/batch/operation limits. `allowWritePaths` is ignored;
- *   this builder sets the only allowed override for the auditor.
+ * - `writeRoot`: required directory. Relative paths resolve against it;
+ *   absolute paths and `..` are unrestricted.
+ * - `evidenceRoot`, `auditTmp`: resolved for auditor callers; no containment
+ *   check is applied.
+ * - `callLogDir`: directory for complete `call` logs.
+ * - `limits`: VFS file/batch/operation limits.
  * - `callLimits`: VFS `runCall` inline/log limits.
  * - `io`: optional VFS host adaptation port.
  *

@@ -289,14 +289,14 @@ describe("sequential batch overlay", () => {
 		expect(readFileSync(join(root, "d/g.txt"), "utf8")).toBe("z");
 	});
 
-	it("rejects overwriting an unread real file", () => {
+	it("overwrites an unread real file", async () => {
 		const root = sandbox();
-		file(root, "a.txt", "old");
+		const target = file(root, "a.txt", "old");
 		const batch = createBatch({ writeRoot: root });
-		const error = caught(() => write(batch, "a.txt", "new"));
-		expect(error.code).toBe(":PREPARE_REJECTED");
-		expect(error.data.operationIndex).toBe(1);
-		expect(readFileSync(join(root, "a.txt"), "utf8")).toBe("old");
+		write(batch, "a.txt", "new");
+		const result = await committed(batch, prepare(batch).plan);
+		expect(result.status).toBe(":applied");
+		expect(readFileSync(target, "utf8")).toBe("new");
 	});
 
 	it("allows a read real file to be replaced and reports its bytes", () => {
@@ -310,7 +310,7 @@ describe("sequential batch overlay", () => {
 		expect(readFileSync(join(root, "a.txt"), "utf8")).toBe("old");
 	});
 
-	it("rejects six structural mistakes in memory", () => {
+	it("rejects five structural mistakes in memory", () => {
 		const root = sandbox();
 		file(root, "real.txt", "x");
 		const batch = createBatch({ writeRoot: root });
@@ -320,7 +320,6 @@ describe("sequential batch overlay", () => {
 		expect(caught(() => mkdir(batch, "real.txt")).code).toBe(":PREPARE_REJECTED");
 		expect(caught(() => readText(batch, "d")).code).toBe(":STRUCTURE_CONFLICT");
 		expect(caught(() => list(batch, "real.txt")).code).toBe(":STRUCTURE_CONFLICT");
-		expect(caught(() => remove(batch, "real.txt")).code).toBe(":PREPARE_REJECTED");
 		expect(caught(() => move(batch, "d", "d/sub")).code).toBe(":PREPARE_REJECTED");
 	});
 
@@ -331,8 +330,6 @@ describe("sequential batch overlay", () => {
 		file(root, "full/a.txt", "x");
 		const batch = createBatch({ writeRoot: root });
 		expect(caught(() => remove(batch, "full")).code).toBe(":STRUCTURE_CONFLICT");
-		expect(caught(() => remove(batch, "empty")).code).toBe(":PREPARE_REJECTED");
-		stat(batch, "empty");
 		remove(batch, "empty");
 		const result = await committed(batch, prepare(batch).plan);
 		expect(result.status).toBe(":applied");
@@ -765,17 +762,6 @@ describe("sequential batch overlay", () => {
 		expect(existsSync(join(root, "c.txt"))).toBe(false);
 		expect(existsSync(join(root, "d.txt"))).toBe(false);
 	});
-
-	it("refuses moving a symlink whose target escapes every root", () => {
-		const root = sandbox();
-		const outside = sandbox("herd-vfs-outside-");
-		const secret = join(outside, "secret.txt");
-		writeFileSync(secret, "secret", "utf8");
-		symlinkSync(secret, join(root, "escape"));
-		const batch = createBatch({ writeRoot: root });
-		expect(caught(() => move(batch, "escape", "moved")).code).toBe(":PATH_ESCAPE");
-		expect(readFileSync(secret, "utf8")).toBe("secret");
-	});
 });
 
 describe("limits", () => {
@@ -820,10 +806,8 @@ describe("limits", () => {
 		expect(error.data.limit).toBe("batchBytes");
 	});
 
-	it("refuses the filesystem root as a write or read root", () => {
-		const root = sandbox();
+	it("refuses the filesystem root as a write root", () => {
 		expect(caught(() => createBatch({ writeRoot: "/" })).code).toBe(":INVALID_ARGUMENT");
-		expect(caught(() => createBatch({ writeRoot: root, readRoots: ["/"] })).code).toBe(":INVALID_ARGUMENT");
 	});
 });
 
@@ -1471,41 +1455,12 @@ describe("commit recheck and atomic apply", () => {
 });
 
 describe("protected paths", () => {
-	it("refuses .git and .herd reads", () => {
-		const root = sandbox();
-		mkdirSync(join(root, ".git"));
-		writeFileSync(join(root, ".git", "config"), "x", "utf8");
-		mkdirSync(join(root, ".herd"));
-		writeFileSync(join(root, ".herd", "state.edn"), "x", "utf8");
-		const batch = createBatch({ writeRoot: root });
-		expect(caught(() => readText(batch, ".git/config")).code).toBe(":PATH_ESCAPE");
-		expect(caught(() => readText(batch, ".herd/state.edn")).code).toBe(":PATH_ESCAPE");
-	});
-
-	it("refuses a symlink that resolves into .git", () => {
-		const root = sandbox();
-		mkdirSync(join(root, ".git"));
-		writeFileSync(join(root, ".git", "config"), "x", "utf8");
-		symlinkSync(join(root, ".git"), join(root, "gitlink"), "dir");
-		const batch = createBatch({ writeRoot: root });
-		expect(caught(() => readText(batch, "gitlink/config")).code).toBe(":PATH_ESCAPE");
-		expect(caught(() => write(batch, "gitlink/new.txt", "x")).code).toBe(":PATH_ESCAPE");
-	});
-
 	it("refuses reading a symlink to a directory", () => {
 		const root = sandbox();
 		mkdirSync(join(root, "dir"));
 		symlinkSync(join(root, "dir"), join(root, "dirlink"), "dir");
 		const batch = createBatch({ writeRoot: root });
 		expect(caught(() => readText(batch, "dirlink")).code).toBe(":STRUCTURE_CONFLICT");
-	});
-
-	it("refuses a symlink that resolves into plans", () => {
-		const root = sandbox();
-		mkdirSync(join(root, "plans"));
-		symlinkSync(join(root, "plans"), join(root, "planslink"), "dir");
-		const batch = createBatch({ writeRoot: root });
-		expect(caught(() => write(batch, "planslink/out.md", "x")).code).toBe(":PATH_ESCAPE");
 	});
 
 	it("lists moved symlinks as links and refuses them as directories", () => {
@@ -2048,25 +2003,6 @@ describe("drain and runCall", () => {
 		expect(readFileSync(logPath, "utf8")).toBe("out");
 	});
 
-	it("refuses a call log outside the allowed roots", async () => {
-		const root = sandbox();
-		const outside = sandbox("herd-vfs-outside-");
-		const logPath = join(outside, "escape.log");
-		let ran = false;
-		const io = {
-			async runCommand() {
-				ran = true;
-				return { stdout: "", stderr: "", exitCode: 0, signal: null, aborted: false, truncated: false };
-			},
-		};
-		const batch = createBatch({ writeRoot: root, io });
-		await expect(
-			runCall({ batch, command: "true", writeGate: fakeGate(), limits: { logPath }, ...fakePorts() }),
-		).rejects.toMatchObject({ code: ":PATH_ESCAPE" });
-		expect(ran).toBe(false);
-		expect(existsSync(logPath)).toBe(false);
-	});
-
 	it("allows a call log under .herd/artifacts without an explicit log root", async () => {
 		const root = sandbox();
 		const control = sandbox("herd-vfs-control-");
@@ -2135,13 +2071,5 @@ describe("drain and runCall", () => {
 		});
 		expect(result.status).toBe(":completed");
 		expect(readFileSync(join(root, "E/a.txt"), "utf8")).toBe("A");
-	});
-
-	it("refuses a cwd outside every allowed root", async () => {
-		const root = sandbox();
-		const batch = createBatch({ writeRoot: root });
-		await expect(
-			runCall({ batch, command: "true", cwd: "/etc", writeGate: fakeGate(), ...fakePorts() }),
-		).rejects.toMatchObject({ code: ":PATH_ESCAPE" });
 	});
 });

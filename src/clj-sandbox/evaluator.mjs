@@ -31,8 +31,8 @@
  *   C3's camelCase fields, which are exposed with EDN kebab-case aliases too.
  */
 
-import { loadCherry } from "../host/imports.mjs";
 import { ERROR_CODES, herdError, isHerdError } from "../util/errors.mjs";
+import { loadCherry } from "./cherry.mjs";
 import {
 	reFind as regexWorkerFind,
 	reMatches as regexWorkerMatches,

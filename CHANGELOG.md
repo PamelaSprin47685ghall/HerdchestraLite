@@ -2,6 +2,43 @@
 
 本文件记录本包的用户可见变化。
 
+## [Dogfood] — 2026-11-12 — clj 执行器最小面
+
+> 当前清单只启用 ClojureScript 沙箱执行器。本节记录这一刀的真实变化；下方 `[Unreleased]` 的完整编排实现仍在源码中，但未装配，不能当作可用功能。
+
+### Added
+
+- `src/clj-main.mjs`：只注册 `clj_plan`、`clj_devops`、`clj_review`、`clj_worker` 的最小宿主入口，附 `/clj-status`。
+- `src/clj-sandbox/cherry.mjs`：把 Cherry 加载从 `host/imports.mjs` 拆出，使沙箱工具不再依赖 omp 宿主包即可加载与测试。
+- `tests/clj-core.test.mjs`：覆盖四个工具注册、受保护写入、`where` 挂起/恢复、只读拒绝与 `stamp` 冲突。
+
+### Changed
+
+- `package.json` 的清单入口改为单一 `./src/clj-main.mjs`；`tool-gate`、`bootstrap-main`、`main.mjs` 保留为后续扩张代码，当前不加载。
+- `clj-main` 在 `session_start` 与 `before_agent_start` 按黑名单移除被 clj 取代的宿主工具：`read`/`write`/`edit`/`apply_patch`/`ast_edit`/`ast_grep`/`bash`/`exec`/`eval`/`glob`/`grep`/`find`。其他工具不重建白名单，保持原有激活状态；四个 `clj_*` 由注册方显式激活。
+- evaluator 从 `clj-sandbox/cherry.mjs` 加载 Cherry；`host/imports.mjs` 重导出同一加载器，保持完整装配的导入边界。
+- 工具参数改为 REPL：`code` 直接接受任意顶层表达式，最后一个值返回；`program_name` 可选，省略时生成 `repl-<id>`；不再要求 `defprogram` 壳。
+- 普通 VFS 路径完全放开：不再拒绝 `..`、绝对路径、越界符号链接；盲写不再要求先读；`AGENTS.md` 不再受特殊保护。
+- 删除 `readRoots`、`allowWritePaths`、控制路径、plans/AGENTS 保护与 call cwd/log 白名单等权限代码。
+- README 改为描述当前 clj-only 面、启用步骤、真实冒烟与扩张顺序。
+
+### Fixed
+
+- `call` 不再继承宿主的 `BUN_OPTIONS`/`NODE_OPTIONS`/`BASH_ENV`/`ENV`/`PROMPT_COMMAND`；`bun test` 不会再因 omp 的 zstd 预加载而重复命令行或触发 E2BIG。
+- 期限改为 `1000ms + intent UTF-8 字节数 × 50ms`，固定白送 1 秒，不按角色加码。
+- 虚拟文件 `stat` 现在报告 `is-file true`，虚拟目录报告 `is-file false`/`is-dir true`，不再同时显示为既非文件也非目录。
+- commit 回执的 `written` 按路径去重；同一路径的多次中间操作不再重复列出。
+- 工具注册失败、Cherry 缺失或 hooks 不可用时，health 汇总降级而不是被最后一条 `ok` 覆盖；`/clj-status` 合并为一次通知。
+- 只读的 `clj_plan`/`clj_review` 不再创建 `.herd/artifacts` 或写锁目录。
+
+### Verified（不是验收）
+
+- 真实 `omp 18.19.0` 在 `omp plugin link` 后自动加载插件；模型调用 `clj_worker` 成功写入探针文件。
+- 真实宿主中 `clj_plan` 写文件被 `:CAPABILITY_DENIED` 拒绝且未落盘；`clj_devops` 的 `call` 返回 `:completed`。
+- 真实宿主中同一会话先 `where` 多匹配挂起，再 `unpark` 恢复并落盘。
+- 真实宿主 `getActiveTools()` 捕获到 `task`/`wait`/`todo`/`web_search`/`debug` 与四个 `clj_*`；黑名单中的本地文件与命令工具均不存在。
+- 本地 `bun test tests/clj-core.test.mjs`：15 pass / 0 fail。
+
 ## [Unreleased] — clean-break（进行中，未验收）
 
 > 本节只记录当前工作区的结构变化，不表示功能已交付或验收通过。根 `AGENTS.md` 仍是唯一规格；未关闭缺口见 `DEBT.md`。

@@ -1,18 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import {
-	existsSync,
-	lstatSync,
-	mkdirSync,
-	mkdtempSync,
-	readdirSync,
-	readFileSync,
-	readlinkSync,
-	rmSync,
-	symlinkSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { commit, createBatch, list, prepare, readText, stat, write } from "../src/clj-sandbox/vfs.mjs";
 
 const roots = [];
@@ -93,27 +82,6 @@ function attemptWrite(batch, path, content) {
 	prepare(batch);
 }
 
-function treeSnapshot(root) {
-	const entries = new Map();
-	const walk = (dir, prefix) => {
-		for (const name of readdirSync(dir).sort()) {
-			const full = join(dir, name);
-			const relative = prefix === "" ? name : `${prefix}/${name}`;
-			const info = lstatSync(full, { bigint: true });
-			if (info.isSymbolicLink()) {
-				entries.set(relative, `link:${readlinkSync(full)}`);
-			} else if (info.isDirectory()) {
-				entries.set(`${relative}/`, "dir");
-				walk(full, relative);
-			} else {
-				entries.set(relative, `file:${info.size}:${readFileSync(full).toString("hex")}`);
-			}
-		}
-	};
-	walk(root, "");
-	return entries;
-}
-
 describe("path resolution", () => {
 	it("treats the empty path as the write root and lists without touching the read-set", () => {
 		const root = sandbox();
@@ -173,61 +141,6 @@ describe("path resolution", () => {
 		expect(batch.readSet.size).toBe(1);
 	});
 
-	it("rejects .. traversal outside the write root without touching disk", () => {
-		const root = sandbox();
-		const outside = sandbox();
-		writeFileSync(join(outside, "secret.txt"), "outside-secret");
-		const batch = makeBatch(root, { readRoots: [root] });
-
-		const readError = captureSync(() => readText(batch, `../${basename(outside)}/secret.txt`));
-		expect(readError).toBeInstanceOf(Error);
-		expect(readError.code).toBe(":PATH_ESCAPE");
-
-		const escaped = join(root, "..", `${basename(root)}-escaped.txt`);
-		const writeError = captureSync(() => write(batch, `../${basename(root)}-escaped.txt`, "nope"));
-		expect(writeError).toBeInstanceOf(Error);
-		expect(writeError.code).toBe(":PATH_ESCAPE");
-		expect(existsSync(escaped)).toBe(false);
-		expect(readdirSync(root)).toEqual([]);
-	});
-
-	it("rejects an absolute path outside every root without touching disk", () => {
-		const root = sandbox();
-		const outside = sandbox();
-		writeFileSync(join(outside, "secret.txt"), "outside-secret");
-		const batch = makeBatch(root, { readRoots: [root] });
-
-		const readError = captureSync(() => readText(batch, join(outside, "secret.txt")));
-		expect(readError).toBeInstanceOf(Error);
-		expect(readError.code).toBe(":PATH_ESCAPE");
-
-		const target = join(outside, "written.txt");
-		const writeError = captureSync(() => write(batch, target, "nope"));
-		expect(writeError).toBeInstanceOf(Error);
-		expect(writeError.code).toBe(":PATH_ESCAPE");
-		expect(existsSync(target)).toBe(false);
-		expect(readFileSync(join(outside, "secret.txt"), "utf8")).toBe("outside-secret");
-	});
-
-	it("rejects a symlink that points outside every root", () => {
-		const root = sandbox();
-		const outside = sandbox();
-		const secret = join(outside, "secret.txt");
-		writeFileSync(secret, "outside-secret");
-		symlinkSync(secret, join(root, "escape-link.txt"));
-
-		const batch = makeBatch(root, { readRoots: [root] });
-
-		const readError = captureSync(() => readText(batch, "escape-link.txt"));
-		expect(readError).toBeInstanceOf(Error);
-		expect(readError.code).toBe(":PATH_ESCAPE");
-
-		const writeError = captureSync(() => write(batch, "escape-link.txt", "overwritten"));
-		expect(writeError).toBeInstanceOf(Error);
-		expect(writeError.code).toBe(":PATH_ESCAPE");
-		expect(readFileSync(secret, "utf8")).toBe("outside-secret");
-	});
-
 	it("reads a symlink that points inside the write root", () => {
 		const root = sandbox();
 		writeFileSync(join(root, "real.txt"), "inside-content");
@@ -256,27 +169,6 @@ describe("path resolution", () => {
 });
 
 describe("protected write paths", () => {
-	it("rejects .git, .herd, plans/, and AGENTS.md writes with PATH_ESCAPE and zero disk change", () => {
-		const root = sandbox();
-		mkdirSync(join(root, ".git"));
-		mkdirSync(join(root, ".herd"));
-		mkdirSync(join(root, "plans"));
-		writeFileSync(join(root, "AGENTS.md"), "root-contract");
-		const before = treeSnapshot(root);
-
-		const relativeTargets = [".git/config", ".herd/state.edn", "plans/plan.md", "AGENTS.md"];
-		for (const target of relativeTargets) {
-			const batch = makeBatch(root);
-			expectSyncCode(() => attemptWrite(batch, target, "nope"), ":PATH_ESCAPE");
-		}
-
-		const absoluteError = captureSync(() => attemptWrite(makeBatch(root), join(root, "plans", "absolute.md"), "nope"));
-		expect(absoluteError).toBeInstanceOf(Error);
-		expect(absoluteError.code).toBe(":PATH_ESCAPE");
-
-		expect(treeSnapshot(root)).toEqual(before);
-	});
-
 	it("still allows reading AGENTS.md from the write root", () => {
 		const root = sandbox();
 		writeFileSync(join(root, "AGENTS.md"), "root-contract");

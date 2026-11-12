@@ -100,7 +100,7 @@ describe("dev-acceptance submission tools", () => {
 
 	test("the dev-acceptance package is not in the root plugin entry list", () => {
 		const root = JSON.parse(readFileSync(join(import.meta.dir, "../../../package.json"), "utf8"));
-		expect(root.omp.extensions).toEqual(["./src/bootstrap-main.mjs", "./src/tool-gate/index.mjs"]);
+		expect(root.omp.extensions).toEqual(["./src/clj-main.mjs"]);
 		expect(JSON.stringify(root)).not.toContain("tools/dev-acceptance");
 	});
 

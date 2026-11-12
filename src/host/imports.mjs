@@ -19,20 +19,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as codingAgent from "@oh-my-pi/pi-coding-agent";
+import { cherryStatus } from "../clj-sandbox/cherry.mjs";
 
 const HOST_PACKAGE = "@oh-my-pi/pi-coding-agent";
 
-const {
-	AgentSession,
-	Container,
-	Markdown,
-	Settings,
-	Spacer,
-	Text,
-	VERSION,
-	runSubprocess,
-	runSubagentFollowUpTurn,
-} = codingAgent;
+const { AgentSession, Container, Markdown, Settings, Spacer, Text, VERSION, runSubprocess, runSubagentFollowUpTurn } =
+	codingAgent;
 
 /**
  * Resolve a public host specifier to the file the host will actually load.
@@ -197,137 +189,10 @@ export const hostDiagnostics = Object.freeze({
 /* Cherry                                                              */
 /* ------------------------------------------------------------------ */
 
-/** @type {{ loaded: boolean, hasEdnReader: boolean, version: string | undefined }} */
-let cherryState = Object.freeze({ loaded: false, hasEdnReader: false, version: undefined });
-/** @type {Promise<unknown> | undefined} */
-let cherryLoadPromise;
-
-/**
- * The exact `cherry-cljs@0.6.38` modules the sandbox may use.
- *
- * The package root is the compiler (`compileString` / `compileStringEx`) and
- * does not re-export `cljs.core`. The persistent collections and pure library
- * functions live in these deep modules. The package has no `exports` map, so
- * the deep specifiers resolve directly.
- */
-export const CHERRY_RUNTIME_SPECIFIERS = Object.freeze({
-	core: "cherry-cljs/cljs.core.js",
-	string: "cherry-cljs/lib/clojure.string.js",
-	set: "cherry-cljs/lib/clojure.set.js",
-	walk: "cherry-cljs/lib/clojure.walk.js",
-});
-
-/**
- * Report what a loaded Cherry runtime exposes.
- *
- * Cherry 0.6.38 exports compilation only; it has no public EDN reader. This
- * probe looks for the documented reader names on the core namespace and
- * nothing else. It never imports Cherry and never evaluates user text.
- *
- * @param {unknown} moduleNamespace Either a `{ core, string, set, walk }`
- * runtime bag or a bare `cljs.core` namespace.
- * @param {{ version?: string }} [metadata]
- * @returns {{ hasEdnReader: boolean, version: string | undefined }}
- */
-export function inspectCherryModule(moduleNamespace, metadata = {}) {
-	const candidate =
-		moduleNamespace !== null && (typeof moduleNamespace === "object" || typeof moduleNamespace === "function")
-			? moduleNamespace
-			: {};
-	const core = candidate.core ?? candidate;
-	const hasEdnReader =
-		typeof core.readString === "function" ||
-		typeof core.read === "function" ||
-		typeof core.readStringEx === "function" ||
-		typeof core.read_string === "function";
-	const declared =
-		typeof candidate.version === "string"
-			? candidate.version
-			: typeof candidate.VERSION === "string"
-				? candidate.VERSION
-				: typeof core.version === "string"
-					? core.version
-					: undefined;
-	const version = typeof metadata.version === "string" ? metadata.version : declared;
-	return Object.freeze({ hasEdnReader, version });
-}
-
-/**
- * Import the four pure Cherry modules. The compiler root is deliberately not
- * imported: the default sandbox evaluator must not pull the compiler or its
- * build dependencies into the host.
- *
- * @returns {Promise<{ core: unknown, string: unknown, set: unknown, walk: unknown }>}
- */
-async function importCherryRuntime() {
-	const [core, string, set, walk] = await Promise.all([
-		import(CHERRY_RUNTIME_SPECIFIERS.core),
-		import(CHERRY_RUNTIME_SPECIFIERS.string),
-		import(CHERRY_RUNTIME_SPECIFIERS.set),
-		import(CHERRY_RUNTIME_SPECIFIERS.walk),
-	]);
-	return Object.freeze({ core, string, set, walk });
-}
-
-/**
- * Load `cherry-cljs` once, lazily.
- *
- * Output: `{ ok, cherry, hasEdnReader, version, error }` where `cherry` is
- * `{ core, string, set, walk }`. `core` carries the 500 `cljs.core` exports and
- * the persistent collection constructors; there is no EDN reader.
- *
- * Failure is a resolved value, never a throw and never a fallback to the JS
- * evaluator. Missing Cherry is a missing capability; callers must refuse to run
- * sandbox programs rather than silently use another engine.
- *
- * @returns {Promise<{
- *   ok: boolean,
- *   cherry: { core: unknown, string: unknown, set: unknown, walk: unknown } | undefined,
- *   hasEdnReader: boolean,
- *   version: string | undefined,
- *   error: { code: string, message: string, data: Record<string, unknown> } | undefined,
- * }>}
- */
-export function loadCherry() {
-	cherryLoadPromise ??= importCherryRuntime()
-		.then((moduleNamespace) => {
-			const cherryPath = resolvePath(CHERRY_RUNTIME_SPECIFIERS.core);
-			const metadata = packageMetadata(cherryPath);
-			const probed = inspectCherryModule(moduleNamespace, metadata);
-			cherryState = Object.freeze({
-				loaded: true,
-				hasEdnReader: probed.hasEdnReader,
-				version: probed.version,
-			});
-			return Object.freeze({
-				ok: true,
-				cherry: moduleNamespace,
-				hasEdnReader: probed.hasEdnReader,
-				version: probed.version,
-				error: undefined,
-			});
-		})
-		.catch((cause) => {
-			cherryState = Object.freeze({ loaded: false, hasEdnReader: false, version: undefined });
-			const message = cause instanceof Error ? cause.message : String(cause);
-			return Object.freeze({
-				ok: false,
-				cherry: undefined,
-				hasEdnReader: false,
-				version: undefined,
-				error: {
-					code: ":HOST_API_MISMATCH",
-					message: `cherry-cljs is unavailable: ${message}`,
-					data: {
-						module: "cherry-cljs",
-						specifiers: CHERRY_RUNTIME_SPECIFIERS,
-						next: "install the exact cherry-cljs version recorded in HACK.md",
-					},
-				},
-			});
-		});
-	return cherryLoadPromise;
-}
+// The Cherry loader lives in clj-sandbox/cherry.mjs so the sandbox tools can
+// run without importing the omp host package. Re-export it here to keep the
+// host boundary as the single import point for host-facing modules.
+export { CHERRY_RUNTIME_SPECIFIERS, cherryStatus, inspectCherryModule, loadCherry } from "../clj-sandbox/cherry.mjs";
 
 /* ------------------------------------------------------------------ */
 /* Capability probes                                                   */
@@ -436,8 +301,8 @@ export function detectCapabilities(pi, context, observed = {}) {
 		hasSettingsInstance: settingsInstanceAvailable(),
 		hasRestrictToolNames: fact("hasRestrictToolNames", true),
 		hasRunSubagentFollowUpTurn: typeof runSubagentFollowUpTurn === "function",
-		cherryLoaded: cherryState.loaded,
-		cherryHasEdnReader: cherryState.hasEdnReader,
+		cherryLoaded: cherryStatus().loaded,
+		cherryHasEdnReader: cherryStatus().hasEdnReader,
 		unverified: Object.freeze([...new Set(unverified)]),
 	};
 	return Object.freeze(table);

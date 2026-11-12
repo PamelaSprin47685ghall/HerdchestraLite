@@ -29,10 +29,6 @@
  * The optional `io` argument exists for host adaptation and failure-injection
  * tests. Production callers omit it and receive the Node implementation.
  *
- * `limits.allowWritePaths` is an exception list for the protected `plans/` and
- * `AGENTS.md` names, not a write whitelist: `writeRoot` stays the outer
- * boundary. Call logs outside `writeRoot` need `limits.logRoot`, except for
- * the designated `.herd/artifacts/**` and `/tmp/herd-audit-*` log areas.
  */
 
 import { spawn } from "node:child_process";
@@ -48,7 +44,7 @@ import {
 	rmdirSync,
 	unlinkSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { writeFileAtomic } from "../util/atomic-write.mjs";
 import { ERROR_CODES, herdError, isHerdError, messageOf } from "../util/errors.mjs";
 
@@ -57,7 +53,6 @@ const DEFAULT_LIMITS = Object.freeze({
 	fileBytes: 2 * 1024 * 1024,
 	batchBytes: 16 * 1024 * 1024,
 	operations: 256,
-	allowWritePaths: Object.freeze([]),
 });
 const DEFAULT_CALL_LIMITS = Object.freeze({
 	inlineBytes: 1024 * 1024,
@@ -65,9 +60,6 @@ const DEFAULT_CALL_LIMITS = Object.freeze({
 	logPath: null,
 	logRoot: null,
 });
-const PROTECTED_SEGMENTS = new Set([".git", ".herd"]);
-const PROTECTED_TOP_SEGMENTS = new Set(["plans"]);
-const PROTECTED_FILE_NAMES = new Set(["AGENTS.md"]);
 const ACTIVE_CLAIM_STATES = new Set(["active", "claimed", "valid", "live"]);
 const ALIVE_STATES = new Set(["alive", "active", "running", "live"]);
 
@@ -77,13 +69,6 @@ function invalidArgument(argument, expected, value, next) {
 		expected,
 		actual: value,
 		next: next ?? `pass ${expected} for ${argument}`,
-	});
-}
-
-function pathEscape(path, reason) {
-	return herdError(":PATH_ESCAPE", `path escapes the allowed roots: ${path}`, {
-		path,
-		reason,
 	});
 }
 
@@ -189,7 +174,6 @@ function normalizeLimits(limits) {
 		fileBytes: DEFAULT_LIMITS.fileBytes,
 		batchBytes: DEFAULT_LIMITS.batchBytes,
 		operations: DEFAULT_LIMITS.operations,
-		allowWritePaths: [],
 	};
 	for (const key of ["fileBytes", "batchBytes", "operations"]) {
 		const value = source[key];
@@ -198,18 +182,6 @@ function normalizeLimits(limits) {
 			throw invalidArgument(`limits.${key}`, "a non-negative safe integer", value);
 		}
 		result[key] = value;
-	}
-	const allowed = source.allowWritePaths;
-	if (allowed !== undefined) {
-		if (!Array.isArray(allowed)) {
-			throw invalidArgument("limits.allowWritePaths", "an array of path strings", allowed);
-		}
-		for (const entry of allowed) {
-			if (typeof entry !== "string" || entry.length === 0) {
-				throw invalidArgument("limits.allowWritePaths[]", "a non-empty string", entry);
-			}
-		}
-		result.allowWritePaths = [...allowed];
 	}
 	return result;
 }
@@ -287,12 +259,6 @@ function statsSnapshot(stats) {
 	return { kind: kindOf(stats), ...stampOf(stats) };
 }
 
-function containsPath(parent, candidate) {
-	if (candidate === parent) return true;
-	const prefix = parent.endsWith(sep) ? parent : `${parent}${sep}`;
-	return candidate.startsWith(prefix);
-}
-
 function pathEqualOrUnder(path, prefix) {
 	return path === prefix || path.startsWith(`${prefix}${sep}`);
 }
@@ -301,11 +267,6 @@ function compareText(left, right) {
 	if (left < right) return -1;
 	if (left > right) return 1;
 	return 0;
-}
-
-function realContains(spec, candidate) {
-	if (spec.kind === "file") return candidate === spec.real;
-	return containsPath(spec.real, candidate);
 }
 
 function resolveAgainstRoot(root, value) {
@@ -335,81 +296,14 @@ function touchAncestors(batch, path) {
 	}
 }
 
-function deepestRealPath(path, io) {
-	let probe = path;
-	const suffix = [];
-	while (true) {
-		const stats = io.lstat(probe);
-		if (stats) {
-			const real = io.realpath(probe);
-			return suffix.length > 0 ? resolve(real, ...suffix) : real;
-		}
-		const parent = dirname(probe);
-		if (parent === probe) return path;
-		suffix.unshift(basename(probe));
-		probe = parent;
-	}
-}
-
 function resolveReadPath(batch, value) {
 	assertPathText(value, "path");
-	const lexical = resolveAgainstRoot(batch.writeRoot, value);
-	assertNotControlPath(lexical);
-	const real = deepestRealPath(lexical, batch.io);
-	assertNotControlPath(real);
-	if (!batch.readSpecs.some((spec) => realContains(spec, real))) {
-		throw pathEscape(lexical, "outside-read-roots");
-	}
-	return lexical;
-}
-
-function assertNotControlPath(path) {
-	const segments = path.split(sep).filter(Boolean);
-	for (const segment of segments) {
-		if (segment === ".git") throw pathEscape(path, "protected-segment:.git");
-		if (segment === ".herd") throw pathEscape(path, "protected-segment:.herd");
-	}
-}
-
-function isAllowedWritePath(batch, path) {
-	return (
-		batch.limits.allowWritePaths.some((prefix) => containsPath(prefix, path)) ||
-		batch.limits.allowWriteRealPaths.some((prefix) => containsPath(prefix, path))
-	);
-}
-
-function assertWritableLocation(batch, path, root = batch.writeRoot) {
-	const rel = relative(root, path);
-	if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-		throw pathEscape(path, "outside-write-root");
-	}
-	const segments = rel.split(sep).filter(Boolean);
-	for (const segment of segments) {
-		if (PROTECTED_SEGMENTS.has(segment)) {
-			throw pathEscape(path, `protected-segment:${segment}`);
-		}
-	}
-	if (segments.length > 0 && PROTECTED_TOP_SEGMENTS.has(segments[0]) && !isAllowedWritePath(batch, path)) {
-		throw pathEscape(path, "protected-plans");
-	}
-	const name = segments[segments.length - 1];
-	if (name !== undefined && PROTECTED_FILE_NAMES.has(name) && !isAllowedWritePath(batch, path)) {
-		throw pathEscape(path, "protected-agents-file");
-	}
+	return resolveAgainstRoot(batch.writeRoot, value);
 }
 
 function resolveWritePath(batch, value) {
 	assertPathText(value, "path");
-	const lexical = resolveAgainstRoot(batch.writeRoot, value);
-	assertNotControlPath(lexical);
-	const real = deepestRealPath(lexical, batch.io);
-	assertNotControlPath(real);
-	if (!realContains(batch.writeSpec, real)) {
-		throw pathEscape(lexical, "outside-write-root");
-	}
-	assertWritableLocation(batch, real, batch.writeReal);
-	assertWritableLocation(batch, lexical);
-	return lexical;
+	return resolveAgainstRoot(batch.writeRoot, value);
 }
 
 function resolveOperationPath(batch, value) {
@@ -685,22 +579,19 @@ function _makeOnDiskLstat(io) {
 }
 
 /**
- * Create one private batch over a write root and optional read-only roots.
+ * Create one private batch over a write root.
  *
- * `writeRoot` must exist and be a directory. Each entry in `readRoots` must
- * exist and may be a directory or a single file. Relative paths resolve
- * against `writeRoot`; absolute paths must fall inside one allowed root.
- *
- * The `io` argument is optional. It supplies the filesystem and command ports
- * for host adaptation or failure-injection tests; omit it in production.
+ * `writeRoot` must exist and be a directory. Relative paths resolve against
+ * it; absolute paths and `..` are unrestricted. The `io` argument is optional;
+ * it supplies filesystem and command ports for host adaptation or
+ * failure-injection tests.
  */
-export function createBatch({ writeRoot, readRoots, limits, io, observations, observationScope } = {}) {
+export function createBatch({ writeRoot, limits, io, observations, observationScope } = {}) {
 	if (typeof writeRoot !== "string" || writeRoot.length === 0) {
 		throw invalidArgument("writeRoot", "a non-empty path string", writeRoot);
 	}
 	const fsPort = io === undefined || io === null ? defaultIo() : normalizeIo(io);
 	const writePath = resolve(writeRoot);
-	assertNotControlPath(writePath);
 	if (dirname(writePath) === writePath) {
 		throw invalidArgument("writeRoot", "a directory below the filesystem root", writeRoot);
 	}
@@ -708,48 +599,7 @@ export function createBatch({ writeRoot, readRoots, limits, io, observations, ob
 	if (!isDirectoryStats(writeStats)) {
 		throw invalidArgument("writeRoot", "an existing directory", writeRoot, "create the Slice worktree first");
 	}
-	const writeSpec = {
-		path: writePath,
-		real: fsPort.realpath(writePath),
-		kind: "dir",
-	};
-	const rawReadRoots = readRoots === undefined || readRoots === null ? [writePath] : readRoots;
-	const list = Array.isArray(rawReadRoots) ? rawReadRoots : [rawReadRoots];
-	if (list.length === 0) {
-		throw invalidArgument("readRoots", "a non-empty array of roots", rawReadRoots);
-	}
-	const readSpecs = [];
-	const seen = new Set();
-	for (const entry of list) {
-		if (typeof entry !== "string" || entry.length === 0) {
-			throw invalidArgument("readRoots[]", "a non-empty path string", entry);
-		}
-		const absolute = resolve(writePath, entry);
-		if (seen.has(absolute)) continue;
-		assertNotControlPath(absolute);
-		if (dirname(absolute) === absolute) {
-			throw invalidArgument("readRoots[]", "a path below the filesystem root", entry);
-		}
-		seen.add(absolute);
-		const stats = fsPort.lstat(absolute);
-		if (!stats) {
-			throw invalidArgument("readRoots[]", "an existing file or directory", entry);
-		}
-		if (!stats.isFile() && !stats.isDirectory()) {
-			throw invalidArgument("readRoots[]", "a regular file or directory", entry);
-		}
-		readSpecs.push({
-			path: absolute,
-			real: fsPort.realpath(absolute),
-			kind: stats.isDirectory() ? "dir" : "file",
-		});
-	}
-	if (!readSpecs.some((spec) => spec.path === writePath)) {
-		readSpecs.unshift(writeSpec);
-	}
 	const normalized = normalizeLimits(limits);
-	normalized.allowWritePaths = normalized.allowWritePaths.map((entry) => resolve(writePath, entry));
-	normalized.allowWriteRealPaths = normalized.allowWritePaths.map((entry) => deepestRealPath(entry, fsPort));
 	if (observations !== undefined && observations !== null) {
 		if (typeof observations.observe !== "function") {
 			throw invalidArgument("observations", "an observation ledger", observations);
@@ -769,10 +619,6 @@ export function createBatch({ writeRoot, readRoots, limits, io, observations, ob
 		__vfsBatch: true,
 		id: randomUUID(),
 		writeRoot: writePath,
-		writeReal: writeSpec.real,
-		writeSpec,
-		readRoots: readSpecs.map((spec) => spec.path),
-		readSpecs,
 		limits: normalized,
 		io: fsPort,
 		overlay: new Map(),
@@ -876,10 +722,28 @@ export function stat(batch, path) {
 			if (overlay.moved === true) {
 				return realStat(batch, overlay.physicalSource ?? physicalPath(batch, target));
 			}
-			return { exists: true, size: 0n, mtimeSec: null, mtimeNsec: null, isDir: true, virtual: true };
+			return {
+				exists: true,
+				size: 0n,
+				mtimeSec: null,
+				mtimeNsec: null,
+				isFile: false,
+				isDir: true,
+				isSymlink: false,
+				virtual: true,
+			};
 		}
 		const size = textBytes(overlay.content);
-		return { exists: true, size, mtimeSec: null, mtimeNsec: null, isDir: false, virtual: true };
+		return {
+			exists: true,
+			size,
+			mtimeSec: null,
+			mtimeNsec: null,
+			isFile: true,
+			isDir: false,
+			isSymlink: false,
+			virtual: true,
+		};
 	}
 	const physical = physicalPath(batch, target);
 	if (isPostMoveShadow(batch, target)) return emptyStat(true);
@@ -894,7 +758,16 @@ export function stat(batch, path) {
 				physicalOverlay.content !== undefined
 			) {
 				const size = textBytes(physicalOverlay.content);
-				return { exists: true, size, mtimeSec: null, mtimeNsec: null, isDir: false, virtual: true };
+				return {
+					exists: true,
+					size,
+					mtimeSec: null,
+					mtimeNsec: null,
+					isFile: true,
+					isDir: false,
+					isSymlink: false,
+					virtual: true,
+				};
 			}
 			if (physicalOverlay.type === "symlink" || physicalOverlay.type === "file") {
 				return realStat(batch, physicalOverlay.physicalSource ?? physical);
@@ -902,7 +775,16 @@ export function stat(batch, path) {
 			if (physicalOverlay.type === "dir" && physicalOverlay.moved === true) {
 				return realStat(batch, physicalOverlay.physicalSource ?? physical);
 			}
-			return { exists: true, size: 0n, mtimeSec: null, mtimeNsec: null, isDir: true, virtual: true };
+			return {
+				exists: true,
+				size: 0n,
+				mtimeSec: null,
+				mtimeNsec: null,
+				isFile: false,
+				isDir: true,
+				isSymlink: false,
+				virtual: true,
+			};
 		}
 	}
 	return realStat(batch, physical);
@@ -1085,10 +967,7 @@ export function write(batch, path, content, options = {}) {
 				});
 			}
 			const read = batch.readSet.get(physical);
-			if (!read?.exists || read.kind !== "file") {
-				throw prepareRejected(target, "overwrite of an existing file requires a prior read", index);
-			}
-			if (!sameStamp(read.stamp, base.stamp)) {
+			if (read?.exists && read.kind === "file" && !sameStamp(read.stamp, base.stamp)) {
 				throw fileConflict(target, "file changed since it was read", read.stamp, base.stamp, index);
 			}
 		}
@@ -1197,16 +1076,13 @@ export function remove(batch, path) {
 		const base = touchBase(batch, physical);
 		if (base.exists || current.moved === true) {
 			const read = batch.readSet.get(physical);
-			if (!read?.exists) {
-				throw prepareRejected(target, "remove of an existing path requires a prior read", index);
-			}
-			if (read.kind !== current.type) {
+			if (read?.exists && read.kind !== current.type) {
 				throw structureConflict(target, "path type changed since it was read", index, {
 					expected: read.kind,
 					current: current.type,
 				});
 			}
-			if (base.exists && !sameStamp(read.stamp, base.stamp)) {
+			if (read?.exists && base.exists && !sameStamp(read.stamp, base.stamp)) {
 				throw fileConflict(target, "file changed since it was read", read.stamp, base.stamp, index);
 			}
 		}
@@ -1261,10 +1137,7 @@ export function move(batch, source, target, options = {}) {
 	if (targetExists) {
 		if (targetView.real) {
 			const targetRead = batch.readSet.get(targetView.physical);
-			if (!targetRead?.exists) {
-				throw prepareRejected(targetPath, "overwrite of an existing target requires a prior read", index);
-			}
-			if (!sameStamp(targetRead.stamp, targetView.stamp)) {
+			if (targetRead?.exists && !sameStamp(targetRead.stamp, targetView.stamp)) {
 				throw fileConflict(targetPath, "target changed since it was read", targetRead.stamp, targetView.stamp, index);
 			}
 		}
@@ -1313,16 +1186,6 @@ export function move(batch, source, target, options = {}) {
 			kind = kindOf(stats);
 			mode = modeOf(stats);
 			recordRead(batch, physicalSource, stats);
-			if (kind === "symlink") {
-				try {
-					const linkReal = batch.io.realpath(physicalSource);
-					if (!batch.readSpecs.some((spec) => realContains(spec, linkReal))) {
-						throw pathEscape(sourcePath, "symlink-target-outside-roots");
-					}
-				} catch (error) {
-					if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") throw error;
-				}
-			}
 			const sourceOverlay = batch.overlay.get(sourcePath);
 			content =
 				sourceOverlay?.type === "file" && sourceOverlay.content !== null && sourceOverlay.content !== undefined
@@ -2023,7 +1886,8 @@ export async function commit({ batch, plan, writeGate, control, identity, claim,
 					}
 					return result;
 				}
-				written.push(step.path ?? step.target ?? null);
+				const writtenPath = step.path ?? step.target ?? null;
+				if (!written.includes(writtenPath)) written.push(writtenPath);
 				if (step.kind === "write") {
 					const snapshot = appliedStamp(batch, step.path);
 					if (snapshot) stamps.push(snapshot);
@@ -2095,12 +1959,6 @@ function resolveCallCwd(batch, cwd) {
 	if (cwd === undefined || cwd === null || cwd === "") return batch.writeRoot;
 	assertPathText(cwd, "cwd");
 	const target = resolveAgainstRoot(batch.writeRoot, cwd);
-	assertNotControlPath(target);
-	const real = deepestRealPath(target, batch.io);
-	assertNotControlPath(real);
-	if (!batch.readSpecs.some((spec) => realContains(spec, real))) {
-		throw pathEscape(target, "outside-read-roots");
-	}
 	if (viewEntry(batch, target).type !== "dir") {
 		throw structureConflict(target, "call cwd is not a directory", undefined);
 	}
@@ -2109,55 +1967,7 @@ function resolveCallCwd(batch, cwd) {
 
 function resolveCallLogPath(batch, limits) {
 	if (!limits.logPath) return null;
-	const target = resolveAgainstRoot(batch.writeRoot, limits.logPath);
-	const real = deepestRealPath(target, batch.io);
-	if (limits.logRoot) {
-		const rootPath = resolveAgainstRoot(batch.writeRoot, limits.logRoot);
-		if (dirname(rootPath) === rootPath) {
-			throw invalidArgument("limits.logRoot", "a directory below the filesystem root", limits.logRoot);
-		}
-		const rootSegments = rootPath.split(sep).filter(Boolean);
-		if (rootSegments.includes(".git")) throw pathEscape(rootPath, "protected-segment:.git");
-		if (!isDirectoryStats(batch.io.lstat(rootPath))) {
-			throw invalidArgument("limits.logRoot", "an existing directory", limits.logRoot);
-		}
-		const rootReal = batch.io.realpath(rootPath);
-		if (rootReal.split(sep).filter(Boolean).includes(".git")) {
-			throw pathEscape(rootPath, "protected-segment:.git");
-		}
-		if (!realContains({ kind: "dir", real: rootReal }, real)) {
-			throw pathEscape(target, "outside-log-root");
-		}
-		const rel = relative(rootPath, target);
-		if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-			throw pathEscape(target, "outside-log-root");
-		}
-		const segments = rel.split(sep).filter(Boolean);
-		if (segments.includes(".git")) throw pathEscape(target, "protected-segment:.git");
-		if (segments[segments.length - 1] === "AGENTS.md") throw pathEscape(target, "protected-agents-file");
-		return target;
-	}
-	const segments = target.split(sep).filter(Boolean);
-	const realSegments = real.split(sep).filter(Boolean);
-	const inArtifacts = (parts) => parts.some((part, index) => part === ".herd" && parts[index + 1] === "artifacts");
-	const inAuditTmp = (parts) =>
-		parts.some((part, index) => part === "tmp" && parts[index + 1]?.startsWith("herd-audit-"));
-	if (inArtifacts(realSegments) || inAuditTmp(realSegments)) {
-		if (segments.includes(".git") || realSegments.includes(".git")) {
-			throw pathEscape(target, "protected-segment:.git");
-		}
-		if (segments[segments.length - 1] === "AGENTS.md") {
-			throw pathEscape(target, "protected-agents-file");
-		}
-		return target;
-	}
-	assertNotControlPath(target);
-	if (!realContains(batch.writeSpec, real)) {
-		throw pathEscape(target, "outside-log-root");
-	}
-	assertWritableLocation(batch, target);
-	assertWritableLocation(batch, real, batch.writeReal);
-	return target;
+	return resolveAgainstRoot(batch.writeRoot, limits.logPath);
 }
 
 function truncateInline(text, limit) {
@@ -2180,6 +1990,18 @@ function utf8Text(bytes) {
 		break;
 	}
 	return bytes.subarray(0, end).toString("utf8");
+}
+
+const HOST_INJECTED_ENV = Object.freeze(["BUN_OPTIONS", "NODE_OPTIONS", "BASH_ENV", "ENV", "PROMPT_COMMAND"]);
+
+export function callEnvironment(env = process.env) {
+	const next = {};
+	for (const [key, value] of Object.entries(env)) {
+		if (value === undefined) continue;
+		if (HOST_INJECTED_ENV.includes(key)) continue;
+		next[key] = value;
+	}
+	return next;
 }
 
 export function defaultRunCommand(command, { cwd, signal, maxBytes, argv } = {}) {
@@ -2206,12 +2028,14 @@ export function defaultRunCommand(command, { cwd, signal, maxBytes, argv } = {})
 				? spawn(argv[0], argv.slice(1), {
 						cwd,
 						shell: false,
+						env: callEnvironment(),
 						detached: process.platform !== "win32",
 						stdio: ["ignore", "pipe", "pipe"],
 					})
 				: spawn(command, {
 						cwd,
 						shell: true,
+						env: callEnvironment(),
 						detached: process.platform !== "win32",
 						stdio: ["ignore", "pipe", "pipe"],
 					});

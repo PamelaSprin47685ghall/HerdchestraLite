@@ -1,27 +1,26 @@
 {
   "name": "herdchestra-lite",
   "version": "1.0.0",
-  "description": "vibe-workers as a proper multi-file omp plugin",
+  "description": "ClojureScript sandbox dogfood surface for omp",
   "type": "module",
   "license": "MIT",
   "private": false,
   "omp": {
     "extensions": [
-      "./src/bootstrap-main.mjs",
-      "./src/tool-gate/index.mjs"
+      "./src/clj-main.mjs"
     ]
   },
   "pi": {
     "extensions": [
-      "./src/bootstrap-main.mjs",
-      "./src/tool-gate/index.mjs"
+      "./src/clj-main.mjs"
     ]
   },
   "exports": {
     ".": "./src/main.mjs",
     "./bootstrap-main": "./src/bootstrap-main.mjs",
     "./tool-gate": "./src/tool-gate/index.mjs",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./clj-main": "./src/clj-main.mjs"
   },
   "files": [
     "src/",

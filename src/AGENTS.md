@@ -4,12 +4,21 @@
 
 ## 1 入口与装配
 
-当前清单只有两个入口：
+当前清单（`package.json` 的 `omp.extensions` / `pi.extensions`）只有一个入口：
 
-1. `src/bootstrap-main.mjs`：惰性 `import("./main.mjs")`，调用默认工厂，并把成功/失败写入 `host/health.mjs`。入口本身不注册业务工具。
-2. `src/tool-gate/index.mjs`：独立入口。负责 gate 字段的注入、准入与剥离，并维护 role credential；不依赖 `main.mjs`。
+1. `src/clj-main.mjs`：最小 dogfood 面。只注册 `clj_plan`、`clj_devops`、`clj_review`、`clj_worker` 与 `/clj-status`；不加载阶段、看板、worktree、审计、TUI 或 tool-gate。它只依赖 `clj-sandbox/*`、`host/health.mjs`、`util/file-lock.mjs`，因此不需要 omp 宿主包即可在本地测试。
 
-`src/main.mjs` 是唯一主装配器。它注册命令、工具与 hook，连接 stage gate、board、runner、sandbox、Scope、TUI 与 subagent 适配器；不实现看板、门禁或沙箱的内部语义。
+以下入口与模块保留给后续扩张，当前清单不加载：
+
+- `src/bootstrap-main.mjs`：惰性 `import("./main.mjs")`，调用默认工厂，并把成功/失败写入 `host/health.mjs`。
+- `src/tool-gate/index.mjs`：独立入口，负责 Scope/intent 注入、准入与剥离，并维护角色收窄；不依赖 `main.mjs`。
+- `src/main.mjs`：完整装配的保留主装配器。它注册命令、工具与 hook，连接 stage gate、board、runner、sandbox、Scope、TUI 与 subagent 适配器；不实现看板、门禁或沙箱的内部语义。
+
+`src/clj-main.mjs` 没有角色 admission：主会话可以选任一 `clj_*` 工具。该边界只适用于当前 dogfood 面，阶段层接回时必须恢复角色收窄。
+
+`src/clj-main.mjs` 同时维护 `HOST_TOOL_BLACKLIST`（`read`/`write`/`edit`/`apply_patch`/`ast_edit`/`ast_grep`/`bash`/`exec`/`eval`/`glob`/`grep`/`find`）。`applyCljToolSurface` 在 `session_start` 与 `before_agent_start` 从 `getActiveTools()` 的当前集合中减法移除这些名字，再确保四个 `clj_*` 激活；它不重建允许列表，未列出的工具保持原有激活状态。禁用 `read`/`write` 会切断宿主 `xd://` 传输设备，这是当前 dogfood 的有意代价。
+
+`src/clj-sandbox/cherry.mjs` 是 Cherry 加载的唯一实现；`host/imports.mjs` 重导出它，`clj-sandbox/evaluator.mjs` 直接依赖它。这样本地面无需导入 `@oh-my-pi/pi-coding-agent` 或 `typebox`。
 
 `main.mjs` 当前不 import 旧的 `pi-goal/`、`pi-context/`、`editor-theme/` 或 `manual-acceptance/` 运行时。旧实现目录、旧提示词模块、`src/util/objects.mjs` 与旧 manual-acceptance 测试均已从工作树删除；不要恢复或重新引用。
 
@@ -100,6 +109,7 @@ tool-gate/index ── host/health、scope/ledger、util/errors、tool-gate/sche
 
 ## 4 当前装配状态
 
+- **当前激活面是 clj-only（见 §1）**；本节其余内容是完整装配的保留状态，不代表清单会加载它们。`/herd`、门禁、看板、worktree、审计、TUI 与 Scope 当前不可用；`DEBT.md` D0 记录该缺口与扩张顺序。
 - 两个清单入口、`main.mjs` 的工具/命令注册、阶段门禁、看板、worktree、沙箱、Scope、TUI 与 runner 端口在当前源码中有注册/装配代码；这不等于行为验收完成。
 - S1 是唯一手工批准门禁：`advance_s1` 展示磁盘上的真实 `plans/<slug>/s1-brainstorm.md` 并等待明确批准或修改；真实产品运行只能由人类操作员批准。获用户授权的隔离测试中，AI 操作员可以操作真实确认界面模拟批准或修改，但必须在实测记录中注明该次操作是测试模拟，不冒充人类批准或生产授权。产品不识别操作者身份，不新增测试模式或身份字段；无法证明隔离时不得使用该例外。
 - `advance_s4` 通过 `runner.forkSlices` 创建 Slice 并启动 runner；`join_slice` 在 FIFO 队列耗尽时调用 `runMissionAudit`，另有 `session_start`/`agent_end` 的 `auditReady` 触发、`scheduleAuditRetry` 退避与冻结文件编辑导致的批次作废。`tests/s5-wiring.test.mjs` 是自动化集成，不是手工验收；真实宿主、重启和全 Slice 触发尚未验收。

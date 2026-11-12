@@ -4,6 +4,14 @@
 >
 > 条款位置以根 `AGENTS.md` 为准；证据以当前文件与 `HACK.md` 为准。任何条目关闭前都必须有真实行为证据，不以自动化测试代替手工验收。
 
+## D0 当前清单只装配 clj 执行器；`/herd` 与编排层未加载
+
+- **条款**：§0.3、§1.3、§2.1–§2.7、§8.1–§8.5、§9.7。
+- **缺口**：用户明确要求按 Gall 定律先收敛最小可 dogfood 核心，当前 `package.json` 的 `omp.extensions` / `pi.extensions` 只有 `./src/clj-main.mjs`。它只注册 `clj_plan`、`clj_devops`、`clj_review`、`clj_worker` 与 `/clj-status`；`/herd`、`advance_s1..s4`、`ask_user`、`devops` 子代理、S1 手工批准、`realign_frozen`、`tool-gate`（Scope/intent 注入与剥离）、角色收窄、看板、worktree、K 路审计、TUI 看板均未装配。`src/main.mjs`、`bootstrap-main.mjs`、`tool-gate/index.mjs` 与相关模块仍在仓库中，是保留代码，不是当前可用功能。
+- **影响**：当前产品不能执行根规格的五阶段使命；模型在主会话中直接选择四个 `clj_*` 工具，没有角色 admission，也没有 Scope 预算与出站裁剪。`clj_worker` 可直接读写当前工作区，且 VFS 不再限制路径、盲写或 `AGENTS.md`；`clj_devops` 的 `call` 是黑盒 best-effort。宿主 `read`/`write`/`edit`/`apply_patch`/`ast_edit`/`ast_grep`/`bash`/`exec`/`eval`/`glob`/`grep`/`find` 已按黑名单禁用；这不是白名单，其他工具保持原有激活状态。禁用 `read`/`write` 也切断了宿主 `xd://` 传输设备，属于当前有意代价。此状态只适合验证执行器，不适合声称规格已实现或可交付使命。
+- **建议处理**：按 README 的扩张顺序逐层接回，每层先真实 dogfood 通过再进入下一层：1) tool-gate Scope/intent 注入、准入、剥离；2) `advance_s1..s4`、`ask_user`、`devops` 与 S1 手工批准；3) 单 Slice 看板与 Reviewer/Worker 角色面；4) 多 worktree、K 路审计与批准。接回时恢复 `package.json` 的原入口集合，并保留 clj-main 作为最小故障隔离面。
+- **证据**：`package.json` 的入口；`src/clj-main.mjs`；`HACK.md` §9 的 2026-11-12 clj-only 冒烟记录；`tests/clj-core.test.mjs`（15 pass/0 fail，内部测试，不是验收）；根规格 §9.7 的完整放行标准仍无证据。
+
 ## D1 S5 审计闭环的触发与真实收尾未验收
 
 - **条款**：§2.6、§9.5、§9.7 放行标准。
