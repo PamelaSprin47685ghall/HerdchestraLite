@@ -2,7 +2,63 @@
 
 本文件记录本包的用户可见变化。
 
-## [Unreleased]
+## [Unreleased] — clean-break（进行中，未验收）
+
+> 本节只记录当前工作区的结构变化，不表示功能已交付或验收通过。根 `AGENTS.md` 仍是唯一规格；未关闭缺口见 `DEBT.md`。
+
+### Added
+
+- 新的产品模块骨架：`host/`、`util/`、`clj-sandbox/`、`tool-gate/`、`scope/`、`stages/`、`swarm/`、`prompts/`、`tui/`。
+- 阶段控制态改为七项 `:frozen`（`s1`、`s1-summary`、`s2`、`s2-cases`、`s3`、`s3-modules`、`s4`）；新增 `.herd/missions/<slug>/s1-summary.md`、`.herd/missions/<slug>/cases.edn`、`mission.edn :s3-modules` 与 `:s4-slices`；新增 `realign_frozen`。
+- 新的开发者测试：`host`、`util`、`clj-sandbox`、`tool-gate`、`scope`、`stages`、`swarm`、`tui` 等模块的 `bun test` 用例。测试只保护内部不变量，不是手工验收证据。
+- 独立开发验收包 `tools/dev-acceptance/`：只负责开发验收文档的提交与报告写入，不作为产品运行时入口，也不是 K 路审计执行器。
+- `src/AGENTS.md`、`DEBT.md`、`HISTORY.md`：分别记录架构装配、未关闭缺口与历史取舍。
+
+### Changed
+
+- `package.json` 的清单入口收敛为两个：`src/bootstrap-main.mjs` 与 `src/tool-gate/index.mjs`。
+- 运行时依赖收敛为 `cherry-cljs@0.6.38`；移除 `pi-context`、`pi-goal-x` 与主题入口依赖。
+- `src/main.mjs` 改为装配新模块；不再 import 旧的 `pi-goal`、`pi-context`、`editor-theme`、`manual-acceptance` 运行时。
+- `main.mjs` 连接 S5 审计来源：`join_slice` 队列耗尽后调用 `runMissionAudit`，再走 `startAuditBatch`、`aggregate`、`writeS5Report` 与修复切片；真实宿主闭环仍未验收。
+- `advance_s1` 把提交的 `summary` 原样写入并冻结 `s1-summary.md`；`advance_s2` 接收结构化 `cases`（`case_id`/`path`/`threshold`/`steps`/`expected`/`rubric`），经 `commitS2` 原子写 `cases.edn`、保存方法论并冻结 `s2-cases`；`advance_s3` 持久化完整 `:s3-modules`（含 `mapped_cases`）并用 inline 哈希冻结；`advance_s4` 从冻结 `cases.edn` 校验覆盖并写 `:s4-slices`。
+- S5 审计从冻结 `cases.edn` 与 `s1-summary.md` 单次读取，重读 mission 核对哈希，并在 `startAuditBatch` 启动前与活 frozen 哈希再绑定；审计员只消费注入的单条 CASE 记录，不读 Markdown。
+- `board_finish` 的 `dependency_paths` 限定为工作区相对路径，`wait_for` 支持既有子任务 ID 或 `condition:<key>` 前缀；`clj_plan` 可读冻结 `cases.edn`，`clj_auditor` 拒绝读取它。
+- `slice_id`/worktree 接受 uppercase 与下划线，并在 workspace 路径、branch、writeW/board 锁路径、`worktrees.edn` 键与 SliceHandle 中逐字保留大小写；`depends_on` 仍精确大小写匹配。
+- Evaluator 撤回固定 5s 端口 watchdog，恢复 intent deadline park：`commit`/`discard` 只 race port promise 与 program control，pending 保留，unpark 等同一 promise；t14/t15 的 abandoned capability 回执/账本保留。未证明的额外 timeout 不再代替根要求的 park。
+- S5 工具面：`STAGE_SURFACES.s5` 不含 `clj_plan`，`publishMission` 在 S5 将 `clj_plan` 追加到 `blockedTools`；`main-bootstrap` 窄测 48 pass/0 fail，但 r23 真实宿主仍暴露 `clj_plan`，修复效果尚未重测。
+- `rewriteVibeModeContext` 接入 `context` 出站副本的 `vibe-mode-context` 消息；`buildCaseAuditorPrompt` 由 `runMissionAudit` 的 `buildPrompt` 使用；`startAgent` 使用调用方 `systemPrompt` 并透传请求选项。
+- S1–S5 简报与 Manual Auditor 模板同步根 §8.3/§8.4：简报要求 S1 `summary` 作为独立冻结背景、S2 使用结构化 CASE 数据集、S3 模块用 `mapped_cases` 覆盖冻结 CASE、S5 审计只注入单条冻结 CASE 记录；auditor 模板使用 `case_id` 与确定性 EDN+UFSS 呈现。
+- Esc 层级取消接入 `onTerminalInput`；宿主缺失时记录降级并提示 `/herd-cancel`。
+- 角色收窄改用宿主报告的子会话身份 `ctx.agent` 与 M0 发布的 role surfaces；首行 `[HERD_ROLE: ...]` token 仍作为声明被解析和核对，不再依赖独立 role-auth 注册表。
+- README 与 CHANGELOG 改为描述当前工作区；旧实现的 CHANGELOG 原文保留在文末，不再作为当前行为说明。
+
+### Removed
+
+- `package.json` 中的旧运行时依赖、第三个清单入口与 `editor-theme` 导出。
+- 旧 README 的三入口、18.18.6 基线、`/goal-x`、`/acm`、旧手动验收工具等安装与使用说明，不再作为当前指导。
+- 开发验收包完成迁移后删除旧 `src/manual-acceptance/` 与对应旧测试。
+- 确认无运行时消费者后删除 `src/prompts/auditor.mjs`、`manual-protocol.mjs`、`method-discipline.mjs`、`repo-aware-rules.mjs`、`plan-only.mjs`、`context-skill.mjs` 与 `src/util/objects.mjs`；`tools/dev-acceptance/util/objects.mjs` 是独立子包自己的复制，保留。
+- 删除 `tool-gate/role-auth.mjs` 与 schema 侧 role-auth/nonce 注册；角色身份改由宿主 `ctx.agent` 判定。
+- 删除 S2 Markdown CASE 解析与旧 `{id, threshold, path, rubric_summary}` CASE 结构；`s2-manual-tests.md` 只保留方法论。contract-line 改为七项纯渲染、陈旧仅告警，四段解析/重建不再是权威路径；S3/S4 覆盖不再以 `structure.ids` 快照为唯一依据。
+
+### Fixed
+
+- S3 门禁误要求 `s2-manual-tests.md` 出现 `CASE 对应表` 标题，且依赖图关键词不识别 `## 模块 DAG`；已改为只要求模块边界与依赖图，接受 `模块 DAG`/`dag`，CASE 映射只由结构化 `modules[].mapped_cases` 校验。真实 rS3 的 S2 已冻结 5 CASE；rS4 恢复原 session 后 S3 已成功晋级 S4。
+- S2 校验回执在 parser 错误码未注册时只返回 `data.code`，丢失 `stage`/`errors`/`required`/`missing`/`received`/`next`；已固定 outer `:INVALID_ARGUMENT` 并在 `data` 保留结构化 errors，`CASE_REQUIRED_PATH_MISSING` 现在列出五类 required、实际 missing、received 与纠正建议，并明确 `path` 是 category label 而非文件系统路径。真实 s1-7 的模型仍重复提交文件路径，S2 复测未完成。
+- S4 校验误拒合法文档：`合并拓扑`/`合入顺序`/`merge topology` 不被识别为 merge-order，uppercase `SLICE-01` 被自加的 lowercase 规则拒绝，并级联出 `depends_on undeclared`；已接受这些合法形式，`slice_id` 仍拒绝空格/斜杠/点，`depends_on` 保持精确大小写匹配。真实 s1-9 已重测 S4 成功。
+- `fork_slices` 失败清理曾删除首个失败 Slice 的 pending 行，留下其余 Slice 的孤立 DAG（slice-04 依赖不存在的 slice-01）；现改为保留完整拓扑：清理成功恢复 `:pending` 并写 `:last-fork-error`，清理失败标 `:failed` + `:failure-reason`，已成功 Slice 保持 `:running`，容量/中途失败保留拓扑并标可恢复，不伪造 handle。确定性故障注入 34 pass/230 expect。
+- `SCOPE_UNINITIALIZED` 冷启回执原先只列 kind/tool；现在带 `required: ["new_scope_goal","new_scope_retention_budget"]` 与可执行的 resetScope `next` 示例，窄测覆盖。
+- `SCOPE_INVALID` 曾把 `resetScope.replacement` 误判为不允许，尽管出站 flat scope schema 声明了该字段；准入现接受 declared 字段（resetScope/removeLast），各 kind 必需字段仍强制，`keepLast`/`meToo` 仍拒绝额外字段；r14 原始 scope 离线通过，111 项窄测通过。
+
+### Still open
+
+- 真实隔离 rS3 已通过结构化 S2（5 CASE `cases.edn` 冻结）；s1-7 在 S2 因模型反复使用文件路径而停止，回执缺陷已由 t17 修复；rS4 恢复原 session 后 S3 成功并进 S4，S4 被旧校验器误拒（t18 修复）；rS5 真实 `advance_s4` 成功进 S5，`fork_slices` 失败清理删除 pending Slice 的问题由 t5 修复；s1-13 成功 fork 3 个 worktree（slice-04 pending），但 Reviewer 同回合并行调用被旧监控误判 repeat；s1-14 的 turn-aware harness 离线验证通过，父 `fork_slices` 的 `resetScope.replacement` 又被旧准入误拒，t19 修复；r22 暴露 S5 activeTools 误含并执行 `clj_plan`，r23 的 activeTools 仍含 `clj_plan`；当前源码虽移除 `STAGE_SURFACES.s5` 的 clj_plan 并在 `publishMission.blockedTools` 追加，但 r23 真实宿主仍暴露，runner 因中断取消，修复效果未重测。r23 fork 成功并启动 3 个子代理，首个 `clj_review` 因 `ls expects an EDN map argument` 停止。S5 审计、`runMissionAudit → startAuditBatch`、审计提交、`s5-report.md` 与一次性批准均未完成；不能声称已交付、S5 可用或审计通过。
+- D13 阶段控制态迁移仍开放：统一全量套件未收口，`realign_frozen` 的 S2–S4 表面与审计失效/观察者退休断言、真实 18.16.0/17.x/16.x 版本验证未完成。
+- 角色身份依赖宿主 `ctx.agent`；真实 17.x/16.x 形状未验证，且没有独立 role-auth 回退。
+- 真实宿主加载、真实 TUI/tmux 交互、S1→S5 端到端使命与开发验收 `report.md` 均未完成。
+- 全量测试/交错矩阵、`sessionFile` 父链偏差与真实出站零剧透测试仍未闭合。
+
+## [0.1.0] 旧实现（历史，原文保留）
 
 ### Added
 

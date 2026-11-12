@@ -1,0 +1,203 @@
+import { afterEach, describe, expect, it } from "bun:test";
+import { lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { createObservationLedger, createStampFromStats, observationKind } from "../src/clj-sandbox/observations.mjs";
+import { createBatch, readText, stat, write } from "../src/clj-sandbox/vfs.mjs";
+
+const roots = [];
+
+function sandbox() {
+	const root = mkdtempSync(join(tmpdir(), "herd-observations-"));
+	roots.push(root);
+	return root;
+}
+
+function file(root, name, content) {
+	const target = join(root, name);
+	mkdirSync(dirname(target), { recursive: true });
+	writeFileSync(target, content, "utf8");
+	return target;
+}
+
+function entryOf(path) {
+	const stats = lstatSync(path, { bigint: true });
+	return {
+		path,
+		exists: true,
+		kind: observationKind(stats),
+		stamp: createStampFromStats(stats),
+	};
+}
+
+function scope(overrides = {}) {
+	return {
+		sessionKey: "session-1",
+		actorId: "agent-1",
+		termId: "term-1",
+		...overrides,
+	};
+}
+
+afterEach(() => {
+	while (roots.length > 0) {
+		rmSync(roots.pop(), { recursive: true, force: true });
+	}
+});
+
+describe("observation ledger", () => {
+	it("keeps the latest observation per path per actor term", () => {
+		const root = sandbox();
+		const target = file(root, "a.txt", "one");
+		const ledger = createObservationLedger();
+
+		ledger.observe(scope(), entryOf(target));
+		writeFileSync(target, "two", "utf8");
+		ledger.observe(scope(), entryOf(target));
+		const read = ledger.readSetForActor(scope());
+		expect(read.ok).toBe(true);
+		const entry = read.credential.entries.find((item) => item.path === target);
+		expect(entry.kind).toBe("file");
+		expect(entry.stamp.size).toBe(3n);
+		expect(read.credential.epoch).toBeGreaterThan(0);
+	});
+
+	it("does not mix actors or terms", () => {
+		const root = sandbox();
+		const target = file(root, "a.txt", "one");
+		const ledger = createObservationLedger();
+		ledger.observe(scope(), entryOf(target));
+
+		expect(ledger.readSetForActor(scope({ actorId: "agent-2" })).code).toBe(":STALE_CONTROL");
+		expect(ledger.readSetForActor(scope({ termId: "term-2" })).code).toBe(":STALE_CONTROL");
+		expect(ledger.readSetForActor(scope()).ok).toBe(true);
+	});
+
+	it("rejects unobserved dependencies before any lstat", () => {
+		const root = sandbox();
+		const observed = file(root, "a.txt", "one");
+		const unobserved = file(root, "b.txt", "two");
+		let calls = 0;
+		const ledger = createObservationLedger({
+			lstat(path) {
+				calls += 1;
+				return lstatSync(path, { bigint: true });
+			},
+		});
+		ledger.observe(scope(), entryOf(observed));
+		const credential = ledger.readSetForActor(scope()).credential;
+
+		const verdict = ledger.verifyObservedFacts(credential, [observed, unobserved]);
+		expect(verdict.ok).toBe(false);
+		expect(verdict.code).toBe(":STALE_CONTROL");
+		expect(verdict.missing).toEqual([unobserved]);
+		expect(calls).toBe(0);
+
+		const forged = {
+			...credential,
+			entries: [...credential.entries, entryOf(unobserved)],
+		};
+		const forgedVerdict = ledger.verifyObservedFacts(forged, [unobserved]);
+		expect(forgedVerdict.code).toBe(":STALE_CONTROL");
+		expect(forgedVerdict.missing).toEqual([unobserved]);
+		expect(calls).toBe(0);
+	});
+
+	it("verifies observed stamps and structures", () => {
+		const root = sandbox();
+		const target = file(root, "a.txt", "one");
+		const missing = join(root, "gone.txt");
+		const ledger = createObservationLedger();
+		ledger.observe(scope(), entryOf(target));
+		ledger.observe(scope(), {
+			path: missing,
+			exists: false,
+			kind: "missing",
+			stamp: null,
+		});
+		const credential = ledger.readSetForActor(scope()).credential;
+
+		expect(ledger.verifyObservedFacts(credential, [target, missing])).toEqual({
+			ok: true,
+			checked: [target, missing],
+			missing: [],
+		});
+
+		writeFileSync(target, "changed", "utf8");
+		const changed = ledger.verifyObservedFacts(credential, [target]);
+		expect(changed.ok).toBe(false);
+		expect(changed.code).toBe(":FILE_CONFLICT");
+		expect(changed.conflicts[0].path).toBe(target);
+
+		writeFileSync(join(root, "gone.txt"), "now here", "utf8");
+		const appeared = ledger.verifyObservedFacts(credential, [missing]);
+		expect(appeared.ok).toBe(false);
+		expect(appeared.code).toBe(":STRUCTURE_CONFLICT");
+	});
+
+	it("rejects a retired actor and a stale credential", () => {
+		const root = sandbox();
+		const target = file(root, "a.txt", "one");
+		const ledger = createObservationLedger();
+		ledger.observe(scope(), entryOf(target));
+		const credential = ledger.readSetForActor(scope()).credential;
+
+		expect(ledger.retireActor(scope())).toEqual({ ok: true, retired: true });
+		expect(ledger.readSetForActor(scope()).code).toBe(":STALE_CONTROL");
+		const verdict = ledger.verifyObservedFacts(credential, [target]);
+		expect(verdict.ok).toBe(false);
+		expect(verdict.code).toBe(":STALE_CONTROL");
+		expect(verdict.reason).toBe("credential-stale");
+	});
+});
+
+describe("vfs ledger integration", () => {
+	it("observes reads across separate program batches", () => {
+		const root = sandbox();
+		const a = file(root, "a.txt", "A");
+		const b = file(root, "b.txt", "B");
+		const ledger = createObservationLedger();
+		const actorScope = scope();
+
+		const first = createBatch({
+			writeRoot: root,
+			observations: ledger,
+			observationScope: actorScope,
+		});
+		readText(first, "a.txt");
+
+		const second = createBatch({
+			writeRoot: root,
+			observations: ledger,
+			observationScope: actorScope,
+		});
+		readText(second, "b.txt");
+		stat(second, "missing.txt");
+
+		const credential = ledger.readSetForActor(actorScope).credential;
+		expect(credential.entries.map((entry) => entry.path).sort()).toEqual([a, b, join(root, "missing.txt")].sort());
+		expect(ledger.verifyObservedFacts(credential, [a, b, join(root, "missing.txt")]).ok).toBe(true);
+	});
+
+	it("does not observe virtual files and requires a scope", () => {
+		const root = sandbox();
+		const ledger = createObservationLedger();
+		const batch = createBatch({
+			writeRoot: root,
+			observations: ledger,
+			observationScope: scope(),
+		});
+		writeFileSync(join(root, "real.txt"), "R", "utf8");
+		readText(batch, "real.txt");
+		write(batch, "virtual.txt", "V");
+		const credential = ledger.readSetForActor(scope()).credential;
+		expect(credential.entries.map((entry) => entry.path)).toEqual([join(root, "real.txt")]);
+
+		expect(() =>
+			createBatch({
+				writeRoot: root,
+				observations: ledger,
+			}),
+		).toThrow();
+	});
+});

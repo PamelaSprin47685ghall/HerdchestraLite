@@ -1,0 +1,1897 @@
+/**
+ * Assembly tests for the lazy bootstrap and the main extension surface.
+ *
+ * These tests use a fake ExtensionAPI; they do not start a model, a real
+ * subagent, or a TUI. They assert that the real modules are registered and
+ * that a role token narrows the child surface through `setActiveTools`.
+ */
+
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { Type } from "typebox";
+import { bootstrapMain } from "../src/bootstrap-main.mjs";
+import { EdnKeyword, printUfss } from "../src/clj-sandbox/ufss.mjs";
+import { readHealth } from "../src/host/health.mjs";
+import activate, {
+	auditorBinding,
+	auditReady,
+	boardRoleExitReady,
+	claimFor,
+	classifyAgentEnd,
+	continueDevopsSession,
+	createS1ApprovalComponent,
+	devopsReportAfterChildFailure,
+	devopsSessionFromMission,
+	hostEventBus,
+	hostSettings,
+	inheritedSessionFile,
+	missionBoardPort,
+	missionStageKey,
+	newDevopsCallId,
+	parentContextFor,
+	persistDevopsSession,
+	readDevopsReport,
+	realignEditedFrozen,
+	rememberDevopsSession,
+	sandboxRoots,
+	sessionIdentity,
+	trustedMissionSlug,
+	wakeRunnerAfterBoardCommand,
+	writeDevopsReport,
+	writeLockHeld,
+} from "../src/main.mjs";
+import { sandboxCapability } from "../src/sandbox/bwrap.mjs";
+import { writeAuditModelSeed } from "../src/sandbox/model-seed.mjs";
+import { admit, ledgerFor } from "../src/scope/ledger.mjs";
+import {
+	commitS2,
+	createMission,
+	freezeStage,
+	readMission,
+	saveS1Summary,
+	saveStageDocument,
+} from "../src/stages/contract.mjs";
+import { addTasks, apply, initialBoard, openBoard, registerActor } from "../src/swarm/board.mjs";
+import { inspectLock, withLock } from "../src/util/file-lock.mjs";
+
+const HEALTH_KEY = Symbol.for("herdchestra.health.v1");
+const SANDBOX = sandboxCapability();
+const temporaryDirectories = [];
+
+function temporaryRoot() {
+	const directory = mkdtempSync(join(tmpdir(), "herd-main-test-"));
+	temporaryDirectories.push(directory);
+	writeFileSync(join(directory, "AGENTS.md"), "# test\n", "utf8");
+	mkdirSync(join(directory, "plans"), { recursive: true });
+	return directory;
+}
+
+function fakeContext(root, id = "session-main", options = {}) {
+	return {
+		cwd: root,
+		mode: "tui",
+		hasUI: true,
+		sessionManager: {
+			getSessionId: () => id,
+			getCwd: () => root,
+			getSessionFile: () => undefined,
+		},
+		ui: {
+			notify() {},
+			async confirm() {
+				return true;
+			},
+			async input() {
+				return "ok";
+			},
+			setWidget() {},
+			onTerminalInput() {
+				return () => {};
+			},
+		},
+		model: { provider: "test", id: "main" },
+		modelRegistry: {},
+		agent: options.sub === true ? { kind: "sub", id } : undefined,
+	};
+}
+
+function fakePi() {
+	const hooks = new Map();
+	const tools = new Map();
+	const commands = new Map();
+	const shortcuts = [];
+	let activeTools = [];
+	const sent = [];
+	return {
+		typebox: { Type },
+		hooks,
+		tools,
+		commands,
+		shortcuts,
+		sent,
+		on(name, handler) {
+			const list = hooks.get(name) ?? [];
+			list.push(handler);
+			hooks.set(name, list);
+		},
+		registerTool(tool) {
+			tools.set(tool.name, tool);
+		},
+		registerCommand(name, options) {
+			commands.set(name, options);
+		},
+		registerShortcut(shortcut, options) {
+			shortcuts.push({ shortcut, options });
+		},
+		setActiveTools(names) {
+			activeTools = [...names];
+		},
+		getActiveTools() {
+			return [...activeTools];
+		},
+		getSettings() {
+			return { get: () => undefined, getModelRoles: () => ({}) };
+		},
+		sendMessage(message, options) {
+			sent.push({ message, options });
+		},
+		sendUserMessage(content, options) {
+			sent.push({ message: { content }, options, user: true });
+		},
+	};
+}
+
+function tuiKeys(data, action) {
+	const keys = {
+		"tui.select.cancel": data === "escape",
+		"tui.select.confirm": data === "enter",
+		"tui.editor.cursorLeft": data === "left",
+		"tui.editor.cursorRight": data === "right",
+		"tui.input.tab": data === "tab",
+		"tui.select.pageUp": data === "pageUp",
+		"tui.select.pageDown": data === "pageDown",
+		"tui.select.up": data === "up",
+		"tui.select.down": data === "down",
+		"tui.altScreen.top": data === "ctrl+home",
+		"tui.altScreen.bottom": data === "ctrl+end",
+		"tui.editor.cursorLineStart": data === "home",
+		"tui.editor.cursorLineEnd": data === "end",
+	};
+	return keys[action] === true;
+}
+
+function fakeTui(rows = 20) {
+	return { terminal: { rows }, requestRender() {} };
+}
+
+beforeEach(() => {
+	Object.defineProperty(globalThis, HEALTH_KEY, {
+		value: undefined,
+		enumerable: false,
+		configurable: true,
+		writable: true,
+	});
+});
+
+afterEach(() => {
+	while (temporaryDirectories.length > 0) {
+		rmSync(temporaryDirectories.pop(), { recursive: true, force: true });
+	}
+	delete globalThis[HEALTH_KEY];
+	delete globalThis[Symbol.for("herdchestra.mission.v1")];
+	delete globalThis[Symbol.for("herdchestra.roleSurfaces.v1")];
+	delete globalThis[Symbol.for("herdchestra.roleCredentials.v1")];
+});
+
+describe("bootstrap-main", () => {
+	it("records a successful lazy load without registering business tools", async () => {
+		const pi = fakePi();
+		const result = await bootstrapMain(pi, {
+			importMain: async () => ({ default: async () => "loaded" }),
+		});
+		expect(result).toBe("loaded");
+		expect(pi.tools.size).toBe(0);
+		expect(readHealth().entries.find((entry) => entry.entry === "main.bootstrap")?.status).toBe("ok");
+	});
+
+	it("records a failed lazy load and does not throw into the host", async () => {
+		const pi = fakePi();
+		const result = await bootstrapMain(pi, {
+			importMain: async () => {
+				throw new Error("missing module");
+			},
+		});
+		expect(result).toBeUndefined();
+		const entry = readHealth().entries.find((candidate) => candidate.entry === "main.bootstrap");
+		expect(entry?.status).toBe("failed");
+		expect(entry?.error).toContain("missing module");
+	});
+});
+
+describe("main assembly", () => {
+	it("registers gate, board, sandbox, spawn and command surfaces", async () => {
+		const pi = fakePi();
+		await activate(pi);
+		for (const name of [
+			"advance_s1",
+			"advance_s2",
+			"advance_s3",
+			"advance_s4",
+			"board_split",
+			"board_finish",
+			"fork_slices",
+			"join_slice",
+			"abandon_slice",
+			"clj_plan",
+			"clj_review",
+			"clj_worker",
+			"submit_case_audit",
+			"ask_previous_scope",
+			"assume",
+		]) {
+			expect(pi.tools.has(name)).toBe(true);
+		}
+		expect(pi.tools.has("clj_auditor")).toBe(SANDBOX.available);
+		for (const name of [
+			"board_register_actor",
+			"board_add_tasks",
+			"board_start_action",
+			"board_set_action_phase",
+			"board_resolve_condition",
+			"board_record_input",
+		]) {
+			expect(pi.tools.has(name)).toBe(false);
+		}
+		for (const name of ["advance_s1", "clj_plan", "board_split", "submit_case_audit"]) {
+			const parameters = pi.tools.get(name).parameters;
+			expect(parameters.properties.must_think_in).toBeDefined();
+			expect(parameters.properties.intent).toBeDefined();
+			expect(parameters.properties.scope).toBeDefined();
+			expect(parameters.required).not.toContain("intent");
+			expect(parameters.required).not.toContain("must_think_in");
+		}
+		expect(pi.tools.get("ask_previous_scope").parameters.properties.must_think_in).toBeUndefined();
+		expect(pi.tools.get("clj_plan").description).toContain("No stat, ls, write, mkdir, rm, mv, or call");
+		expect(pi.tools.get("board_claim").parameters.properties.actor).toBeUndefined();
+		expect(pi.tools.get("board_claim").parameters.properties.task_id).toBeDefined();
+		expect(pi.tools.get("board_claim").parameters.properties.atomicity_reason).toBeDefined();
+		expect(pi.tools.get("board_claim").parameters.properties.command).toBeUndefined();
+		expect(pi.tools.get("board_finish").parameters.properties.task_id).toBeDefined();
+		expect(pi.tools.get("board_finish").parameters.properties.claim_id).toBeDefined();
+		expect(pi.tools.get("submit_oracle_advice").parameters.properties.task_id).toBeDefined();
+		expect(pi.tools.get("submit_oracle_advice").parameters.properties.advice_markdown).toBeDefined();
+		for (const name of [
+			"herd",
+			"herd-status",
+			"herd-list",
+			"herd-focus",
+			"herd-unfocus",
+			"herd-cancel",
+			"herd-recovery",
+			"herd-settings",
+		]) {
+			expect(pi.commands.has(name)).toBe(true);
+		}
+		expect(pi.commands.has("herd-pair")).toBe(false);
+		expect(pi.shortcuts.some((entry) => entry.shortcut === "ctrl+shift+t")).toBe(true);
+		expect(pi.hooks.has("before_agent_start")).toBe(true);
+		expect(pi.hooks.has("context")).toBe(true);
+		expect(pi.hooks.has("tool_execution_end")).toBe(true);
+	});
+
+	it("asks for confirmation when /herd-recovery repair is requested", async () => {
+		const root = temporaryRoot();
+		const pi = fakePi();
+		await activate(pi);
+		const ctx = fakeContext(root);
+		await pi.commands.get("herd").handler("recovery probe", ctx);
+		let confirmations = 0;
+		ctx.ui.confirm = async () => {
+			confirmations += 1;
+			return false;
+		};
+		await pi.commands.get("herd-recovery").handler("repair", ctx);
+		expect(confirmations).toBe(1);
+	});
+
+	it("returns a structured duplicate-submission error instead of a ReferenceError", async () => {
+		const root = temporaryRoot();
+		const previousCwd = process.cwd();
+		process.chdir(root);
+		try {
+			const pi = fakePi();
+			await activate(pi);
+			const ctx = fakeContext(root, "session-main");
+			await pi.commands.get("herd").handler("devops report probe", ctx);
+			const slug = readdirSync(join(root, ".herd", "missions"))[0];
+			ctx.agent = { kind: "sub", id: "session-main" };
+			const callId = "devops-01234567-89ab-cdef-0123-456789abcdef";
+			const base = join(root, ".herd", "artifacts", slug, "PlanDevOps-child");
+			mkdirSync(base, { recursive: true });
+			ctx.sessionManager.getSessionFile = () => join(base, "child.jsonl");
+			ctx.sessionManager.getEntries = () => [
+				{
+					type: "message",
+					message: {
+						role: "user",
+						content: [{ type: "text", text: `Mission slug: ${slug}\nDevOps call: ${callId}\nreport` }],
+					},
+				},
+			];
+			await pi.hooks.get("before_agent_start")[0](
+				{
+					systemPrompt: "BASE",
+					prompt: `[HERD_ROLE: Plan DevOps nonce=0123456789abcdef]\nMission slug: ${slug}\nDevOps call: ${callId}\nreport`,
+				},
+				ctx,
+			);
+			const params = {
+				status: "completed",
+				report_markdown: "facts",
+				inspected_paths: ["package.json"],
+			};
+			const first = await pi.tools
+				.get("submit_devops_report")
+				.execute("report-call", params, undefined, undefined, ctx);
+			expect(first.isError).not.toBe(true);
+			pi.sent.length = 0;
+			await pi.hooks.get("agent_end")[0]({}, ctx);
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			expect(pi.sent).toHaveLength(0);
+			const second = await pi.tools
+				.get("submit_devops_report")
+				.execute("report-call", params, undefined, undefined, ctx);
+			expect(second.isError).toBe(true);
+			expect(second.content[0].text).toContain(":INVALID_ARGUMENT");
+			expect(second.content[0].text).toContain("already submitted");
+			const missing = await pi.tools
+				.get("submit_devops_report")
+				.execute("missing-fields", { status: "completed" }, undefined, undefined, ctx);
+			expect(missing.isError).toBe(true);
+			expect(missing.content[0].text).toContain("report_markdown");
+		} finally {
+			process.chdir(previousCwd);
+		}
+	});
+
+	it("shows the full disk S1 document and re-reads it for the freeze", async () => {
+		const root = temporaryRoot();
+		const previousCwd = process.cwd();
+		process.chdir(root);
+		try {
+			const pi = fakePi();
+			await activate(pi);
+			const ctx = fakeContext(root, "s1-display-session");
+			await pi.commands.get("herd").handler("approval display probe", ctx);
+			const slug = readdirSync(join(root, ".herd", "missions"))[0];
+			const document = [
+				"# S1",
+				"## 一句话目标与用户可见结果",
+				"一个可批准的真实文档。",
+				"## 决策框架",
+				"目标、备选、信息、价值与 VoI。",
+				"## 现状事实与根因",
+				"当前实现尚未展示完整磁盘文档。",
+				"## 单向门 / 双向门",
+				"批准是单向门。",
+				"## 事前验尸",
+				"若只展示内存副本，批准者会看不到真实文件。",
+				"## Non-Goals",
+				"不实现标准版。",
+				"## 成功标准",
+				"确认面板显示完整磁盘文档。",
+				"## 未决问题",
+				"无。",
+				"LONG-TAIL-".repeat(800),
+			].join("\n\n");
+			const edited = `${document}\n\n<!-- edited after the panel opened -->`;
+			const path = join(root, "plans", slug, "s1-brainstorm.md");
+			let bottom;
+			ctx.ui.custom = async (factory, options) => {
+				expect(options.overlay).toBe(true);
+				expect(options.overlayOptions.fullscreen).toBe(true);
+				return new Promise((resolve) => {
+					const component = factory(fakeTui(20), {}, { matches: tuiKeys }, resolve);
+					for (let index = 0; index < 200; index += 1) component.handleInput("pageDown");
+					bottom = component.render(100);
+					writeFileSync(path, edited, "utf8");
+					component.handleInput("right");
+					component.handleInput("enter");
+				});
+			};
+			const result = await pi.tools.get("advance_s1").execute(
+				"approval-display",
+				{
+					slug,
+					brainstorm_markdown: document,
+					summary: "完整文档批准",
+					non_goals: ["不实现标准版"],
+				},
+				undefined,
+				undefined,
+				ctx,
+			);
+			expect(result.isError).not.toBe(true);
+			expect(bottom.join("\n")).toContain("LONG-TAIL-");
+			const read = await readMission(root, slug);
+			expect(read.mission.stage).toBe(":s2");
+			expect(read.mission.frozen.s1.sha256).toBe(createHash("sha256").update(edited, "utf8").digest("hex"));
+		} finally {
+			process.chdir(previousCwd);
+		}
+	});
+
+	it("iterates S1 after a revision and freezes the second summary on approval", async () => {
+		const root = temporaryRoot();
+		const previousCwd = process.cwd();
+		process.chdir(root);
+		try {
+			const pi = fakePi();
+			await activate(pi);
+			const ctx = fakeContext(root, "s1-two-round");
+			await pi.commands.get("herd").handler("two round approval", ctx);
+			const slug = readdirSync(join(root, ".herd", "missions"))[0];
+			const doc = (label) =>
+				[
+					`# S1 ${label}`,
+					"## 一句话目标与用户可见结果",
+					"真实结果。",
+					"## 决策框架",
+					"目标、备选、信息、价值。",
+					"## 现状事实与根因",
+					"没有旧入口。",
+					"## 单向门 / 双向门",
+					"批准是单向门。",
+					"## 事前验尸",
+					"失败则保持 s1。",
+					"## Non-Goals",
+					"不实现标准版。",
+					"## 成功标准",
+					"通过面板批准。",
+					"## 未决问题",
+					"无。",
+				].join("\n\n");
+			const firstDoc = doc("第一版");
+			const secondDoc = doc("第二版");
+			let round = 0;
+			ctx.ui.input = async () => "请补充第二版";
+			ctx.ui.custom = async (factory) =>
+				new Promise((resolve) => {
+					const component = factory(fakeTui(20), {}, { matches: tuiKeys }, resolve);
+					if (round++ === 0) {
+						component.handleInput("left");
+						component.handleInput("enter");
+						return;
+					}
+					component.handleInput("right");
+					component.handleInput("enter");
+				});
+			const first = await pi.tools
+				.get("advance_s1")
+				.execute(
+					"round-1",
+					{ slug, brainstorm_markdown: firstDoc, summary: "第一版摘要", non_goals: ["不实现标准版"] },
+					undefined,
+					undefined,
+					ctx,
+				);
+			expect(first.isError).not.toBe(true);
+			expect((await readMission(root, slug)).mission.stage).toBe(":s1");
+			expect(readFileSync(join(root, ".herd", "missions", slug, "s1-summary.md"), "utf8")).toBe("第一版摘要");
+
+			const second = await pi.tools
+				.get("advance_s1")
+				.execute(
+					"round-2",
+					{ slug, brainstorm_markdown: secondDoc, summary: "第二版摘要", non_goals: ["不实现标准版"] },
+					undefined,
+					undefined,
+					ctx,
+				);
+			expect(second.isError).not.toBe(true);
+			const read = await readMission(root, slug);
+			expect(read.mission.stage).toBe(":s2");
+			expect(read.mission.frozen.s1.sha256).toBe(createHash("sha256").update(secondDoc, "utf8").digest("hex"));
+			expect(read.mission.frozen["s1-summary"].sha256).toBe(
+				createHash("sha256").update("第二版摘要", "utf8").digest("hex"),
+			);
+			expect(readFileSync(join(root, ".herd", "missions", slug, "s1-summary.md"), "utf8")).toBe("第二版摘要");
+		} finally {
+			process.chdir(previousCwd);
+		}
+	});
+
+	it("does not advance S1 when no custom confirmation UI is available", async () => {
+		const root = temporaryRoot();
+		const previousCwd = process.cwd();
+		process.chdir(root);
+		try {
+			const pi = fakePi();
+			await activate(pi);
+			const ctx = fakeContext(root, "s1-close-session");
+			await pi.commands.get("herd").handler("approval close probe", ctx);
+			const slug = readdirSync(join(root, ".herd", "missions"))[0];
+			const document = [
+				"# S1",
+				"## 一句话目标与用户可见结果",
+				"等待批准。",
+				"## 决策框架",
+				"目标、备选、信息、价值与 VoI。",
+				"## 现状事实与根因",
+				"尚未批准。",
+				"## 单向门 / 双向门",
+				"等待明确交互。",
+				"## 事前验尸",
+				"关闭面板不得晋级。",
+				"## Non-Goals",
+				"不实现标准版。",
+				"## 成功标准",
+				"保持 s1。",
+				"## 未决问题",
+				"无。",
+			].join("\n\n");
+			ctx.ui.custom = undefined;
+			ctx.ui.input = undefined;
+			await pi.tools.get("advance_s1").execute(
+				"approval-close",
+				{
+					slug,
+					brainstorm_markdown: document,
+					summary: "等待批准",
+					non_goals: ["不实现标准版"],
+				},
+				undefined,
+				undefined,
+				ctx,
+			);
+			const read = await readMission(root, slug);
+			expect(read.mission.stage).toBe(":s1");
+			expect(read.mission.frozen.s1).toBeUndefined();
+		} finally {
+			process.chdir(previousCwd);
+		}
+	});
+
+	it("scrolls the full S1 document and requires an explicit choice", () => {
+		const document = Array.from({ length: 30 }, (_, index) => `line-${index}`).join("\n");
+		const make = () => {
+			let result;
+			const component = createS1ApprovalComponent({
+				markdown: document,
+				title: "批准磁盘上的 S1 完整文档？",
+				keybindings: { matches: tuiKeys },
+				rows: 8,
+				done: (value) => {
+					result = value;
+				},
+			});
+			return { component, result: () => result };
+		};
+		const first = make();
+		const initial = first.component.render(40).join("\n");
+		expect(initial).toContain("line-0");
+		expect(initial).not.toContain("line-29");
+		first.component.handleInput("pageDown");
+		const paged = first.component.render(40).join("\n");
+		expect(paged).toContain("line-5");
+		expect(paged).not.toContain("line-0");
+		first.component.handleInput("end");
+		expect(first.component.render(40).join("\n")).toContain("line-29");
+		first.component.handleInput("enter");
+		expect(first.result()).toEqual({ decision: "pending" });
+
+		const approved = make();
+		approved.component.handleInput("right");
+		approved.component.handleInput("enter");
+		expect(approved.result()).toEqual({ decision: "approve" });
+
+		const revised = make();
+		revised.component.handleInput("right");
+		revised.component.handleInput("right");
+		revised.component.handleInput("enter");
+		expect(revised.result()).toEqual({ decision: "revise" });
+
+		const closed = make();
+		closed.component.handleInput("escape");
+		expect(closed.result()).toEqual({ decision: "pending" });
+	});
+
+	it("creates a mission and exposes the S1 briefing on the next turn", async () => {
+		const root = temporaryRoot();
+		const pi = fakePi();
+		await activate(pi);
+		const ctx = fakeContext(root);
+		await pi.commands.get("herd").handler("make a tiny feature", ctx);
+		expect(pi.sent.length).toBe(1);
+		expect(pi.sent[0].user).toBe(true);
+		expect(pi.getActiveTools()).toContain("advance_s1");
+		expect(pi.getActiveTools()).toContain("clj_plan");
+		expect(pi.getActiveTools()).not.toContain("board_split");
+		expect(pi.getActiveTools()).not.toContain("clj_worker");
+		expect(pi.getActiveTools()).not.toContain("submit_review");
+		expect(pi.getActiveTools()).not.toContain("submit_devops_report");
+		const hook = pi.hooks.get("before_agent_start")[0];
+		const result = await hook({ systemPrompt: "BASE", prompt: "make a tiny feature" }, ctx);
+		expect(result.systemPrompt).toContain("[STAGE S1:");
+		expect(result.systemPrompt).toContain("BASE");
+	});
+
+	it("narrows a subagent to its role surface", async () => {
+		const root = temporaryRoot();
+		const pi = fakePi();
+		await activate(pi);
+		const ctx = fakeContext(root, "session-child", { sub: true });
+		const hook = pi.hooks.get("before_agent_start")[0];
+		const result = await hook(
+			{ systemPrompt: "BASE", prompt: "[HERD_ROLE: Reviewer nonce=abcdefgh]\nreview this" },
+			ctx,
+		);
+		expect(result.systemPrompt).toContain("BASE");
+		expect(pi.getActiveTools()).toContain("clj_review");
+		expect(pi.getActiveTools()).not.toContain("clj_worker");
+		expect(pi.getActiveTools()).not.toContain("ask_user");
+		expect(pi.getActiveTools()).toContain("yield");
+	});
+
+	it("allows an ordinary Worker to compete for the token and yield", async () => {
+		const root = temporaryRoot();
+		const pi = fakePi();
+		await activate(pi);
+		const ctx = fakeContext(root, "session-worker", { sub: true });
+		const hook = pi.hooks.get("before_agent_start")[0];
+		await hook({ systemPrompt: "BASE", prompt: "[HERD_ROLE: Swarm Worker nonce=abcdefgh]\nwork" }, ctx);
+		expect(pi.getActiveTools()).toContain("board_take_or_die");
+		expect(pi.getActiveTools()).toContain("yield");
+		expect(pi.getActiveTools()).not.toContain("board_register_actor");
+		expect(pi.getActiveTools()).not.toContain("board_add_tasks");
+	});
+
+	it("ignores a role token in the main session", async () => {
+		const root = temporaryRoot();
+		const pi = fakePi();
+		await activate(pi);
+		pi.setActiveTools(["full-main-surface"]);
+		const ctx = fakeContext(root, "session-main");
+		const hook = pi.hooks.get("before_agent_start")[0];
+		const result = await hook({ systemPrompt: "BASE", prompt: "[HERD_ROLE: Reviewer nonce=forged123]\nsteal" }, ctx);
+		expect(result.systemPrompt).toContain("BASE");
+		expect(pi.getActiveTools()).toEqual(["full-main-surface"]);
+	});
+
+	it("fails a subagent closed without a role token", async () => {
+		const root = temporaryRoot();
+		const pi = fakePi();
+		await activate(pi);
+		const ctx = fakeContext(root, "session-orphan", { sub: true });
+		const hook = pi.hooks.get("before_agent_start")[0];
+		await hook({ systemPrompt: "BASE", prompt: "no token here" }, ctx);
+		expect(pi.getActiveTools()).toEqual([]);
+	});
+
+	it("forwards the previous-scope query and delivers the answer as a steer", async () => {
+		const root = temporaryRoot();
+		const pi = fakePi();
+		await activate(pi);
+		const ctx = fakeContext(root);
+		await pi.hooks.get("session_start")[0]({}, ctx);
+		admit(
+			ledgerFor("session-main", "session-main"),
+			{ kind: "resetScope", new_scope_goal: "scope", new_scope_retention_budget: 100 },
+			{ tool: "clj_plan", callId: "scope-init", turnId: "turn-1" },
+		);
+		const result = await pi.tools
+			.get("ask_previous_scope")
+			.execute("scope-call", { query: "what remains?" }, undefined, undefined, ctx);
+		expect(result.details.ok).toBe(true);
+		const steer = pi.sent.find((entry) => entry.message.customType === "herd-scope-answer");
+		expect(steer?.message.content).toContain("what remains?");
+		expect(steer?.options).toEqual({ deliverAs: "steer" });
+	});
+	it("rewrites the host vibe-mode wording on the outbound copy only", async () => {
+		const root = temporaryRoot();
+		const pi = fakePi();
+		await activate(pi);
+		const ctx = fakeContext(root);
+		const hook = pi.hooks.get("before_provider_request")[0];
+		const payload = {
+			messages: [{ role: "custom", customType: "vibe-mode-context", content: "drive two worker CLIs" }],
+		};
+		const result = hook({ payload }, ctx);
+		expect(result).toBe(payload);
+		expect(result.messages[0].content).not.toContain("drive two worker CLIs");
+		expect(result.messages[0].content).toContain("parallel slice/swarm workers");
+	});
+
+	it("mission board port seeds and updates the durable slice board", async () => {
+		const root = temporaryRoot();
+		const port = missionBoardPort(root, "mission-a");
+		const handle = await port.ensureSlice({ sliceId: "slice-a" });
+		expect(handle.durable).toBe(true);
+		await port.updateStatus({ sliceId: "slice-a", status: "running", base: "abc" });
+		const board = await handle.store.read();
+		expect(board.slice).toMatchObject({ "slice-id": "slice-a", status: "running" });
+		expect(board["board-version"]).toBeGreaterThan(0);
+		expect(
+			await port.assertHolder({
+				sliceId: "slice-a",
+				actor: { agent_id: "not-holder", role: "holder" },
+			}),
+		).toBe(false);
+	});
+
+	it("normalizes the real contract stage before tool selection", async () => {
+		const root = temporaryRoot();
+		const created = await createMission(root, { slug: "stage-shape", seed: "x" });
+		expect(created.ok).toBe(true);
+		const read = await readMission(root, "stage-shape");
+		expect(read.mission.stage).toBe(":s1");
+		expect(missionStageKey(read.mission.stage)).toBe("s1");
+		expect(missionStageKey("s5")).toBe("s5");
+		expect(missionStageKey(":completed")).toBe("completed");
+	});
+
+	it("realigns a human-edited frozen S1 document without rewriting bytes", async () => {
+		const root = temporaryRoot();
+		await activate(fakePi());
+		const slug = "realign-a";
+		await createMission(root, { slug, seed: "x" });
+		mkdirSync(join(root, "plans", slug), { recursive: true });
+		const documentPath = join(root, "plans", slug, "s1-brainstorm.md");
+		const original = "# S1\n\nOriginal human document.\n";
+		writeFileSync(documentPath, original, "utf8");
+		expect((await saveS1Summary(root, slug, "Original S1 summary")).ok).toBe(true);
+		const frozen = await freezeStage(root, slug, "s1", original, { callId: "freeze-s1" });
+		expect(frozen.ok).toBe(true);
+		const before = await readMission(root, slug);
+		const edited = "# S1\n\nHuman edited document.\n";
+		writeFileSync(documentPath, edited, "utf8");
+		const steered = [];
+		const after = await realignEditedFrozen(
+			{
+				root,
+				slug,
+				pi: { sendMessage: (message, options) => steered.push({ message, options }) },
+				auditRunning: false,
+			},
+			before.mission,
+		);
+		expect(after.frozen.s1.sha256).not.toBe(before.mission.frozen.s1.sha256);
+		expect(after.revision).toBeGreaterThan(before.mission.revision);
+		expect(readFileSync(documentPath, "utf8")).toBe(edited);
+		expect(steered).toHaveLength(1);
+		expect(steered[0].options).toEqual({ deliverAs: "steer" });
+	});
+	it("reads effective settings from the host context, not a fabricated object", () => {
+		const live = { get: () => undefined, getModelRoles: () => ({}) };
+		expect(hostSettings({ pi: { settings: live } })).toBe(live);
+		expect(hostSettings({ getSettings: () => live })).toBeUndefined();
+		expect(hostSettings({})).toBeUndefined();
+	});
+	it("classifies provider errors without turning auth failures into retries", () => {
+		const assistant = (extra) => ({ messages: [{ role: "assistant", stopReason: "error", ...extra }] });
+		expect(classifyAgentEnd(assistant({ errorStatus: 401, errorMessage: "invalid api key" }))).toMatchObject({
+			kind: "stalled",
+			reason: "auth",
+		});
+		expect(classifyAgentEnd(assistant({ errorStatus: 402, errorMessage: "insufficient_quota" }))).toMatchObject({
+			kind: "stalled",
+			reason: "balance",
+		});
+		expect(classifyAgentEnd(assistant({ errorStatus: 429 }))).toMatchObject({ kind: "transient" });
+		expect(classifyAgentEnd(assistant({ errorStatus: 502 }))).toMatchObject({ kind: "transient" });
+		expect(classifyAgentEnd({ messages: [{ role: "assistant", stopReason: "aborted" }] })).toMatchObject({
+			kind: "transient",
+			reason: "upstream",
+		});
+		expect(
+			classifyAgentEnd({ messages: [{ role: "assistant", stopReason: "aborted" }] }, { userAborted: true }),
+		).toEqual({ kind: "aborted" });
+	});
+	it("shares the public pi.events bus with subagents and never invents one", () => {
+		const bus = { emit() {} };
+		expect(hostEventBus({ events: bus })).toBe(bus);
+		expect(hostEventBus({ events: null })).toBeUndefined();
+		expect(hostEventBus({})).toBeUndefined();
+	});
+	it("remembers the first Plan DevOps definition for later follow-up turns", () => {
+		const definition = {
+			name: "PlanDevOps-test",
+			description: "test",
+			systemPrompt: "test",
+			source: "project",
+			model: ["@task"],
+		};
+		const state = { devopsSessions: new Map() };
+		const remembered = rememberDevopsSession(
+			state,
+			"mission-a",
+			{
+				agentId: "agent-1",
+				agentDefinition: definition,
+				artifacts: { dir: "/tmp/artifacts", persisted: true },
+				roleNonce: "0123456789abcdef",
+				modelPatterns: ["@task"],
+			},
+			"PlanDevOps-mission-a",
+		);
+		expect(remembered).toEqual({
+			ok: true,
+			session: {
+				agentId: "agent-1",
+				agentDefinition: definition,
+				artifactsDir: "/tmp/artifacts",
+				agentName: "PlanDevOps-mission-a",
+				roleNonce: "0123456789abcdef",
+				model: ["@task"],
+			},
+		});
+		expect(state.devopsSessions.get("mission-a")?.agentId).toBe("agent-1");
+		expect(rememberDevopsSession(state, "mission-b", { agentId: "agent-2" }, "PlanDevOps-mission-b")).toMatchObject({
+			ok: false,
+			error: { code: ":HOST_API_MISMATCH" },
+		});
+		expect(state.devopsSessions.has("mission-b")).toBe(false);
+		const memoryOnly = rememberDevopsSession(
+			state,
+			"mission-c",
+			{
+				agentId: "agent-3",
+				agentDefinition: definition,
+				artifacts: { dir: "/tmp/artifacts", persisted: false },
+				roleNonce: "fedcba9876543210",
+				modelPatterns: ["@task"],
+			},
+			"PlanDevOps-mission-c",
+		);
+		expect(memoryOnly).toMatchObject({
+			ok: false,
+			error: { code: ":HOST_API_MISMATCH", data: { hasArtifactsDir: false } },
+		});
+		expect(state.devopsSessions.has("mission-c")).toBe(false);
+	});
+
+	it("passes a pre-aborted parent signal to the real follow-up wrapper", async () => {
+		const controller = new AbortController();
+		controller.abort("operator cancelled");
+		const definition = {
+			name: "PlanDevOps-test",
+			description: "test",
+			systemPrompt: "test",
+			source: "project",
+			model: ["@task"],
+		};
+		const result = await continueDevopsSession(
+			{ lastToolCallId: "tool-1", eventBus: undefined, lastContext: {} },
+			{
+				agentId: "agent-1",
+				agentDefinition: definition,
+				artifactsDir: "/tmp/artifacts",
+				agentName: "PlanDevOps-test",
+				roleNonce: "0123456789abcdef",
+				model: ["@task"],
+			},
+			"continue",
+			controller.signal,
+		);
+		expect(result.ok).toBe(false);
+		expect(result.error.code).toBe(":UPSTREAM_ABORTED");
+	});
+
+	it("persists and restores the minimal DevOps session reference from mission.edn", async () => {
+		const root = temporaryRoot();
+		const created = await createMission(root, { slug: "mission-a", seed: "seed" });
+		expect(created.ok).toBe(true);
+		const artifactsDir = join(root, ".herd", "artifacts", "mission-a", "PlanDevOps-mission-a");
+		const state = { root, mission: created.mission, devopsSessions: new Map() };
+		const session = {
+			agentId: "agent-1",
+			artifactsDir,
+			agentName: "PlanDevOps-mission-a",
+			roleNonce: "0123456789abcdef",
+			model: ["@task"],
+		};
+		const persisted = await persistDevopsSession(state, "mission-a", session);
+		expect(persisted.ok).toBe(true);
+		const read = await readMission(root, "mission-a");
+		expect(read.ok).toBe(true);
+		expect(read.mission.revision).toBe(0);
+		expect(read.mission["devops-session"]).toEqual({
+			"mission-id": created.mission["mission-id"],
+			revision: 0,
+			"agent-id": "agent-1",
+			"artifacts-dir": artifactsDir,
+			"agent-name": "PlanDevOps-mission-a",
+			"role-nonce": "0123456789abcdef",
+			model: ["@task"],
+		});
+		const restored = devopsSessionFromMission(read.mission);
+		expect(restored.ok).toBe(true);
+		expect(restored.session).toMatchObject({
+			agentId: "agent-1",
+			artifactsDir,
+			agentName: "PlanDevOps-mission-a",
+			roleNonce: "0123456789abcdef",
+			model: ["@task"],
+		});
+		expect(restored.session.agentDefinition).toMatchObject({
+			name: "PlanDevOps-mission-a",
+			description: "Plan DevOps: PlanDevOps-mission-a",
+			model: ["@task"],
+			source: "project",
+		});
+		expect(devopsSessionFromMission({ ...read.mission, "mission-id": "other" })).toMatchObject({ ok: false });
+		const replaced = await persistDevopsSession(state, "mission-a", {
+			agentId: "agent-2",
+			artifactsDir,
+			agentName: "PlanDevOps-mission-a",
+			roleNonce: "fedcba9876543210",
+			model: ["@task"],
+		});
+		expect(replaced).toMatchObject({ ok: false, error: { code: ":STALE_CONTROL" } });
+		const unchanged = await readMission(root, "mission-a");
+		expect(unchanged.mission["devops-session"]["agent-id"]).toBe("agent-1");
+	});
+
+	it("wakes the runner after a completed release or reopen, not after a comment", async () => {
+		let wakes = 0;
+		const state = {
+			runnerPorts: new Map([
+				[
+					"slice-a",
+					{
+						async wake() {
+							wakes += 1;
+							return { ok: true };
+						},
+					},
+				],
+			]),
+		};
+		expect(await wakeRunnerAfterBoardCommand(state, "mission-a", "slice-a", { type: "comment" })).toBeUndefined();
+		expect(wakes).toBe(0);
+		expect(await wakeRunnerAfterBoardCommand(state, "mission-a", "slice-a", { type: "release" })).toEqual({
+			ok: true,
+		});
+		expect(await wakeRunnerAfterBoardCommand(state, "mission-a", "slice-a", { type: "reopen" })).toEqual({
+			ok: true,
+		});
+		expect(wakes).toBe(2);
+	});
+
+	it("keeps any existing write lock held until recovery removes it", async () => {
+		const root = temporaryRoot();
+		const lockPath = join(root, ".herd", "locks", "slice-a.write-w.lock");
+		mkdirSync(dirname(lockPath), { recursive: true });
+		const lock = (startedAt) =>
+			JSON.stringify({
+				token: "token-1",
+				owner_agent_id: "dead-agent",
+				pid: process.pid,
+				started_at: startedAt,
+			});
+		writeFileSync(lockPath, lock(new Date().toISOString()), "utf8");
+		const recent = inspectLock(lockPath, { agentState: () => "dead" });
+		expect(recent.stale).toBe(false);
+		expect(writeLockHeld(recent)).toBe(true);
+		writeFileSync(lockPath, lock(new Date(Date.now() - 60_000).toISOString()), "utf8");
+		const stale = inspectLock(lockPath, { agentState: () => "dead" });
+		expect(stale.stale).toBe(true);
+		expect(writeLockHeld(stale)).toBe(true);
+		const acquired = await withLock(
+			lockPath,
+			{
+				purpose: "writeW",
+				slice_id: "slice-a",
+				owner_agent_id: "new-owner",
+				pid: process.pid,
+				agentState: () => "dead",
+			},
+			async () => "unexpected",
+		);
+		expect(acquired.ok).toBe(false);
+		expect(acquired.stale).toBe(true);
+		expect(writeLockHeld({ exists: false, stale: false })).toBe(false);
+	});
+
+	it("binds the gate slug to the host artifacts context", () => {
+		const root = "/tmp/slug-test";
+		const ctx = {
+			sessionManager: {
+				getSessionFile: () => `${root}/.herd/artifacts/real-mission/devops/agent.jsonl`,
+			},
+		};
+		expect(trustedMissionSlug({ root }, ctx)).toBe("real-mission");
+		expect(trustedMissionSlug({ root, slug: "focused" }, ctx)).toBe("focused");
+		expect(trustedMissionSlug({ root }, {})).toBeUndefined();
+	});
+	it("inherits only a real parent session file and never constructs one", () => {
+		const state = { lastContext: { sessionManager: { getSessionFile: () => "/tmp/real-session.jsonl" } } };
+		expect(inheritedSessionFile(state, {})).toBe("/tmp/real-session.jsonl");
+		expect(inheritedSessionFile(state, { sessionFile: "/tmp/explicit.jsonl" })).toBe("/tmp/explicit.jsonl");
+		expect(inheritedSessionFile({ lastContext: { sessionManager: {} } }, {})).toBeUndefined();
+		expect(inheritedSessionFile({}, {})).toBeUndefined();
+	});
+	it("keeps one report path per DevOps call and never reuses an older receipt", () => {
+		const root = temporaryRoot();
+		const directory = join(root, ".herd", "artifacts", "m", "PlanDevOps-child");
+		mkdirSync(directory, { recursive: true });
+		const ctx = {
+			sessionManager: {
+				getArtifactsDir: () => directory,
+				getSessionFile: () => join(directory, "agent-id.jsonl"),
+			},
+		};
+		const firstCall = newDevopsCallId();
+		const secondCall = newDevopsCallId();
+		expect(firstCall).toMatch(/^devops-[0-9a-f-]+$/);
+		writeDevopsReport({ root, devopsCallId: firstCall }, ctx, {
+			status: "complete",
+			report_markdown: "first call",
+			inspected_paths: ["package.json"],
+		});
+		writeDevopsReport({ root, devopsCallId: secondCall }, ctx, {
+			status: "blocked",
+			report_markdown: "second call",
+			inspected_paths: [],
+		});
+		expect(readDevopsReport(directory, firstCall)).toEqual({
+			status: "complete",
+			report_markdown: "first call",
+			inspected_paths: ["package.json"],
+		});
+		expect(readDevopsReport(directory, secondCall)).toEqual({
+			status: "blocked",
+			report_markdown: "second call",
+			inspected_paths: [],
+		});
+		expect(readDevopsReport(directory, "devops-missing-call")).toBeUndefined();
+		expect(readDevopsReport(directory, firstCall)).toEqual({
+			status: "complete",
+			report_markdown: "first call",
+			inspected_paths: ["package.json"],
+		});
+		const recovered = devopsReportAfterChildFailure(
+			{ agentId: "agent-1", error: { code: ":UPSTREAM_ABORTED", message: "post-report yield failed" } },
+			directory,
+			firstCall,
+		);
+		expect(recovered).toMatchObject({
+			ok: true,
+			status: "devops-report",
+			report: { report_markdown: "first call" },
+			agentId: "agent-1",
+			callId: firstCall,
+		});
+		expect(existsSync(join(directory, "devops-report.edn"))).toBe(false);
+		expect(() =>
+			writeDevopsReport({ root }, ctx, {
+				status: "complete",
+				report_markdown: "unbound",
+				inspected_paths: [],
+			}),
+		).toThrow();
+		expect(() =>
+			writeDevopsReport(
+				{ root, devopsCallId: firstCall },
+				{ sessionManager: { getArtifactsDir: () => directory } },
+				{ status: "complete", report_markdown: "no session file", inspected_paths: [] },
+			),
+		).toThrow();
+	});
+	it("writes receipts under the parent-issued artifacts base, not a per-agent subdirectory", () => {
+		const root = temporaryRoot();
+		const base = join(root, ".herd", "artifacts", "mission-a", "PlanDevOps-child");
+		const childDir = join(base, "child-id");
+		mkdirSync(childDir, { recursive: true });
+		const callId = newDevopsCallId();
+		const ctx = {
+			sessionManager: {
+				getArtifactsDir: () => childDir,
+				getSessionFile: () => join(base, "child-id.jsonl"),
+			},
+		};
+		writeDevopsReport({ root, devopsCallId: callId }, ctx, {
+			status: "complete",
+			report_markdown: "parent base",
+			inspected_paths: ["package.json"],
+		});
+		expect(readDevopsReport(base, callId)).toEqual({
+			status: "complete",
+			report_markdown: "parent base",
+			inspected_paths: ["package.json"],
+		});
+		expect(existsSync(join(childDir, "devops-reports", `${callId}.edn`))).toBe(false);
+	});
+
+	it("recovers an unconsumed call-id from the current parent prompt on follow-up", () => {
+		const root = temporaryRoot();
+		const base = join(root, ".herd", "artifacts", "mission-a", "PlanDevOps-child");
+		mkdirSync(base, { recursive: true });
+		const callId = newDevopsCallId();
+		const ctx = {
+			sessionManager: {
+				getSessionFile: () => join(base, "child-id.jsonl"),
+				getEntries: () => [
+					{
+						type: "message",
+						message: {
+							role: "user",
+							content: [{ type: "text", text: `Mission slug: m\nDevOps call: ${callId}\nfollow-up` }],
+						},
+					},
+				],
+			},
+		};
+		const state = { root, devopsLastCallId: "devops-already-consumed" };
+		writeDevopsReport(state, ctx, {
+			status: "complete",
+			report_markdown: "follow-up",
+			inspected_paths: ["package.json"],
+		});
+		expect(readDevopsReport(base, callId)).toMatchObject({ report_markdown: "follow-up" });
+		expect(state.devopsLastCallId).toBe(callId);
+		let duplicate;
+		try {
+			writeDevopsReport(state, ctx, {
+				status: "complete",
+				report_markdown: "duplicate",
+				inspected_paths: [],
+			});
+		} catch (error) {
+			duplicate = error;
+		}
+		expect(duplicate?.code).toBe(":INVALID_ARGUMENT");
+		expect(duplicate?.message).toContain("already submitted");
+	});
+
+	it("derives optional parent lineage from host agent and real tool call id", () => {
+		const state = { id: "session-id", lastContext: { agent: { id: "parent-agent" } } };
+		expect(parentContextFor(state, {})).toEqual({
+			parentAgentId: "parent-agent",
+			parentToolCallId: undefined,
+		});
+		expect(parentContextFor(state, { parentToolCallId: "call-1" })).toEqual({
+			parentAgentId: "parent-agent",
+			parentToolCallId: "call-1",
+		});
+		expect(parentContextFor({ id: "session-id" }, {}).parentAgentId).toBeUndefined();
+	});
+	it("uses the parent-issued role token as the single child identity", () => {
+		const identity = sessionIdentity(
+			{ id: "child-session", role: "Swarm Worker", roleNonce: "Worker-slice-1-slot-1" },
+			{ agent: { kind: "sub", id: "parent-session" } },
+		);
+		expect(identity.agent_id).toBe("Worker-slice-1-slot-1");
+		const main = sessionIdentity({ id: "main-session", role: undefined, roleNonce: undefined }, {});
+		expect(main.agent_id).toBe("main-session");
+	});
+	it("only a successful role exit suppresses the nudge", async () => {
+		const root = temporaryRoot();
+		const pi = fakePi();
+		await activate(pi);
+		const ctx = fakeContext(root, "exit-child", { sub: true });
+		const before = pi.hooks.get("before_agent_start")[0];
+		const end = pi.hooks.get("agent_end")[0];
+		const toolEnd = pi.hooks.get("tool_execution_end")[0];
+		const token = { systemPrompt: "BASE", prompt: "[HERD_ROLE: Reviewer nonce=abcdefgh]\nreview" };
+		await before(token, ctx);
+		pi.sent.length = 0;
+		await toolEnd({ toolName: "submit_review", isError: true }, ctx);
+		await end({ messages: [] }, ctx);
+		await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+		expect(pi.sent.some((entry) => entry.message.customType === "herd-nudge")).toBe(true);
+		await before(token, ctx);
+		pi.sent.length = 0;
+		await toolEnd({ toolName: "submit_review", isError: false }, ctx);
+		await end({ messages: [] }, ctx);
+		await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+		expect(pi.sent.some((entry) => entry.message.customType === "herd-nudge")).toBe(false);
+	});
+	it("injects a role exit nudge for a subagent without a mission focus", async () => {
+		const root = temporaryRoot();
+		const pi = fakePi();
+		await activate(pi);
+		const ctx = fakeContext(root, "role-child", { sub: true });
+		await pi.hooks.get("before_agent_start")[0](
+			{ systemPrompt: "BASE", prompt: "[HERD_ROLE: Reviewer nonce=abcdefgh]\nreview" },
+			ctx,
+		);
+		pi.sent.length = 0;
+		await pi.hooks.get("agent_end")[0]({ messages: [] }, ctx);
+		await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+		const nudge = pi.sent.find((entry) => entry.message.customType === "herd-nudge");
+		expect(nudge?.message.content).toContain("submit_review");
+	});
+	it("does not inject herd-nudge after an authentication failure", async () => {
+		const root = temporaryRoot();
+		const pi = fakePi();
+		await activate(pi);
+		const ctx = fakeContext(root);
+		await pi.commands.get("herd").handler("auth probe", ctx);
+		expect(pi.sent.length).toBe(1);
+		pi.sent.length = 0;
+		await pi.hooks.get("agent_end")[0](
+			{
+				messages: [{ role: "assistant", stopReason: "error", errorStatus: 401, errorMessage: "invalid api key" }],
+			},
+			ctx,
+		);
+		await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+		expect(pi.sent.some((entry) => entry.message.customType === "herd-nudge")).toBe(false);
+		expect(readHealth().entries.some((entry) => entry.entry === "main.stalled")).toBe(true);
+	});
+	it("submits when the sandbox capability is available", async () => {
+		const root = temporaryRoot();
+		const artifacts = join(root, ".herd", "artifacts", "m", "audit", "CASE-01_");
+		mkdirSync(artifacts, { recursive: true });
+		writeFileSync(join(artifacts, "audit-context.edn"), '{:slug "m" :batch-id "batch-1" :case-id "CASE-01_"}\n');
+		const pi = fakePi();
+		await activate(pi);
+		const ctx = fakeContext(root, "auditor-child");
+		ctx.sessionManager.getSessionFile = () => join(artifacts, "agent.jsonl");
+		const result = await pi.tools.get("submit_case_audit").execute(
+			"submit-1",
+			{
+				case_id: "CASE-01_",
+				user_score: 90,
+				developer_score: 91,
+				report_markdown: "full report",
+				evidence_paths: ["plans/m/evidence/CASE-01_/report.md"],
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+		const path = join(root, ".herd", "missions", "m", "audit", "batch-1", "CASE-01_.submit.edn");
+		if (SANDBOX.available) {
+			expect(result.details.ok).toBe(true);
+			expect(existsSync(path)).toBe(true);
+		} else {
+			expect(result.details.ok).toBe(false);
+			expect(result.content[0].text).toContain("auditor sandbox");
+			expect(existsSync(path)).toBe(false);
+		}
+	});
+	it("derives the board actor from the host session and cannot be impersonated", async () => {
+		const root = temporaryRoot();
+		const board = await missionBoardPort(root, "m").ensureSlice({ sliceId: "s" });
+		for (const agentId of ["A", "B"]) {
+			const registered = await apply({
+				board,
+				command: { type: "registerActor", agentId, slotId: `slot-${agentId}` },
+				turnId: "t1",
+				requestId: `register-${agentId}`,
+			});
+			expect(registered.ok).toBe(true);
+		}
+		const added = await apply({
+			board,
+			command: {
+				type: "addTasks",
+				tasks: [{ goal: "claim", remainingWork: "claim", doneWhen: "claim", needsToken: false }],
+			},
+			actor: "A",
+			turnId: "t1",
+			requestId: "add",
+		});
+		expect(added.ok).toBe(true);
+		const taskId = added.receipt.taskIds[0];
+		const pi = fakePi();
+		await activate(pi);
+		const tool = pi.tools.get("board_claim");
+		const toolCtx = fakeContext(root, "A");
+		toolCtx.cwd = join(root, ".herd-worktrees", "m", "s");
+		const request = () => ({ task_id: taskId, atomicity_reason: "one result" });
+		const first = await tool.execute("claim-a", request(), undefined, undefined, toolCtx);
+		expect(first.details.ok).toBe(true);
+		const second = await tool.execute("claim-b", request(), undefined, undefined, toolCtx);
+		expect(second.details.ok).toBe(false);
+		expect(second.content[0].text).toContain("CLAIM_CONFLICT");
+		const claimA = await claimFor({ id: "A", root, slug: "m" }, "s", fakeContext(root, "A"));
+		expect(claimA).toMatchObject({ task_id: taskId, status: "active" });
+		expect(await claimFor({ id: "B", root, slug: "m" }, "s", fakeContext(root, "B"))).toBeUndefined();
+		expect(await claimFor({ id: "A", root, slug: "missing" }, "s", fakeContext(root, "A"))).toBeUndefined();
+		const worktreeCtx = fakeContext(root, "A");
+		worktreeCtx.cwd = join(root, ".herd-worktrees", "m", "s");
+		expect(await boardRoleExitReady({ id: "A", root, slug: "m", role: "Swarm Worker" }, worktreeCtx)).toBe(false);
+		const current = await board.store.read();
+		const finished = await apply({
+			board,
+			command: {
+				type: "finish",
+				taskId,
+				claimId: current.tasks[taskId]["claim-id"],
+				resultSummary: "done",
+				dependencyPaths: [],
+			},
+			actor: "A",
+			turnId: "t-finish",
+			requestId: "finish",
+		});
+		expect(finished.ok).toBe(true);
+		expect(await boardRoleExitReady({ id: "A", root, slug: "m", role: "Swarm Worker" }, worktreeCtx)).toBe(false);
+		await board.store.transaction(async (current) => ({
+			board: {
+				...current,
+				actors: { ...current.actors, A: { ...current.actors.A, "life-state": "dead" } },
+			},
+			events: [],
+			response: { ok: true },
+			commit: true,
+		}));
+		expect(await boardRoleExitReady({ id: "A", root, slug: "m", role: "Swarm Worker" }, worktreeCtx)).toBe(true);
+		await board.store.transaction(async (current) => ({
+			board: {
+				...current,
+				actors: { ...current.actors, A: { ...current.actors.A, "life-state": "alive" } },
+				sleepers: { ...(current.sleepers ?? {}), A: { since: "test" } },
+			},
+			events: [],
+			response: { ok: true },
+			commit: true,
+		}));
+		expect(await boardRoleExitReady({ id: "A", root, slug: "m", role: "Swarm Worker" }, worktreeCtx)).toBe(true);
+		const abandoned = await pi.tools
+			.get("abandon_slice")
+			.execute(
+				"abandon-main",
+				{ slug: "m", slice_id: "s", reason: "not holder" },
+				undefined,
+				undefined,
+				fakeContext(root, "A"),
+			);
+		expect(abandoned.details.ok).toBe(false);
+		expect(abandoned.content[0].text).toContain("only a Swarm Holder");
+		await pi.tools
+			.get("board_comment")
+			.execute("comment-1", { task_id: taskId, text: "note" }, undefined, undefined, toolCtx);
+		const after = await board.store.read();
+		expect(after.actors.C).toBeUndefined();
+	});
+	it("binds distinct auditor CASEs to distinct evidence and tmp roots", () => {
+		const root = temporaryRoot();
+		const state = { root, slug: undefined, lastContext: {} };
+		const caseA = join(root, ".herd", "artifacts", "mission-a", "audit", "CASE-01_", "a.jsonl");
+		const caseB = join(root, ".herd", "artifacts", "mission-a", "audit", "batch-2", "CASE-02-", "b.jsonl");
+		const ctxA = { cwd: root, sessionManager: { getSessionFile: () => caseA } };
+		const ctxB = { cwd: root, sessionManager: { getSessionFile: () => caseB } };
+		const makeContext = (directory, caseId, batchId) => {
+			mkdirSync(directory, { recursive: true });
+			const auditTmp = join(directory, "tmp");
+			const socketDir = join(directory, "socket");
+			mkdirSync(auditTmp, { recursive: true });
+			mkdirSync(socketDir, { recursive: true });
+			writeFileSync(
+				join(directory, "audit-context.edn"),
+				`{:slug "mission-a" :batch-id "${batchId}" :case-id "${caseId}" :artifacts-dir ${JSON.stringify(directory)} :audit-tmp ${JSON.stringify(auditTmp)} :sandbox-socket ${JSON.stringify(join(socketDir, "s"))} :sandbox-session "herd-session"}\n`,
+			);
+		};
+		makeContext(join(root, ".herd", "artifacts", "mission-a", "audit", "CASE-01_"), "CASE-01_", "batch-a");
+		makeContext(join(root, ".herd", "artifacts", "mission-a", "audit", "batch-2", "CASE-02-"), "CASE-02-", "batch-ctx");
+		expect(auditorBinding(state, ctxA)).toMatchObject({ slug: "mission-a", caseId: "CASE-01_", batchId: "batch-a" });
+		expect(auditorBinding(state, ctxB)).toMatchObject({
+			slug: "mission-a",
+			batchId: "batch-ctx",
+			caseId: "CASE-02-",
+		});
+		const rootsA = sandboxRoots("auditor", ctxA, state);
+		const rootsB = sandboxRoots("auditor", ctxB, state);
+		expect(rootsA.evidenceRoot).not.toBe(rootsB.evidenceRoot);
+		expect(rootsA.auditTmp).not.toBe(rootsB.auditTmp);
+		expect(rootsA.evidenceRoot).toContain(join("evidence", "CASE-01_"));
+		expect(rootsB.evidenceRoot).toContain(join("evidence", "CASE-02-"));
+	});
+	it("detects restart audit readiness from the worktree state", () => {
+		const root = temporaryRoot();
+		const dir = join(root, ".herd", "missions", "mission-a");
+		mkdirSync(dir, { recursive: true });
+		const path = join(dir, "worktrees.edn");
+		const stateEdn = (status, queue = []) =>
+			new Map([
+				[new EdnKeyword("version"), 1],
+				[new EdnKeyword("slug"), "mission-a"],
+				[new EdnKeyword("base"), null],
+				[new EdnKeyword("queue"), queue],
+				[new EdnKeyword("next-seq"), 2],
+				[
+					new EdnKeyword("slices"),
+					new Map([
+						[
+							"a",
+							new Map([
+								[new EdnKeyword("slice-id"), "a"],
+								[new EdnKeyword("status"), new EdnKeyword(status)],
+							]),
+						],
+					]),
+				],
+				[new EdnKeyword("created-at"), "2026-01-01T00:00:00.000Z"],
+				[new EdnKeyword("updated-at"), "2026-01-01T00:00:00.000Z"],
+			]);
+		writeFileSync(path, `${printUfss(stateEdn("joined"))}\n`);
+		expect(auditReady({ root, slug: "mission-a" })).toBe(true);
+		writeFileSync(path, `${printUfss(stateEdn("running"))}\n`);
+		expect(auditReady({ root, slug: "mission-a" })).toBe(false);
+		writeFileSync(
+			path,
+			`${printUfss(
+				stateEdn("joined", [
+					new Map([
+						[new EdnKeyword("slice-id"), "a"],
+						[new EdnKeyword("seq"), 1],
+					]),
+				]),
+			)}\n`,
+		);
+		expect(auditReady({ root, slug: "mission-a" })).toBe(false);
+	});
+});
+
+describe("audit model seed session handoff", () => {
+	const model = {
+		provider: "mistral",
+		id: "deepseek-v4-1-flash-1017",
+		name: "DeepSeek V4.1 Flash 1017",
+		api: "openai-completions",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 0.3, output: 1.2, cacheRead: 0.007, cacheWrite: 0 },
+		contextWindow: 1048576,
+		maxTokens: 128000,
+		thinking: { mode: "effort", efforts: ["low", "high", "max"] },
+		identity: { class: "deepseek", family: "flash", revision: "4.1.0" },
+		tokenizer: "deepseek-v3",
+		requiresGlyphTokenization: false,
+		supportsComputerUse: false,
+		compat: {
+			toolStrictMode: "mixed",
+			supportsStore: false,
+			streamMarkupHealingPattern: "dsml",
+		},
+	};
+
+	const builtModel = (seed, overrides = {}) => ({
+		...model,
+		provider: "mistral",
+		baseUrl: seed.baseUrl,
+		identity: { class: "registry-class", family: "registry-family", revision: "1" },
+		compat: { ...model.compat, toolStrictMode: "mixed" },
+		...overrides,
+	});
+
+	async function setup() {
+		const seed = writeAuditModelSeed({
+			auditTmp: temporaryRoot(),
+			model,
+			baseUrl: "http://provider.test:18443/v1",
+			authEnvVar: "MISTRAL_API_KEY",
+			apiKeyFallback: null,
+		});
+		const handlers = {};
+		const calls = [];
+		const fakePi = {
+			registerProvider(...args) {
+				calls.push({ kind: "registerProvider", args });
+			},
+			on(name, handler) {
+				handlers[name] = handler;
+			},
+			setModel(value) {
+				calls.push({ kind: "setModel", value });
+				return true;
+			},
+		};
+		await bootstrapMain(fakePi, {
+			env: { HERD_AUDIT_MODEL_SEED: seed.seedPath, MISTRAL_API_KEY: "fake-key-not-real" },
+			importMain: async () => ({ default: async () => undefined }),
+		});
+		return {
+			seed,
+			handlers,
+			registerCalls: () => calls.filter((call) => call.kind === "registerProvider"),
+			setModelCalls: () => calls.filter((call) => call.kind === "setModel"),
+		};
+	}
+
+	it("registers the complete host spec and sets the registry-built model", async () => {
+		const { seed, handlers, registerCalls, setModelCalls } = await setup();
+		expect(registerCalls()).toHaveLength(1);
+		const registration = registerCalls()[0].args[1];
+		expect(registration.models).toHaveLength(1);
+		expect(registration.models[0].identity).toBeUndefined();
+		expect(registration.models[0].input).toEqual(["text", "image"]);
+		expect(registration.models[0].compat).toEqual(model.compat);
+		expect(registration.baseUrl).toBe(seed.baseUrl);
+		expect(registration.apiKey).toBe("fake-key-not-real");
+
+		const built = builtModel(seed);
+		await handlers.session_start(undefined, { models: { resolve: () => built } });
+		expect(setModelCalls()).toHaveLength(1);
+		expect(setModelCalls()[0].value).toBe(built);
+		expect(setModelCalls()[0].value.input).toEqual(["text", "image"]);
+	});
+
+	it("never patches a registry model to the relay URL", async () => {
+		const { seed, handlers, registerCalls, setModelCalls } = await setup();
+		const built = builtModel(seed, { baseUrl: "https://wrong.example" });
+		await handlers.session_start(undefined, { models: { resolve: () => built } });
+		expect(registerCalls()).toHaveLength(1);
+		expect(setModelCalls()).toHaveLength(0);
+	});
+});
+
+describe("main board_split default wait behavior", () => {
+	it("omits wait_for and the kernel waits for every new child", async () => {
+		const root = temporaryRoot();
+		const pi = fakePi();
+		await activate(pi);
+		const slug = "mission";
+		const sliceId = "SLICE-01";
+		const cwd = join(root, ".herd-worktrees", slug, sliceId);
+		mkdirSync(cwd, { recursive: true });
+		mkdirSync(join(root, "plans", slug), { recursive: true });
+		const handle = openBoard(root, slug, sliceId);
+		expect(handle.boardPath).toContain(`/SLICE-01/`);
+		await handle.store.initialize(initialBoard());
+		const seeded = addTasks(registerActor(initialBoard(), { agentId: "board-split-session", slotId: "slot-main" }), [
+			{ goal: "parent task", remainingWork: "split into children", doneWhen: "children complete" },
+		]);
+		await handle.store.transaction(async () => ({
+			board: seeded.board,
+			events: [],
+			response: { ok: true },
+			commit: true,
+		}));
+		const ctx = fakeContext(cwd, "board-split-session");
+		const result = await pi.tools.get("board_split").execute(
+			"split-without-wait",
+			{
+				parent_id: seeded.taskIds[0],
+				expected_board_version: seeded.board["board-version"],
+				remaining_work: "integrate the children",
+				children: [
+					{ goal: "child one", remaining_work: "one", done_when: "one done", needs_token: false },
+					{ goal: "child two", remaining_work: "two", done_when: "two done", needs_token: false },
+				],
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(result.isError).not.toBe(true);
+		const board = await handle.store.read();
+		const parent = board.tasks[seeded.taskIds[0]];
+		const children = Object.values(board.tasks).filter((task) => task["parent-id"] === parent["task-id"]);
+		expect(parent.state).toBe("waiting");
+		expect(parent["wait-for"]).toEqual(children.map((task) => task["task-id"]));
+	});
+});
+
+describe("main board_finish dependency read-set", () => {
+	it("rejects unobserved file facts and accepts a real VFS read under $W", async () => {
+		const root = temporaryRoot();
+		const pi = fakePi();
+		await activate(pi);
+		const slug = "mission";
+		const sliceId = "slice-a";
+		const cwd = join(root, ".herd-worktrees", slug, sliceId);
+		mkdirSync(cwd, { recursive: true });
+		mkdirSync(join(root, "plans", slug), { recursive: true });
+		writeFileSync(join(cwd, "dep.mjs"), "export const dep = 1;\n", "utf8");
+		const handle = openBoard(root, slug, sliceId);
+		await handle.store.initialize(initialBoard());
+		const base = registerActor(initialBoard(), { agentId: "obs-session", slotId: "slot-main" });
+		base.tenure.term = 1;
+		base.tenure["term-id"] = "T-1";
+		const seeded = addTasks(base, [
+			{
+				goal: "finish with a verified dependency",
+				remainingWork: "read and finish",
+				doneWhen: "done",
+				needsToken: false,
+			},
+		]);
+		await handle.store.transaction(async () => ({
+			board: seeded.board,
+			events: [],
+			response: { ok: true },
+			commit: true,
+		}));
+		const ctx = fakeContext(cwd, "obs-session");
+		const claim = await pi.tools
+			.get("board_claim")
+			.execute(
+				"claim-observed",
+				{ task_id: seeded.taskIds[0], atomicity_reason: "single result" },
+				undefined,
+				undefined,
+				ctx,
+			);
+		expect(claim.isError).not.toBe(true);
+		const claimed = await handle.store.read();
+		const claimId = claimed.tasks[seeded.taskIds[0]]["claim-id"];
+
+		const unobserved = await pi.tools.get("board_finish").execute(
+			"finish-unobserved",
+			{
+				task_id: seeded.taskIds[0],
+				claim_id: claimId,
+				result_summary: "trying to finish without a read",
+				dependency_paths: ["dep.mjs"],
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(unobserved.isError).toBe(true);
+		expect((await handle.store.read()).tasks[seeded.taskIds[0]].state).toBe("ready");
+
+		globalThis[Symbol.for("herdchestra.callMeta.v1")] = new Map([
+			["read-dep", { intentBytes: 8, deadlineAt: Date.now() + 60_000 }],
+		]);
+		const read = await pi.tools.get("clj_worker").execute(
+			"read-dep",
+			{
+				program_name: "read-dep",
+				code: '(defprogram read-dep [] (cat {:path "dep.mjs"}))',
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(read.isError, read.content?.[0]?.text).not.toBe(true);
+		const finished = await pi.tools.get("board_finish").execute(
+			"finish-observed",
+			{
+				task_id: seeded.taskIds[0],
+				claim_id: claimId,
+				result_summary: "dependency was observed and rechecked",
+				dependency_paths: ["dep.mjs"],
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(finished.isError).not.toBe(true);
+		expect((await handle.store.read()).tasks[seeded.taskIds[0]].state).toBe("done");
+	});
+
+	it("checks the complete read-set on an empty dependency_paths finish and detects external edits", async () => {
+		const root = temporaryRoot();
+		const pi = fakePi();
+		await activate(pi);
+		const slug = "mission";
+		const sliceId = "slice-a";
+		const cwd = join(root, ".herd-worktrees", slug, sliceId);
+		mkdirSync(cwd, { recursive: true });
+		mkdirSync(join(root, "plans", slug), { recursive: true });
+		const depPath = join(cwd, "dep.mjs");
+		writeFileSync(depPath, "export const dep = 1;\n", "utf8");
+		const handle = openBoard(root, slug, sliceId);
+		await handle.store.initialize(initialBoard());
+		const base = registerActor(initialBoard(), { agentId: "f10-session", slotId: "slot-main" });
+		base.tenure.term = 1;
+		base.tenure["term-id"] = "T-1";
+		const seeded = addTasks(base, [
+			{
+				goal: "finish an empty-write-set task",
+				remainingWork: "read and finish",
+				doneWhen: "done",
+				needsToken: false,
+			},
+		]);
+		await handle.store.transaction(async () => ({
+			board: seeded.board,
+			events: [],
+			response: { ok: true },
+			commit: true,
+		}));
+		const ctx = fakeContext(cwd, "f10-session");
+		await pi.tools
+			.get("board_claim")
+			.execute(
+				"claim-f10",
+				{ task_id: seeded.taskIds[0], atomicity_reason: "single result" },
+				undefined,
+				undefined,
+				ctx,
+			);
+		const claimId = (await handle.store.read()).tasks[seeded.taskIds[0]]["claim-id"];
+		globalThis[Symbol.for("herdchestra.callMeta.v1")] = new Map([
+			["read-f10", { intentBytes: 8, deadlineAt: Date.now() + 60_000 }],
+			["read-f10-again", { intentBytes: 8, deadlineAt: Date.now() + 60_000 }],
+		]);
+		const read = await pi.tools
+			.get("clj_worker")
+			.execute(
+				"read-f10",
+				{ program_name: "read-f10", code: '(defprogram read-f10 [] (cat {:path "dep.mjs"}))' },
+				undefined,
+				undefined,
+				ctx,
+			);
+		expect(read.isError, read.content?.[0]?.text).not.toBe(true);
+
+		writeFileSync(depPath, "export const dep = 2;\n", "utf8");
+		const tampered = await pi.tools.get("board_finish").execute(
+			"finish-f10-tampered",
+			{
+				task_id: seeded.taskIds[0],
+				claim_id: claimId,
+				result_summary: "empty write set but stale read",
+				dependency_paths: [],
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(tampered.isError).toBe(true);
+		expect((await handle.store.read()).tasks[seeded.taskIds[0]].state).toBe("ready");
+
+		const reread = await pi.tools
+			.get("clj_worker")
+			.execute(
+				"read-f10-again",
+				{ program_name: "read-f10-again", code: '(defprogram read-f10-again [] (cat {:path "dep.mjs"}))' },
+				undefined,
+				undefined,
+				ctx,
+			);
+		expect(reread.isError, reread.content?.[0]?.text).not.toBe(true);
+		const finished = await pi.tools.get("board_finish").execute(
+			"finish-f10-clean",
+			{
+				task_id: seeded.taskIds[0],
+				claim_id: claimId,
+				result_summary: "current read-set matches",
+				dependency_paths: [],
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(finished.isError).not.toBe(true);
+		expect((await handle.store.read()).tasks[seeded.taskIds[0]].state).toBe("done");
+	});
+});
+
+describe("main structured realign tool", () => {
+	it("registers realign_frozen and adopts a human-edited frozen document", async () => {
+		const root = temporaryRoot();
+		const pi = fakePi();
+		await activate(pi);
+		const slug = "realign-tool";
+		expect((await createMission(root, { slug, seed: "x" })).ok).toBe(true);
+		const original = "# S1\n\nOriginal.\n";
+		const documentPath = join(root, "plans", slug, "s1-brainstorm.md");
+		expect((await saveStageDocument(root, slug, "s1", original, { callId: "r-s1" })).ok).toBe(true);
+		expect((await saveS1Summary(root, slug, "Original summary", { callId: "r-sum" })).ok).toBe(true);
+		expect((await freezeStage(root, slug, "s1", undefined, { callId: "r-freeze" })).ok).toBe(true);
+		const edited = `${original}\nHuman edit.\n`;
+		writeFileSync(documentPath, edited, "utf8");
+		const ctx = fakeContext(root, "realign-tool-session");
+		const result = await pi.tools
+			.get("realign_frozen")
+			.execute("realign-s1", { slug, target: "s1" }, undefined, undefined, ctx);
+		expect(result.isError).not.toBe(true);
+		const read = await readMission(root, slug);
+		expect(read.mission.revision).toBeGreaterThan(0);
+		expect(read.mission.frozen.s1.sha256).toBe(createHash("sha256").update(edited, "utf8").digest("hex"));
+	});
+
+	it("turns a CASE-id mapping change into a Nudge and keeps the structured tool reachable", async () => {
+		const root = temporaryRoot();
+		const pi = fakePi();
+		await activate(pi);
+		const slug = "mapping-e2e";
+		expect((await createMission(root, { slug, seed: "x" })).ok).toBe(true);
+		const caseSpec = (caseId, path = "正常") => ({
+			case_id: caseId,
+			path,
+			threshold: 90,
+			steps: ["observe the real path"],
+			expected: "observable result",
+			rubric: "map evidence to 0-100",
+		});
+		const initialCases = [
+			caseSpec("CASE-01", "正常"),
+			caseSpec("CASE-02", "错误"),
+			caseSpec("CASE-03", "边界"),
+			caseSpec("CASE-04", "并发"),
+			caseSpec("CASE-05", "恢复"),
+		];
+		expect((await saveStageDocument(root, slug, "s1", "# S1\n\nDoc.\n", { callId: "m-s1" })).ok).toBe(true);
+		expect((await saveS1Summary(root, slug, "Summary", { callId: "m-sum" })).ok).toBe(true);
+		expect((await freezeStage(root, slug, "s1", undefined, { callId: "m-f1" })).ok).toBe(true);
+		const committed = await commitS2(
+			root,
+			slug,
+			{ manual_tests_markdown: "# S2\n\nMethod.\n", cases: initialCases },
+			{ callId: "m-s2" },
+		);
+		expect(committed.ok, committed.error?.message).toBe(true);
+		const modules = [
+			{
+				path: "src/a.mjs",
+				secret_owned: "a",
+				depends_on: [],
+				mapped_cases: initialCases.map((entry) => entry.case_id),
+			},
+		];
+		const slices = [
+			{
+				slice_id: "slice-a",
+				goal: "wire a",
+				inputs: "src/a.mjs",
+				depends_on: [],
+				done_when: "a works",
+				mapped_cases: initialCases.map((entry) => entry.case_id),
+			},
+		];
+		expect((await freezeStage(root, slug, "s3", "# S3\n\nDoc.\n", { callId: "m-f3", modules })).ok).toBe(true);
+		expect((await freezeStage(root, slug, "s4", "# S4\n\nDoc.\n", { callId: "m-f4", slices })).ok).toBe(true);
+		const focusCtx = fakeContext(root, "s5-surface-session");
+		await pi.commands.get("herd-focus").handler(slug, focusCtx);
+		const s5Tools = pi.getActiveTools();
+		expect(s5Tools).toContain("fork_slices");
+		expect(s5Tools).toContain("realign_frozen");
+		expect(s5Tools).not.toContain("clj_plan");
+		const before = await readMission(root, slug);
+		const casesPath = join(root, ".herd", "missions", slug, "cases.edn");
+		const currentCases = readFileSync(casesPath, "utf8");
+		const extraCase = `  {:case-id "CASE-06"
+   :path "正常"
+   :threshold 90
+   :steps ["observe the real path"]
+   :expected "observable result"
+   :rubric "map evidence to 0-100"}\n]`;
+		writeFileSync(casesPath, currentCases.replace(/\]\s*$/, extraCase), "utf8");
+		const sent = [];
+		const state = {
+			root,
+			slug,
+			auditRunning: true,
+			auditInvalidated: false,
+			sandbox: new Map(),
+			agentLife: new Map(),
+			agentTerms: new Map(),
+			pi: { sendMessage: (message, options) => sent.push({ message, options }) },
+		};
+		const pendingMission = await realignEditedFrozen(state, before.mission);
+		expect(pendingMission).toBeTruthy();
+		expect(state.realignPending?.expectedTool).toBe("realign_frozen");
+		expect(state.auditInvalidated).toBe(true);
+		expect(sent.some((entry) => entry.message.customType === "herd-nudge")).toBe(true);
+		const nudge = sent.find((entry) => entry.message.customType === "herd-nudge").message.content;
+		expect(nudge).toContain("realign_frozen");
+		expect(nudge).toContain("MAPPING_REALIGN_REQUIRED");
+
+		expect(typeof pi.tools.get("realign_frozen")?.execute).toBe("function");
+		const changedIds = initialCases.map((entry) => entry.case_id).concat("CASE-06");
+		const ctx = fakeContext(root, "mapping-tool-session");
+		const result = await pi.tools.get("realign_frozen").execute(
+			"realign-mapping",
+			{
+				slug,
+				target: "s2-cases",
+				modules: [{ ...modules[0], mapped_cases: changedIds }],
+				slices: [{ ...slices[0], mapped_cases: changedIds }],
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(result.isError, result.content?.[0]?.text).not.toBe(true);
+		const after = await readMission(root, slug);
+		expect(after.mission.revision).toBeGreaterThan(before.mission.revision);
+		expect(after.mission["contract-line"]).toContain(after.mission.frozen["s2-cases"].sha256);
+		expect(after.mission["contract-line"]).toContain("s3-modules");
+		const moduleSpec = after.mission["s3-modules"][0];
+		const sliceSpec = after.mission["s4-slices"][0];
+		expect(moduleSpec.mapped_cases ?? moduleSpec["mapped-cases"]).toContain("CASE-06");
+		expect(sliceSpec.mapped_cases ?? sliceSpec["mapped-cases"]).toContain("CASE-06");
+	});
+});

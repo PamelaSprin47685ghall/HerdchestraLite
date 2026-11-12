@@ -1,160 +1,121 @@
-# HerdchestraLite
+# Herdchestra Lite
 
-一个 omp 插件包：把原 `vibe-workers.ts` 的提示词、上下文投影、pi-context、pi-goal 与手动验收拆成 40 个单职责 `.mjs` 模块。没有构建步骤，运行即源码；三个入口各自独立加载，单个入口失败不影响另外两个。
+Herdchestra Lite 是面向 `omp` 终端宿主的轻量多智能体研发插件。它把一次使命组织为 S1 头脑风暴、S2 手工测试方法论、S3 开发指南、S4 协调手册与 S5 蜂群自治开发，并用文件门禁、看板、ClojureScript 沙箱、Scope 投影与并发手工审计约束过程。
 
-## 安装
+> **当前状态：clean-break 改造进行中，未完成实现验收。**
+> 本文件只描述当前工作区里可核对的结构与缺口，不声称功能已经交付，也不把任何测试结果当作验收证据。唯一规格是仓库根 `AGENTS.md`；宿主与依赖的实测事实在 `HACK.md`；未关闭的规格偏差在 `DEBT.md`；架构装配笔记在 `src/AGENTS.md`。
+>
+> 核对时间：2026-11-11。并发 cutover 仍在进行，文件可能继续变化；以工作区当前内容和 `DEBT.md` 为准。
 
-前置条件：
+## 当前可核对的事实
 
-- omp 18.18.6 是本包的开发基线。PATH 中默认的 18.16.0 未验证，不要把它当作受支持版本。
-- Bun 1.4.4 或更高。
-- `@oh-my-pi/pi-coding-agent` 与 `@oh-my-pi/pi-tui` 由 omp 宿主提供，本包不声明它们。
+- `package.json` 的 `omp.extensions` 与 `pi.extensions` 都只声明两个入口：`./src/bootstrap-main.mjs` 与 `./src/tool-gate/index.mjs`。
+- 运行时依赖只声明 `cherry-cljs@0.6.38`；`engines.bun` 为 `>=1.4.4`。
+- `src/main.mjs` 当前装配新模块：`host/`、`util/`、`clj-sandbox/`、`tool-gate/`、`scope/`、`stages/`、`swarm/`、`prompts/`、`tui/`。它不导入旧的 `pi-goal`、`pi-context`、`editor-theme` 或 `manual-acceptance` 运行时；这不等于行为验收完成。
+- `tests/` 下有新模块的开发者测试；这些测试只保护内部不变量，不是手工验收证据。
+- 旧实现目录 `src/pi-goal/`、`src/pi-context/`、`src/editor-theme/`、`src/context/`、`src/manual-acceptance/`、旧提示词模块、`src/util/objects.mjs` 与旧 manual-acceptance 测试已从工作树删除；当前 `src/` 只保留新模块，且不再引用这些旧路径。
+- 真实宿主当前加载的插件路径、宿主版本三元组、`cherry-cljs` 实测与未验证项以 `HACK.md` 为准。`HACK.md` 记录到当前 `omp plugin list` 仍指向 `/home/kunweiz/public/HerdchestraLite`，不是本工作区；因此“本工作区被真实宿主加载”尚未证明。
+- `docs/manual-acceptance/clean-break/` 是开发本产品的验收文档；它没有 `report.md`，没有完成手工验收。产品运行时自己的交付路径是 `plans/<slug>/`，当前也没有端到端使命产物。
 
-```bash
-cd /path/to/HerdchestraLite
-bun install
-omp plugin link /path/to/HerdchestraLite
-omp plugin list
-```
+## 模块与装配
 
-把 `plugin link` 的路径换成你的实际仓库路径。必须通过 `omp plugin link` 或 `config.yml#extensions` 挂载；omp 的原生目录扫描只认 `.ts`/`.js`，不会加载 `.mjs`。
-
-## 目录结构
+新模块按单向依赖组织，入口只装配。实际导入关系见 `src/AGENTS.md`；当前主干如下：
 
 ```text
-HerdchestraLite/
-├── package.json                  # omp.extensions / pi.extensions 列出三个入口
-├── README.md
-├── CHANGELOG.md
-├── LICENSE
-├── .gitignore
-├── biome.json                    # 格式与 lint
-├── bun.lock
-├── docs/
-│   ├── architecture.md           # 当前运行时摘要
-│   └── design.html               # 旧 README.html 逐字节副本
-├── tests/
-│   ├── atomic-write.test.mjs
-│   ├── contract.test.mjs
-│   ├── goal-settings.test.mjs
-│   ├── requirements.test.mjs
-│   ├── scores.test.mjs
-│   └── tool-gate.test.mjs
-└── src/
-    ├── bootstrap-main.mjs        # 清单入口：惰性 import ./main.mjs 后调用默认工厂
-    ├── bootstrap-editor-theme.mjs # 清单入口：惰性 import ./editor-theme/index.mjs
-    ├── main.mjs                  # 真实主模块：组合 prompts、context、pi-context、pi-goal、手动验收
-    ├── context/
-    │   ├── vibe-suffix.mjs       # P4：后缀常量与消息投影
-    │   └── vibe-context-rewrite.mjs # vibe-mode-context 两段文案替换
-    ├── prompts/
-    │   ├── repo-aware-rules.mjs  # P2：11 条 repo-aware 规则
-    │   ├── manual-protocol.mjs   # P3：12 条 MANUAL ACCEPTANCE 协议
-    │   ├── context-skill.mjs     # P1：读取 pi-context 的 SKILL.md
-    │   ├── plan-only.mjs         # P5：goal 草稿的 Plan-only 覆盖
-    │   └── auditor.mjs           # P6：可见审计员提示词
-    ├── host/
-    │   ├── imports.mjs           # 宿主与依赖的深路径导入集中处
-    │   ├── capabilities.mjs      # 能力探测与不可用错误文本
-    │   ├── goal-settings.mjs     # goal 设置文件读取
-    │   └── subprocess.mjs        # runSubprocess 审计适配
-    ├── pi-context/
-    │   ├── facade.mjs            # PiFacade 与 /acm 命令适配
-    │   ├── command-context.mjs   # createCommandContext / createPiContext
-    │   ├── session-capture.mjs   # AgentSession.getContextUsage 捕获
-    │   └── xdev-compact.mjs      # PENDING_XDEV_COMPACTS 与 branch 改写
-    ├── pi-goal/
-    │   ├── facade.mjs            # GoalPiFacade、/goal→/goal-x、延迟 flush
-    │   ├── tool-wrap.mjs         # 工具包装与 gated fail-closed
-    │   ├── install-auditor.mjs   # 按 GoalCore 安装可见审计员
-    │   └── ui.mjs                # goalUi proxy 与 sleep
-    ├── manual-acceptance/
-    │   ├── constants.mjs         # 路径、正则、报告 schema、允许字段
-    │   ├── requirements.mjs      # CASE 解析
-    │   ├── contract.mjs          # 契约解析、冻结与文档校验
-    │   ├── documents.mjs         # 文档读写（底层 util/atomic-write）
-    │   ├── tools.mjs             # 三个 submit_* 工具
-    │   ├── guards.mjs            # propose / update 守卫
-    │   ├── auditor.mjs           # 可见审计员运行
-    │   ├── scores.mjs            # verdictFromScores
-    │   └── report.mjs            # 报告构建与写入
-    ├── tool-gate/
-    │   ├── index.mjs             # 入口：注入与剥离两个门参数
-    │   ├── schema.mjs            # 门参数定义与 schema 注入
-    │   └── strip.mjs             # 执行前剥离门参数
-    ├── editor-theme/
-    │   ├── index.mjs             # 入口：初次失败时重试
-    │   └── surface.mjs           # TUI 原型面与 readTheme
-    └── util/
-        ├── atomic-write.mjs      # 同目录临时文件 + rename
-        ├── errors.mjs            # messageOf / errorCode
-        └── objects.mjs           # isObject / unknownFields
+src/
+├── bootstrap-main.mjs              # 入口 1：惰性加载 main.mjs，记录 health
+├── main.mjs                        # 主装配：命令、工具、hook、TUI、runner 端口
+├── tool-gate/
+│   ├── index.mjs                   # 入口 2：注入/准入/剥离 gate 字段
+│   └── schema.mjs                  # 多传输 schema 注入与 strip
+├── host/
+│   ├── imports.mjs                 # 宿主与 cherry-cljs 的唯一导入集中处
+│   ├── subprocess.mjs              # AgentDefinition、runSubprocess、取消树
+│   └── health.mjs                  # 跨入口 health 注册表
+├── util/
+│   ├── atomic-write.mjs            # 同目录 .tmp + fsync + rename
+│   ├── file-lock.mjs               # wx 锁、判活、陈旧锁
+│   └── errors.mjs                  # 错误码与 EDN 诊断
+├── clj-sandbox/
+│   ├── ufss.mjs                    # EDN + UFSS 读取/打印
+│   ├── where.mjs                   # UTF-16 精确匹配与最近行诊断
+│   ├── evaluator.mjs               # Promise-CPS 解释器与续体
+│   ├── vfs.mjs                     # 批内 VFS、stamp、W 提交
+│   └── tools.mjs                   # clj_plan/devops/review/worker/auditor
+├── scope/
+│   ├── ledger.mjs                  # Scope 四型、预算、assume
+│   └── projection.mjs              # 出站裁剪、简报钉住、缓存断点
+├── stages/
+│   ├── disclosures.mjs             # S1–S5 简报
+│   ├── parsers.mjs                 # S1–S4 结构校验
+│   ├── contract.mjs                # mission.edn、冻结、重对齐、批准
+│   ├── gate-tools.mjs              # advance_s1..s4、ask_user、devops、submit_review
+│   └── scores.mjs                  # K 路审计汇总与 s5-report
+├── swarm/
+│   ├── board.mjs                   # 看板短事务与 board_* 内核
+│   ├── worktree.mjs                # fork/join/abandon/GC
+│   ├── runner.mjs                  # Reviewer ⇄ Swarm、槽位、Nudge、Oracle
+│   └── auditors.mjs                # K 路 Manual Auditor 批次
+├── prompts/
+│   ├── common.mjs                  # COMMON（无 S2–S5 剧透）
+│   ├── roles.mjs                   # 固定角色提示词与审计员模板
+│   └── runtime-wires.mjs           # 语言后缀、gate 字段、Nudge
+└── tui/
+    ├── dashboard-model.mjs         # 纯数据双态/审计矩阵
+    └── dashboard-widget.mjs        # aboveEditor 组件与文本降级
 ```
 
-`src/` 下共 40 个 `.mjs`。三个清单入口是：
+`tools/dev-acceptance/` 是独立的开发验收提交包，只服务 `docs/manual-acceptance/**`；它不是产品运行时入口，也不是 K 路审计执行器。
 
-1. `src/bootstrap-main.mjs`
-2. `src/tool-gate/index.mjs`
-3. `src/bootstrap-editor-theme.mjs`
+旧模块已删除，不要恢复或重新 import。`src/` 当前只保留新模块；独立开发验收包仍只位于 `tools/dev-acceptance/`。
 
-`package.json` 的 `omp.extensions` 与 `pi.extensions` 按同一顺序列出它们。
+角色收窄由宿主报告的子会话身份（`ctx.agent`）与 M0 发布的 role surfaces 决定；`tool-gate/schema.mjs` 不再注册 `role-auth`/nonce 凭据，也没有独立的 `tool-gate/role-auth.mjs`。首行 `[HERD_ROLE: ...]` token 仍作为父进程写入的角色声明被解析和核对。
 
-`bootstrap-*` 入口只声明一个异步默认函数，函数被调用时才 `import()` 真实模块。Node 可以直接 `import` 三个清单入口并取得函数；真实实现仍在 omp 加载器内执行。
+## 命令与工具
 
-## 使用
+以下名称来自当前源码注册表，尚未在真实宿主上完成用户可见验收：
 
-清单入口本身只做动态 `import`，没有其他副作用。真实模块的工厂只注册事件、工具和命令，不在加载期发送消息或切换活动工具。真实模块求值期的副作用只有两处：`prompts/context-skill.mjs` 读取 pi-context 的 `SKILL.md`，`editor-theme/surface.mjs` 安装 TUI 原型面。
+- 命令：`/herd`、`/herd-status`、`/herd-list`、`/herd-focus`、`/herd-unfocus`、`/herd-cancel`、`/herd-recovery`、`/herd-settings`。
+- 阶段门禁：`advance_s1`、`advance_s2`、`advance_s3`、`advance_s4`、`ask_user`、`devops`、`submit_devops_report`、`submit_review`。
+- 看板与令牌：`board_split`、`board_claim`、`board_finish`、`board_cancel`、`board_replace`、`board_release`、`board_reopen`、`board_comment`、`board_update`、`board_park_slot`、`board_take_or_die` 等。
+- Worktree：`fork_slices`、`join_slice`、`abandon_slice`、`gc_worktrees`。
+- 沙箱：`clj_plan`、`clj_devops`、`clj_review`、`clj_worker`、`clj_auditor`。
+- 审计与会诊：`submit_case_audit`、`submit_oracle_advice`。
+- Scope：`ask_previous_scope`、`assume`。
 
-### 命令
+工具参数与回执的规范形状以根 `AGENTS.md` §4、§5、§8 为准。`fork_slices` 会创建 worktree 并启动 Slice runner；`join_slice` 在 FIFO 队列耗尽时调用 `runMissionAudit`，源码路径已连接 `startAuditBatch`、`aggregate`、`writeS5Report` 与修复切片，但真实宿主、重启和全 Slice 场景尚未验收，见 `DEBT.md`。
 
-- `/goal-x`：pi-goal-x 的引导式 goal 流程。本包把它的 `/goal` 改名为 `/goal-x`，宿主内置的 `/goal` 保持不变。
-- `/acm`：启用 pi-context 的 agentic context management；启用后可使用上下文工具。
-- `/context`：显示上下文用量可视化（来自 pi-context）。
-
-### 工具
-
-- 手动验收：`submit_manual_requirements`、`submit_development_guide`、`submit_coordination`。它们分别写 `docs/manual-acceptance/<goal_slug>/requirements.md`、`development-guide.md`、`coordination.md`。requirements 的每个结构化 CASE 必须对应 markdown 里的一个 `### CASE-*` 标题、PASS threshold 与路径行。
-- goal：`get_goal`、`create_goal`、`update_goal`、`set_goal_tasks`、`update_goal_task`、`goal_question`、`goal_questionnaire`、`propose_goal_draft`。这些由 pi-goal-x 注册；本包在 `propose_goal_draft` 与 `update_goal` 的完成路径上运行手动验收守卫。
-- 上下文：`context_checkpoint`、`context_timeline`、`context_compact`。由 pi-context 注册，`/acm` 启用后可用。
-- 工具门：`tool-gate` 给每个对象型工具 schema 注入两个必填参数 `how-many-more-workers-are-allowed-without-hitting-mythical-man-month` 与 `must-think-in`，并在执行前剥离。模型能看到它们，工具实现收不到。
-
-### 手动验收流程
-
-1. 用 `/goal-x` 启动 goal 草稿；objective 必须带单行 `Verification contract: MANUAL ACCEPTANCE ...`，列出三份文档与各自的 `sha256`。
-2. 用三个 `submit_*` 工具写三份文档。
-3. `propose_goal_draft` 由守卫校验契约、slug、文档存在性与哈希；不合规会被拒绝。
-4. `update_goal` 标记完成时再次校验；可见审计员运行，按 CASE 记录证据并写 `report.md`。CASE 的最终分是 `min(user_score, developer_score)`，再与该 CASE 的阈值比较。
-
-## 兼容性
-
-- omp 18.18.6 是开发基线；PATH 默认的 18.16.0 未验证。
-- `pi-context` 2.3.0 与 `pi-goal-x` 0.34.1 固定。它们的深路径导入依赖 omp 对 `@earendil-works/*` 的重写，只在 omp 扩展加载器内成立。三个清单入口在普通 Node 进程里可以 `import` 并取得函数（`bootstrap-*` 惰性加载），但调用后会加载真实模块，仍需 omp 的加载器重写。
-- 内部 API 风险：审计子进程使用 `@oh-my-pi/pi-coding-agent/task/executor` 的 `runSubprocess`；审计器替换依赖 pi-goal-x 的 `_goalCore` 与 `core.dependencies.runCompletionAuditor`；设置读取优先 `pi.pi.settings`，回退 `Settings.instance`。omp 升级可能改变这些接口。失败时审计器返回 disapproved，gated 工具 fail-closed，不会静默放行。
-- 两套清单 `omp.extensions` 与 `pi.extensions` 指向同一组三个入口，便于 omp 与 Pi 兼容加载。
-
-## 已知限制
-
-- `src/manual-acceptance/auditor.mjs` 的 `activeManualAcceptanceAudits` 是模块级 `Map`，按 goal id 保存 `AbortController`，审计结束不删除。进程生命周期内的条目数会随不同 goal 数增长；这是保留的旧行为。
-- `pi-context` 与 `pi-goal-x` 的深路径导入依赖 omp 的重写；脱离 omp 加载器时可能无法解析。
-- `.mjs` 入口只能经 `package.json` 清单、`omp plugin link` 或 `config.yml#extensions` 加载；把目录放进原生扩展目录不会被扫描。
-- editor-theme 只在宿主 TUI 原型缺 editor-theme 面时打补丁；初次失败后每次 `session_start` 重试一次，仍不可用时发 warning，对话框渲染不保证。
-- 审计子进程依赖宿主内部接口；契约哈希与报告写入是本地逻辑。升级 omp 后应先用一个小 goal 做冒烟。
-
-## 文案政策
-
-- 旧设计说明 `README.html` 已逐字节复制为 `docs/design.html`：121466 字节，sha256 `972f28733c05e5713c770fb82d6b634527d17fa4b156296200061227c23977fb`。`docs/design.html` 不转述、不压缩、不改写。
-- 本 README 与 CHANGELOG 只描述当前包；它们不替代 `docs/design.html`，也不把旧结论改写成新说法。
-- 提示词、用户可见文案、错误消息、工具 label/description 以旧实现原文为准；迁移时逐字复制，不做“顺手润色”。
-
-## 方法论
-
-方法论是运行时提示词规则，不只是文档：`src/prompts/method-discipline.mjs` 的 `METHOD_DISCIPLINE` 按 S1/S2/S3 分阶段进入主系统提示与审计员提示，模型必须按它决策和检查。模块按变化原因拆，而不是按行数拆：提示词、宿主适配、手动验收、工具门、主题各归一处，入口只组合。切片与合并不靠口头约定，而靠 S3 的 G0–G4 门禁、所有权矩阵与 FREEZE WINDOW。文案逐字保留，因为 CASE-15 用 grep 与文本哈希验收，任何改写都会让旧行为失去证据。完整映射见 [`docs/methodology.md`](docs/methodology.md)。
-
-## 开发检查
+## 本地开发检查（不是验收）
 
 ```bash
-bun test          # 纯函数与文件工具测试，仅作开发者质量参考
-bun run check     # Biome 格式与 lint
+bun install
+bun test
+bun run check
 ```
 
-`bun test` 与 `bun run check` 不是验收证据；手动验收按 `docs/manual-acceptance/` 下的 CASE 执行。
+这些命令只用于开发者自查，不构成手册验收证据，也不提高任何 CASE 的分数。真实宿主挂载尚未证明；在 `DEBT.md` 的“真实宿主加载与端到端使命”关闭前，不要把本仓库当作可发布安装包，也不要照旧版 README 的三入口/18.18.6/`pi-context`/`pi-goal-x` 说明操作。
+
+## 仍未完成/未验证的主要缺口
+
+完整队列见 `DEBT.md`；这里只列影响判断的前几项：
+
+1. S5 审计源码已接入 `main.mjs`，但触发只依赖 `join_slice` 队列耗尽；真实宿主中的全 Slice、重启恢复、批准与报告尚未验收。
+2. 角色收窄依赖宿主 `ctx.agent` 的子会话身份；`HACK.md` 记录的实际宿主/类型包版本不一致，真实 17.x/16.x 形状未验证。首行 role token 仍存在，但没有独立 role-auth 注册表可作为回退。
+3. 真实宿主加载、真实 `tmux`/TUI 交互、完整 S1→S5 使命与手工验收报告均未完成。
+4. 全量 `bun test` 与根规格 V01–V08/T01–T13/F01–F15 交错矩阵尚未逐项核对；测试不是验收证据。
+5. `sessionFile` 父链在宿主 `artifactsDir` 下不可兑现；不要向用户宣称 `history://` 可重放父链，详见 `DEBT.md` 与 `HACK.md`。
+6. 真实出站零剧透与提示词工具名一致性测试仍缺席；静态提示词拷贝测试不会替代它。
+
+## 文档边界
+
+| 文档 | 作用 |
+|---|---|
+| 根 `AGENTS.md` | 唯一规格（SSOT）；只有人类操作员可以修改 |
+| `HACK.md` | 宿主、依赖、Git、验收环境的实测事实与复检步骤 |
+| `DEBT.md` | 根规格要求但当前未做到的事项；关闭即删除 |
+| `HISTORY.md` | 历史取舍、被拒方案、旧产物保全记录 |
+| `src/AGENTS.md` | 全局架构装配笔记与单向依赖图 |
+| `docs/manual-acceptance/clean-break/` | 开发本产品的 MANUAL ACCEPTANCE 文档；不是产品运行时 `plans/<slug>/` |
+| `docs/旧的方法论.md`、`docs/旧的架构.md`、`docs/旧的设计.html`、`docs/讨论纪要.md`、`docs/兄弟项目参考.md` | 用户既有历史资料，保留只读，不因 clean-break 删除或改写 |
+
+本 README 与 `CHANGELOG.md` 只描述当前工作区，不替代根规格，也不声称验收完成。

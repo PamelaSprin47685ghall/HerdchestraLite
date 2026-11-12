@@ -8,23 +8,19 @@
   "omp": {
     "extensions": [
       "./src/bootstrap-main.mjs",
-      "./src/tool-gate/index.mjs",
-      "./src/bootstrap-editor-theme.mjs"
+      "./src/tool-gate/index.mjs"
     ]
   },
   "pi": {
     "extensions": [
       "./src/bootstrap-main.mjs",
-      "./src/tool-gate/index.mjs",
-      "./src/bootstrap-editor-theme.mjs"
+      "./src/tool-gate/index.mjs"
     ]
   },
   "exports": {
     ".": "./src/main.mjs",
     "./bootstrap-main": "./src/bootstrap-main.mjs",
     "./tool-gate": "./src/tool-gate/index.mjs",
-    "./editor-theme": "./src/editor-theme/index.mjs",
-    "./bootstrap-editor-theme": "./src/bootstrap-editor-theme.mjs",
     "./package.json": "./package.json"
   },
   "files": [
@@ -38,8 +34,7 @@
     "bun": ">=1.4.4"
   },
   "dependencies": {
-    "pi-context": "2.3.0",
-    "pi-goal-x": "0.34.1"
+    "cherry-cljs": "0.6.38"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15"
