@@ -1372,6 +1372,7 @@ export function buildSandboxTools({ role, session, roots, ports = {} } = {}) {
 			ports: sessionPorts,
 			limits: ports.limits,
 		});
+		sandboxSession.roots = normalizedRoots;
 	} else {
 		if (
 			typeof sandboxSession !== "object" ||

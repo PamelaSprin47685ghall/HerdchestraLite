@@ -239,6 +239,13 @@ describe("findAll", () => {
 });
 
 describe("findUnique", () => {
+	it("preserves char-clean semantics without trim or Unicode normalize", () => {
+		expect(findUnique("  abc  ", "abc").kind).toBe("unique");
+		expect(findUnique("  abc  ", "  abc  ").span).toEqual([0, 7]);
+		expect(findUnique("abc", " abc ").kind).toBe("none");
+		expect(findUnique("\u00e9", "e\u0301").kind).toBe("none");
+		expect(findAll("\u00e9", "e\u0301")).toEqual([]);
+	});
 	it("returns one exact span", () => {
 		expect(findUnique("xx needle yy", "needle")).toEqual({
 			kind: "unique",

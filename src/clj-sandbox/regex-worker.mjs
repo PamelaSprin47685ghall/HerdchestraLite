@@ -335,10 +335,10 @@ export function executeRegexTask(task) {
 	}
 }
 
-if (parentPort !== null) {
+if (parentPort !== null && workerData?.__regexTask === true) {
 	let response;
 	try {
-		response = { ok: true, result: executeRegexTask(workerData) };
+		response = { ok: true, result: executeRegexTask(workerData.task) };
 	} catch (error) {
 		response = {
 			ok: false,
@@ -420,7 +420,7 @@ export function runRegexTask(task, options = {}) {
 	return new Promise((resolve, reject) => {
 		let worker;
 		try {
-			worker = new Worker(new URL("./regex-worker.mjs", import.meta.url), { workerData: task });
+			worker = new Worker(new URL("./regex-worker.mjs", import.meta.url), { workerData: { __regexTask: true, task } });
 		} catch (error) {
 			reject(taskFailure("runtime", "cannot start regex worker", { cause: error?.message ?? String(error) }));
 			return;

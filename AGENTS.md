@@ -1052,7 +1052,7 @@ join({ otherwise_independent_work })
 
 #### 4.4.1 纯字符精确切片
 
-`(where {:content src :needle needle})` 与 `(whereAll {:content src :needle needle})` 按纯字符偏移精确匹配，绝不做隐式 `trim`、忽略缩进或正则匹配。返回值可直接用于 `(subs content begin end)`：
+`(where {:content src :needle needle})` 与 `(whereAll {:content src :needle needle})` 按纯字符偏移精确匹配，绝不做隐式 `trim`、Unicode `normalize`、忽略缩进或正则匹配（纯 char-clean 语义）。返回值可直接用于 `(subs content begin end)`：
 
 - `where` 要求唯一命中，返回 `[begin end]`（UTF-16 码元偏移；JS 字符串索引与 `subs` 一致，不使用字节偏移）。
 - 多匹配：不抛异常毁掉已算出的局部变量，立即转入 `:parked`，返回最多 8 条候选：
@@ -1095,9 +1095,15 @@ join({ otherwise_independent_work })
    - **能力集核验**：当前角色没有恢复该程序所需能力集，返回 `:CAPABILITY_DENIED`。
 
    通过后，`value` 原样成为原挂起表达式的返回值（内核不做二次校验；切片有效性由程序自己保证）；原程序继续执行，恢复时按新请求的 `intent` 重新计时。恢复后的提交仍会复核 `read-set` 的 `stamp`，确保挂起期间底层文件未被他人篡改。
-6. **按 `call` 自动后台化与 `join` 期限**：`clj_*` 工具无需携带 `intent`；不含 `call` 的程序同步返回结果，一旦实际执行到 `call`（含 `unpark` 恢复未完成的 `call`）立即后台化并返回 `:state :forked`。LLM 通过统一的 `join({ otherwise_independent_work })` 工具收集结果：`otherwise_independent_work` 必须反事实地说明本可以立即派发什么无依赖工作而不是调用 `join` 死等结果；其 UTF-8 字节长度决定 `join` 的等待期限（$1000\text{ms} + 字节数 \times 50\text{ms}$，固定白送 1 秒，不按角色加码），且**只对 `call` 计时，沙盒引擎自身耗时不计**。无任务时 `join` 立刻返回 `:idle`；有积压结果时 `join` 一次性全部返回且不阻塞；否则 `join` 阻塞等待最先返回的一个结果（不可指定）并返回，其余任务继续在后台执行，可再次调用 `join` 收集。`join` 超期采用 `park-all` 语义，将所有运行中程序挂起（`:state :parked :reason :deadline`）并返回其回执，随后仍可通过指名 `(unpark {:name ... :value ...})`, `(abandon {:name ...})` 恢复。
-7. **名字占用**：同名程序仍处于 `:running` / `:waiting` / `:parked` 时，新程序占用同名启动被拒 `:NAME_TAKEN`；进入 `:completed` / `:failed` 后名字可复用。同一物理工具调用（同一 `call-id`）带相同载荷再次到达，直接重放原回执；不同载荷返回 `:CALL_REPLAY_MISMATCH`。
-8. **`ask_user` 与挂起的关系**：`ask_user` 属于 S1，语义等价于“挂起 + 中断回合 + 交还人类”。人类回答后，模型在新程序中 `unpark` 原程序；回答只作为新需求进入上下文，不重开任期、不制造评审。S5 仅保留一个例外：初任 `Reviewer` 首次空账、主工作区已满足契约且无 Slice 可做时，允许一次性询问；问完即恢复无人值守，不得把 `ask_user` 当作常规评审出口。
+6. **按 `call` 自动后台化与 `join` 期限**：`clj_*` 工具无需携带 `intent`，在 fork 时提前赠送共计 `1000ms` 的免费 `call` 等待额度（同一调用内多次 `call` 累计共用这 `1000ms`）：若在 `1000ms` 内完成则同步返回，一旦累计超过 `1000ms` 立即后台化并返回 `:state :forked`。LLM 通过统一的 `join({ otherwise_independent_work })` 工具收集结果：`otherwise_independent_work` 必须反事实地说明本可以立即派发什么无依赖工作而不是调用 `join` 死等结果；每次 `join` 同样继续赠送 `1000ms`，等待期限为 `1000ms + UTF-8 字节数 × 50ms`，且**只对 `call` 计时，沙盒引擎自身耗时不计**。无任务时 `join` 立刻返回 `:idle`；有积压结果时 `join` 一次性全部返回且不阻塞；否则 `join` 阻塞等待最先返回的一个结果（不可指定）并返回，其余任务继续在后台执行，可再次调用 `join` 收集。`join` 超期采用 `park-all` 语义，将所有运行中程序挂起（`:state :parked :reason :deadline`）并返回其回执，随后仍可通过指名 `(unpark {:name ... :value ...})`, `(abandon {:name ...})` 恢复。
+7. **增量输出、`stdin` 灌入、未裁决提醒与 `$W$` 排队**：
+   - 慢 `call` 因 `join` 超时 `park` 时，将自上次展示以来的增量 `{:stdout ... :stderr ...}` 放入 `:payload`，满足 `sum(各次 park) + final === all`。
+   - `(unpark {:name ... :value ...})` 恢复 `pendingCall` 时，字符串或 `{:stdin ... :eof ...}` 作为键盘输入灌入子进程 `stdin`。
+   - `(abandon {:name ...})` 抛弃挂起程序、丢弃未提交 VFS、中止遗留 `call` 子进程释放 `$W$` 并释放内存。
+   - 存在未裁决 `:parked` 程序时，`context` 钩子在每次请求末尾追加带 `<UNDECIDED-PARKED-PROGRAMS>` XML 标记的 `user` 消息提醒模型裁决。
+   - 同回合混发 `call` 与写操作遇到 `$W$` 被占用时排队等待（并触发后台化 `:state :forked`），先抢到锁的先执行，禁止同步 hang。
+8. **名字占用**：同名程序仍处于 `:running` / `:waiting` / `:parked` 时，新程序占用同名启动被拒 `:NAME_TAKEN`；进入 `:completed` / `:failed` 后名字可复用。同一物理工具调用（同一 `call-id`）带相同载荷再次到达，直接重放原回执；不同载荷返回 `:CALL_REPLAY_MISMATCH`。
+9. **`ask_user` 与挂起的关系**：`ask_user` 属于 S1，语义等价于“挂起 + 中断回合 + 交还人类”。人类回答后，模型在新程序中 `unpark` 原程序；回答只作为新需求进入上下文，不重开任期、不制造评审。S5 仅保留一个例外：初任 `Reviewer` 首次空账、主工作区已满足契约且无 Slice 可做时，允许一次性询问；问完即恢复无人值守，不得把 `ask_user` 当作常规评审出口。
 
 ### 4.5 黑盒 `call`
 
@@ -1700,9 +1706,9 @@ In tool results or user messages, authoritative skills and stage briefings are i
 ```text
 # Tool-First Output & ClojureScript/UFSS Sandbox
 1. Structured data and long documents NEVER travel as loose chat prose or XML tags. Whenever a stage gate, review ledger, board mutation, investigation report, or audit verdict is expected, call its dedicated tool and pass full Markdown/text in the tool's string parameter.
-2. Workspace inspection, slicing, continuations, and edits run inside your role's ClojureScript sandbox tool (`clj_plan`, `clj_devops`, `clj_review`, `clj_worker`, `clj_auditor`) as bare REPL input. Every sandbox capability is a bare function taking one EDN map—never `this`, never positional args: `(cat {:path ...})`, `(stat {:path ...})`, `(ls {:path ...})`, `(glob {:pattern ... :path ...})` (pure async probes, no stamp dependency), `(write {:path ... :content ...})`, `(mkdir {:path ...})`, `(rm {:path ...})`, `(mv {:source ... :target ...})`, `(where {:content ... :needle ...})` (UTF-16 exact unique span `[b e]` for `subs`; auto-parks with Ukkonen K=64 `:nearest` or `:candidates` if matches != 1), `(whereAll {:content ... :needle ...})`, `(park {:payload ...})`, `(unpark {:name ... :value ...})`, `(abandon {:name ...})`, `(call {:argv ["<program>" "<arg>" ...] :cwd ...})`.
+2. Workspace inspection, slicing, continuations, and edits run inside your role's ClojureScript sandbox tool (`clj_plan`, `clj_devops`, `clj_review`, `clj_worker`, `clj_auditor`) as bare REPL input. Every sandbox capability is a bare function taking one EDN map—never `this`, never positional args: `(cat {:path ...})`, `(stat {:path ...})`, `(ls {:path ...})`, `(glob {:pattern ... :path ... :exec (fn [p] ...)})` (pure async probes, no stamp dependency), `(write {:path ... :content ...})`, `(mkdir {:path ...})`, `(rm {:path ...})`, `(mv {:source ... :target ...})`, `(where {:content ... :needle ...})` (UTF-16 exact unique span `[b e]` for `subs`; auto-parks with Ukkonen K=64 `:nearest` or `:candidates` if matches != 1), `(whereAll {:content ... :needle ...})`, `(park {:payload ...})`, `(unpark {:name ... :value ...})`, `(abandon {:name ...})`, `(call {:argv ["<program>" "<arg>" ...] :cwd ...})`.
 2b. Every call must include a non-empty :alternative map (1+ pair) naming built-in tools or other approaches and why they were not chosen; the framework ignores it.
-  3. `clj_*` tools take no `intent` and run synchronously unless/until the program actually executes `call` (including `unpark` resuming an unsettled `call`), at which point it backgrounds immediately and returns `:state :forked`. Life is hard and reality is unforgiving: if you want synchronous return, do NOT use `call`—otherwise you MUST bear the full hassle of async `:state :forked`, `join`, and `park-all`/`unpark`. Use the unified `join({ otherwise_independent_work })` tool to collect results: `otherwise_independent_work` counterfactually explains what independent work could otherwise be dispatched right now instead of calling join to wait idly (if you decide not to join after thinking about this, GREAT!), and its UTF-8 byte length sets the wait deadline (`1000ms + UTF-8 bytes * 50ms`), counting ONLY time spent inside `call` (sandbox engine evaluation time is excluded). `join` returns immediately if idle or with all backlogged results if any exist; otherwise it waits for the first returning task (not selectable) and returns that single result. On `join` timeout, all running tasks park (`park-all`) and their `:parked` receipts are returned; resume any of them by name via `(unpark {:name ... :value ...})`, `(abandon {:name ...})`.
+  3. `clj_*` tools take no `intent` and grant a single free `1000ms` total `call`-wait grace at fork time (even across multiple sequential `call`s, capped at `1000ms` total); if cumulative `call`/`$W$` wait exceeds `1000ms`, it backgrounds immediately and returns `:state :forked`. Life is hard and reality is unforgiving: if you want guaranteed synchronous return, do NOT use `call`—otherwise you MUST bear the full hassle of async `:state :forked`, `join`, and `park-all`/`unpark`. Use the unified `join({ otherwise_independent_work })` tool to collect results: `otherwise_independent_work` counterfactually explains what independent work could otherwise be dispatched right now instead of calling join to wait idly (if you decide not to join after thinking about this, GREAT!), and its UTF-8 byte length sets the wait deadline (`1000ms + UTF-8 bytes * 50ms`), counting ONLY time spent inside `call` (sandbox engine evaluation time is excluded). `join` returns immediately if idle or with all backlogged results if any exist; otherwise it waits for the first returning task (not selectable) and returns that single result. On `join` timeout, all running tasks park (`park-all`) and their `:parked` receipts are returned with incremental `:stdout`/`:stderr` deltas; resume any of them by name via `(unpark {:name ... :value ...})` (pipes string/`:eof` to `call` stdin) or discard via `(abandon {:name ...})`.
   4. System receipts use EDN + UFSS (`#"..."#` single-line raw, `#"""\n...\n<indent>"""#` multi-line indent-stripped raw; zero backslash escaping; regexes use `(re-pattern #"..."#)`). Prefer UFSS inside REPL literals to eliminate quote/backslash corruption.
 
 # Scope
@@ -2017,6 +2023,8 @@ HerdchestraLite/
     │   ├── ufss.mjs              # EDN + UFSS 读取器与确定性阶梯 Pretty Printer
     │   ├── evaluator.mjs         # cherry-cljs 异步求值器、符号表隔离、park/unpark 续体表
     │   ├── where.mjs             # UTF-16 精确匹配与 Ukkonen 带状 DP 诊断
+    │   ├── sandbox-worker.mjs    # 独立 Worker 线程宿主（隔离 CEK/where/VFS 计算）
+    │   ├── glob-pool.mjs         # 多核 Worker 池（glob :exec 并发求值）
     │   ├── vfs.mjs               # 批内内存 VFS、stamp 采集、W 提交流水线
     │   └── tools.mjs             # clj_plan / clj_devops / clj_review / clj_worker / clj_auditor
     ├── tool-gate/

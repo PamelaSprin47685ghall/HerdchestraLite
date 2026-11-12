@@ -1,24 +1,22 @@
 /**
- * Minimal dogfood surface: asynchronous ClojureScript sandbox + unified join.
+ * Minimal dogfood surface: asynchronous Worker-hosted ClojureScript sandbox +
+ * unified join.
  *
- * This entry registers `clj_plan`, `clj_devops`, `clj_review`, `clj_worker`,
- * and `join`, plus `/clj-status`. All `clj_*` calls fork asynchronously and
- * return immediately without requiring `intent`. `join` collects completed
- * results from the session pool: returning immediately when idle or when
- * backlogged results exist, otherwise waiting up to `1000ms + bytes * 50ms`
- * (determined by its `otherwise_independent_work` parameter) for the first running
- * sandbox to finish.
+ * All Cherry/CEK evaluation, `where` diagnostics, and VFS operations run inside
+ * a dedicated `node:worker_threads` Worker (`src/clj-sandbox/sandbox-worker.mjs`)
+ * so heavy sandbox CPU work never blocks the `omp` main thread. Programs that
+ * finish without hitting `call` or a held `$W$` lock return synchronously;
+ * hitting `call` or waiting on `$W$` immediately backgrounds the call (`:state
+ * :forked`) for collection via unified `join`.
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
+import { Worker } from "node:worker_threads";
 import { cherryStatus, loadCherry } from "./clj-sandbox/cherry.mjs";
-import { parkedNames, parkProgramOnDeadline } from "./clj-sandbox/evaluator.mjs";
-import { buildSandboxTools, describeSandboxTool } from "./clj-sandbox/tools.mjs";
+import { describeSandboxTool } from "./clj-sandbox/tools.mjs";
 import { recordHealth } from "./host/health.mjs";
 import { herdError } from "./util/errors.mjs";
-import { withLock } from "./util/file-lock.mjs";
 
 const VERSION = "1";
 const ENTRY = "clj.core";
@@ -40,7 +38,7 @@ const FORK_ALLOWED_FIELDS = new Set(["name", "code", "i"]);
 const JOIN_ALLOWED_FIELDS = new Set(["otherwise_independent_work", "i"]);
 
 /**
- * One-second grace, then 50ms per UTF-8 byte. No role floors.
+ * Join wait budget: 50ms per UTF-8 byte (the free 1s grace is spent at fork time).
  */
 export function waitMsFor(text, baseMs = 1_000) {
 	const bytes = Buffer.byteLength(typeof text === "string" ? text : "", "utf8");
@@ -64,7 +62,7 @@ const SANDBOX_PARAMETERS = Object.freeze({
 		code: {
 			type: "string",
 			minLength: 1,
-			description: "Bare ClojureScript REPL input; forks asynchronously and returns immediately.",
+			description: "Bare ClojureScript REPL input; runs in a Worker thread.",
 		},
 	},
 });
@@ -78,7 +76,7 @@ const JOIN_PARAMETERS = Object.freeze({
 			type: "string",
 			minLength: 1,
 			description:
-				"Counterfactually explain what independent work could otherwise be dispatched right now instead of calling join to wait idly. If you decide not to join after thinking about this, GREAT! Wait deadline = 1000ms + UTF-8 bytes * 50ms.",
+				"Counterfactually explain what independent work could otherwise be dispatched right now instead of calling join to wait idly. If you decide not to join after thinking about this, GREAT! Wait deadline = 1000ms + UTF-8 bytes * 50ms (plus 1000ms free grace at clj_* fork time).",
 		},
 	},
 });
@@ -156,8 +154,10 @@ function getPool(state, sessionKey) {
 			waitingLocks: new Set(),
 			callListeners: new Set(),
 			pendingForeground: new Map(),
+			pendingByExecId: new Map(),
 			pendingRoles: new Map(),
 			startingPromises: new Set(),
+			parkedList: [],
 		};
 		state.pools.set(sessionKey, pool);
 	}
@@ -295,123 +295,6 @@ function formatJoinedResults(items, pool) {
 }
 
 /**
- * A protected write gate backed by one lock file per workspace.
- *
- * VFS `commit` expects `runExclusive(fn)` to return `fn`'s value, not a lock
- * wrapper. Conflict reporting stays in VFS; this port only serializes.
- */
-const WRITE_GATE_QUEUES = new Map();
-
-function createWriteGate(root, ownerId, onWaitLock) {
-	const lockPath = join(root, ".herd", "locks", "clj-core.write-w.lock");
-	mkdirSync(join(root, ".herd", "locks"), { recursive: true });
-	return {
-		async runExclusive(run, signal) {
-			const prev = WRITE_GATE_QUEUES.get(lockPath);
-			if (prev !== undefined) {
-				onWaitLock?.(true);
-			}
-			let releaseQueue;
-			const next = new Promise((resolve) => {
-				releaseQueue = resolve;
-			});
-			WRITE_GATE_QUEUES.set(lockPath, next);
-			if (prev !== undefined) {
-				await prev;
-			}
-			try {
-				while (true) {
-					if (signal?.aborted) {
-						throw herdError("UPSTREAM_ABORTED", "write gate wait was cancelled", { lock: lockPath });
-					}
-					const acquired = await withLock(
-						lockPath,
-						{
-							lock_id: "clj-core",
-							purpose: "clj-core protected write",
-							slice_id: "clj-core",
-							owner_agent_id: ownerId,
-							pid: process.pid,
-						},
-						run,
-					);
-					if (acquired?.ok) {
-						return acquired.value;
-					}
-					if (acquired?.code !== ":BOARD_CONFLICT") {
-						throw herdError(acquired?.code ?? ":BOARD_CONFLICT", acquired?.message ?? "write gate is held", {
-							lock: lockPath,
-							next: "wait for the current holder to finish, then retry the same program",
-						});
-					}
-					onWaitLock?.(true);
-					await new Promise((resolveWait) => setTimeout(resolveWait, 15));
-				}
-			} finally {
-				onWaitLock?.(false);
-				releaseQueue();
-				if (WRITE_GATE_QUEUES.get(lockPath) === next) {
-					WRITE_GATE_QUEUES.delete(lockPath);
-				}
-			}
-		},
-	};
-}
-
-function createControl() {
-	return {
-		async markApplying(payload = {}) {
-			return { ok: true, actionId: payload.actionId ?? "clj-core" };
-		},
-		async publishResult() {
-			return { ok: true };
-		},
-		async markUncertain() {
-			return { ok: true };
-		},
-		async markRunning(payload = {}) {
-			return { ok: true, actionId: payload.actionId ?? "clj-core" };
-		},
-		async verifyClaim() {
-			return { ok: true };
-		},
-	};
-}
-
-function createPorts(root, ownerId, callMetaByCall, withWriteGate, onCallActivity, onWaitLock) {
-	return {
-		...(withWriteGate ? { writeGate: createWriteGate(root, ownerId, onWaitLock) } : {}),
-		control: createControl(),
-		identity: { agent_id: ownerId, status: "alive", term_id: "clj-core" },
-		claim: { claim_id: "clj-core", status: "active", term_id: "clj-core" },
-		callMeta: (toolCallId) => callMetaByCall.get(toolCallId),
-		agentId: ownerId,
-		sessionKey: ownerId,
-		...(onCallActivity ? { onCallActivity } : {}),
-	};
-}
-
-function buildBundle(role, root, ownerId, callMetaByCall, onCallActivity, onWaitLock) {
-	const callLogDir = role === "devops" ? join(root, ".herd", "artifacts", "clj-core") : undefined;
-	if (callLogDir !== undefined) mkdirSync(callLogDir, { recursive: true });
-	return buildSandboxTools({
-		role,
-		roots: {
-			writeRoot: root,
-			...(callLogDir !== undefined ? { callLogDir } : {}),
-		},
-		ports: createPorts(
-			root,
-			ownerId,
-			callMetaByCall,
-			role === "worker" || role === "devops",
-			onCallActivity,
-			onWaitLock,
-		),
-	});
-}
-
-/**
  * Apply the replaced-host-tool blacklist to the current active set.
  *
  * The operation is subtractive: `getActiveTools()` is filtered and passed
@@ -466,7 +349,7 @@ export async function applyCljToolSurface(pi) {
 }
 
 /**
- * Register the four async sandbox tools and unified `join`. Kept as an
+ * Register the four Worker-hosted sandbox tools and unified `join`. Kept as an
  * exported function so a test or a future assembly can compose the same surface
  * without the omp default entry.
  */
@@ -475,14 +358,132 @@ export function registerCljTools(pi, deps = {}) {
 		throw new TypeError("clj-core: pi.registerTool is required");
 	}
 	const state = {
-		bundles: new Map(),
-		callMeta: new Map(),
 		pools: new Map(),
+		pendingExecs: new Map(),
+		pendingParks: new Map(),
+		worker: null,
+		seq: 0,
 	};
 	const ownerId = deps.ownerId ?? `clj-core-${process.pid}`;
 	const forkDeadlineMs = Number.isFinite(deps.forkDeadlineMs) ? deps.forkDeadlineMs : DEFAULT_FORK_DEADLINE_MS;
 	const baseWaitMs = Number.isFinite(deps.baseWaitMs) && deps.baseWaitMs >= 0 ? deps.baseWaitMs : 1_000;
 	const failures = [];
+
+	function ensureWorker() {
+		if (state.worker !== null) {
+			return state.worker;
+		}
+		const worker = new Worker(new URL("./clj-sandbox/sandbox-worker.mjs", import.meta.url), {
+			workerData: { __sandboxWorker: true },
+		});
+		const failAll = (reason) => {
+			if (state.worker === worker) {
+				state.worker = null;
+			}
+			for (const [id, resolveExec] of state.pendingExecs.entries()) {
+				state.pendingExecs.delete(id);
+				resolveExec(toolFailure(herdError("HOST_API_MISMATCH", reason)));
+			}
+			for (const [id, resolvePark] of state.pendingParks.entries()) {
+				state.pendingParks.delete(id);
+				resolvePark({ ok: false, code: "HOST_API_MISMATCH" });
+			}
+		};
+		worker.on("message", (msg) => {
+			if (!msg || typeof msg !== "object") return;
+			if (msg.type === "execDone") {
+				const resolveExec = state.pendingExecs.get(msg.id);
+				if (resolveExec) {
+					state.pendingExecs.delete(msg.id);
+					resolveExec(msg.result);
+				}
+				return;
+			}
+			if (msg.type === "parkResult") {
+				const resolvePark = state.pendingParks.get(msg.id);
+				if (resolvePark) {
+					state.pendingParks.delete(msg.id);
+					resolvePark(msg.result);
+				}
+				return;
+			}
+			const pool = getPool(state, msg.sessionKey);
+			if (msg.type === "callActivity") {
+				const { id, active, program } = msg;
+				if (typeof program !== "string" || program.length === 0) return;
+				const fg = pool.pendingByExecId.get(id) ?? pool.pendingForeground.get(program);
+				if (active) {
+					pool.activeCalls.add(program);
+					if (fg) {
+						fg.setActive(true);
+					} else {
+						for (const entryFg of pool.pendingForeground.values()) {
+							entryFg.setActive(true);
+						}
+					}
+				} else {
+					pool.activeCalls.delete(program);
+					fg?.setActive(false);
+				}
+				for (const item of pool.inFlight.values()) {
+					if (item.programName === program) {
+						item.inCall = active;
+					}
+				}
+				for (const listener of pool.callListeners) {
+					listener();
+				}
+				return;
+			}
+			if (msg.type === "waitLock") {
+				const { waiting, role } = msg;
+				if (waiting) {
+					pool.waitingLocks.add(role);
+					for (const [progName, entryFg] of pool.pendingForeground.entries()) {
+						if (pool.pendingRoles.get(progName) === role) {
+							entryFg.setActive(true);
+						}
+					}
+				} else {
+					pool.waitingLocks.delete(role);
+					for (const [progName, entryFg] of pool.pendingForeground.entries()) {
+						if (pool.pendingRoles.get(progName) === role) {
+							entryFg.setActive(false);
+						}
+					}
+				}
+				for (const listener of pool.callListeners) {
+					listener();
+				}
+				return;
+			}
+			if (msg.type === "parkedList") {
+				pool.parkedList = Array.isArray(msg.list) ? msg.list : [];
+			}
+		});
+		worker.on("error", (error) => {
+			failAll(`sandbox worker failed: ${errorText(error)}`);
+		});
+		worker.on("exit", (code) => {
+			if (state.worker === worker) {
+				failAll(`sandbox worker exited unexpectedly with code ${code}`);
+			}
+		});
+		state.worker = worker;
+		return worker;
+	}
+
+	function parkInWorker(sessionKey, role, programName) {
+		const worker = state.worker;
+		if (!worker) {
+			return Promise.resolve({ ok: false, code: "PROGRAM_UNKNOWN", name: programName });
+		}
+		const id = `park-${++state.seq}`;
+		return new Promise((resolvePark) => {
+			state.pendingParks.set(id, resolvePark);
+			worker.postMessage({ type: "parkOnDeadline", id, sessionKey, role, programName });
+		});
+	}
 
 	for (const role of TOOL_ROLES) {
 		const toolName = TOOL_NAMES[role];
@@ -502,65 +503,15 @@ export function registerCljTools(pi, deps = {}) {
 					const root = rootFor(ctx);
 					const sessionKey = hostSessionKey(ctx, root);
 					const pool = getPool(state, sessionKey);
-					const bundleKey = `${sessionKey}\u0000${role}`;
-					let built = state.bundles.get(bundleKey);
-					try {
-						if (built === undefined) {
-							const onCallActivity = ({ active, program }) => {
-								if (typeof program !== "string" || program.length === 0) return;
-								if (active) {
-									pool.activeCalls.add(program);
-									const direct = pool.pendingForeground.get(program);
-									if (direct) {
-										direct();
-									} else {
-										for (const trigger of pool.pendingForeground.values()) {
-											trigger();
-										}
-									}
-								} else {
-									pool.activeCalls.delete(program);
-								}
-								for (const item of pool.inFlight.values()) {
-									if (item.programName === program) {
-										item.inCall = active;
-									}
-								}
-								for (const listener of pool.callListeners) {
-									listener();
-								}
-							};
-							const onWaitLock = (waiting = true) => {
-								if (waiting) {
-									pool.waitingLocks.add(role);
-									for (const [progName, trigger] of pool.pendingForeground.entries()) {
-										if (pool.pendingRoles.get(progName) === role) {
-											trigger();
-										}
-									}
-								} else {
-									pool.waitingLocks.delete(role);
-								}
-								for (const listener of pool.callListeners) {
-									listener();
-								}
-							};
-							built = buildBundle(role, root, `${ownerId}:${role}`, state.callMeta, onCallActivity, onWaitLock);
-							state.bundles.set(bundleKey, built);
-						}
-					} catch (error) {
-						return toolFailure(error);
-					}
-
 					const callId =
 						typeof toolCallId === "string" && toolCallId.length > 0 ? toolCallId : `fork-${randomUUID().slice(0, 12)}`;
-					state.callMeta.set(callId, { deadlineAt: Date.now() + forkDeadlineMs });
+					const execId = `exec-${++state.seq}`;
 					const entry = {
 						callId,
 						toolName,
 						role,
+						sessionKey,
 						programName: validated.programName,
-						session: built.session,
 						inCall: false,
 						claimed: false,
 						startedAt: Date.now(),
@@ -583,10 +534,28 @@ export function registerCljTools(pi, deps = {}) {
 					const bgPromise = new Promise((resolve) => {
 						resolveBackground = resolve;
 					});
+					let remainingGraceMs = baseWaitMs;
+					let graceTickingSince = null;
+					let graceTimer = null;
+					let activeGraceCount = 0;
+
+					const clearGraceTimer = () => {
+						if (graceTimer !== null) {
+							clearTimeout(graceTimer);
+							graceTimer = null;
+						}
+						if (graceTickingSince !== null) {
+							remainingGraceMs = Math.max(0, remainingGraceMs - (Date.now() - graceTickingSince));
+							graceTickingSince = null;
+						}
+					};
+
 					const triggerBackground = () => {
 						if (settledNormally || backgrounded) return;
 						backgrounded = true;
+						clearGraceTimer();
 						pool.pendingForeground.delete(validated.programName);
+						pool.pendingByExecId.delete(execId);
 						pool.pendingRoles.delete(validated.programName);
 						pool.inFlight.set(callId, entry);
 						finishStarting();
@@ -600,15 +569,87 @@ export function registerCljTools(pi, deps = {}) {
 						);
 					};
 
-					pool.pendingRoles.set(validated.programName, role);
-					pool.pendingForeground.set(validated.programName, triggerBackground);
+					const fgHandle = {
+						setActive(isActive) {
+							if (settledNormally || backgrounded) return;
+							if (isActive) {
+								activeGraceCount += 1;
+								if (remainingGraceMs <= 0) {
+									triggerBackground();
+									return;
+								}
+								if (graceTimer === null) {
+									graceTickingSince = Date.now();
+									graceTimer = setTimeout(() => {
+										graceTimer = null;
+										graceTickingSince = null;
+										remainingGraceMs = 0;
+										triggerBackground();
+									}, remainingGraceMs);
+								}
+							} else {
+								activeGraceCount = Math.max(0, activeGraceCount - 1);
+								if (activeGraceCount === 0) {
+									clearGraceTimer();
+								}
+							}
+						},
+					};
 
-					const runPromise = Promise.resolve()
-						.then(() => built.tool.execute(callId, { name: validated.programName, code: validated.code }, signal))
+					pool.pendingRoles.set(validated.programName, role);
+					pool.pendingForeground.set(validated.programName, fgHandle);
+					pool.pendingByExecId.set(execId, fgHandle);
+
+					let worker;
+					try {
+						worker = ensureWorker();
+					} catch (error) {
+						pool.pendingForeground.delete(validated.programName);
+						pool.pendingRoles.delete(validated.programName);
+						finishStarting();
+						return toolFailure(error);
+					}
+
+					let abortListener = null;
+					const cleanupAbort = () => {
+						if (abortListener !== null && typeof signal?.removeEventListener === "function") {
+							signal.removeEventListener("abort", abortListener);
+							abortListener = null;
+						}
+					};
+					if (signal) {
+						if (signal.aborted) {
+							worker.postMessage({ type: "abort", callId });
+						} else if (typeof signal.addEventListener === "function") {
+							abortListener = () => {
+								worker.postMessage({ type: "abort", callId });
+							};
+							signal.addEventListener("abort", abortListener, { once: true });
+						}
+					}
+
+					const runPromise = new Promise((resolveExec) => {
+						state.pendingExecs.set(execId, resolveExec);
+						worker.postMessage({
+							type: "exec",
+							id: execId,
+							sessionKey,
+							role,
+							toolName,
+							root,
+							ownerId,
+							callId,
+							programName: validated.programName,
+							code: validated.code,
+							deadlineAt: Date.now() + forkDeadlineMs,
+						});
+					})
 						.catch((error) => toolFailure(error))
 						.then((result) => {
-							state.callMeta.delete(callId);
+							cleanupAbort();
+							clearGraceTimer();
 							pool.pendingForeground.delete(validated.programName);
+							pool.pendingByExecId.delete(execId);
 							pool.pendingRoles.delete(validated.programName);
 							if (!backgrounded) {
 								settledNormally = true;
@@ -674,7 +715,8 @@ export function registerCljTools(pi, deps = {}) {
 					return toolFailure(error);
 				}
 				const root = rootFor(ctx);
-				const pool = getPool(state, hostSessionKey(ctx, root));
+				const sessionKey = hostSessionKey(ctx, root);
+				const pool = getPool(state, sessionKey);
 				while (pool.startingPromises.size > 0) {
 					await Promise.all([...pool.startingPromises]);
 				}
@@ -721,7 +763,7 @@ export function registerCljTools(pi, deps = {}) {
 						}
 					};
 
-					const onDeadline = () => {
+					const onDeadline = async () => {
 						if (settled) return;
 						settled = true;
 						cleanup();
@@ -730,20 +772,22 @@ export function registerCljTools(pi, deps = {}) {
 							resolvePromise(formatWaitingDeadlineReceipt(waitMs, pool));
 							return;
 						}
+						const results = await Promise.all(
+							targets.map((item) => parkInWorker(item.sessionKey, item.role, item.programName)),
+						);
 						const parkedTargets = [];
-						for (const item of targets) {
-							if (parkProgramOnDeadline(item.session, item.programName).ok) {
-								item.claimed = true;
-								parkedTargets.push(item);
+						for (let i = 0; i < targets.length; i += 1) {
+							if (results[i]?.ok) {
+								targets[i].claimed = true;
+								parkedTargets.push(targets[i]);
 							}
 						}
 						if (parkedTargets.length === 0) {
 							resolvePromise(formatWaitingDeadlineReceipt(waitMs, pool));
 							return;
 						}
-						void Promise.all(parkedTargets.map((item) => item.donePromise)).then((settledItems) => {
-							resolvePromise(formatJoinedResults(settledItems, pool));
-						});
+						const settledItems = await Promise.all(parkedTargets.map((item) => item.donePromise));
+						resolvePromise(formatJoinedResults(settledItems, pool));
 					};
 
 					const syncTimer = () => {
@@ -751,7 +795,12 @@ export function registerCljTools(pi, deps = {}) {
 						if (pool.activeCalls.size > 0 || pool.waitingLocks.size > 0) {
 							if (timer === null) {
 								tickingSince = Date.now();
-								timer = setTimeout(onDeadline, Math.max(1, remainingMs));
+								timer = setTimeout(
+									() => {
+										void onDeadline();
+									},
+									Math.max(1, remainingMs),
+								);
 							}
 						} else {
 							pauseTimer();
@@ -810,7 +859,7 @@ export function registerCljTools(pi, deps = {}) {
 				`clj-core: ${cherry.loaded ? "ready" : "not-loaded"}${cherry.version ? ` (cherry-cljs ${cherry.version})` : ""}`,
 				`tools: ${CLJ_TOOL_NAMES.join(", ")}`,
 				`host tool blacklist: ${HOST_TOOL_BLACKLIST.join(", ")}`,
-				"surface: async clj_* fork + unified join only; /herd, board, worktrees, and audit are not enabled",
+				"surface: Worker-hosted clj_* + unified join; /herd, board, worktrees, and audit are not enabled",
 			];
 			ctx?.ui?.notify?.(lines.join("\n"), cherry.loaded ? "info" : "warning");
 		},
@@ -833,19 +882,16 @@ export function registerCljTools(pi, deps = {}) {
 		};
 		pi.on("session_start", resurface);
 		pi.on("before_agent_start", resurface);
+		pi.on("session_shutdown", () => {
+			state.worker?.terminate?.();
+			state.worker = null;
+		});
 		pi.on("context", (event, ctx) => {
 			const root = rootFor(ctx);
-			const prefix = `${hostSessionKey(ctx, root)}\u0000`;
-			const undecided = [];
-			for (const [bundleKey, built] of state.bundles.entries()) {
-				if (!bundleKey.startsWith(prefix)) continue;
-				const role = bundleKey.slice(prefix.length);
-				const toolName = TOOL_NAMES[role] ?? role;
-				for (const name of parkedNames(built.session)) {
-					undecided.push(`- ${toolName}: ${name}`);
-				}
-			}
-			if (undecided.length === 0) return undefined;
+			const pool = state.pools.get(hostSessionKey(ctx, root));
+			const list = pool?.parkedList ?? [];
+			if (list.length === 0) return undefined;
+			const undecided = list.map((item) => `- ${item.toolName}: ${item.name}`);
 			const reminder = {
 				role: "user",
 				content: [
@@ -895,6 +941,10 @@ export function registerCljTools(pi, deps = {}) {
 				}
 			: {}),
 	});
+	state.terminate = () => {
+		state.worker?.terminate?.();
+		state.worker = null;
+	};
 	return state;
 }
 

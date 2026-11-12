@@ -93,16 +93,6 @@ export function findAll(content, needle) {
 	}
 }
 
-function hasNonWhitespace(content, start, end) {
-	for (let i = start; i < end; i += 1) {
-		const code = content.charCodeAt(i);
-		if (code > 32 && code !== 160 && code !== 0xfeff) {
-			return true;
-		}
-	}
-	return start < end && content.slice(start, end).trim().length > 0;
-}
-
 function findNearestLine(content, needle) {
 	let nearest = null;
 	let remaining = DP_CELL_BUDGET;
@@ -121,7 +111,7 @@ function findNearestLine(content, needle) {
 		}
 
 		const lineLen = lineEnd - lineStart;
-		if (lineLen > 0 && hasNonWhitespace(content, lineStart, lineEnd)) {
+		if (lineLen > 0) {
 			if (Math.abs(needleLen - lineLen) <= NEAREST_DISTANCE_BAND) {
 				const measure = boundedDistanceRange(needle, content, lineStart, lineEnd, remaining, scratch);
 				remaining = measure.remaining;

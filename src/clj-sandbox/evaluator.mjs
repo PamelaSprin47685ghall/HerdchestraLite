@@ -33,6 +33,7 @@
 
 import { ERROR_CODES, herdError, isHerdError } from "../util/errors.mjs";
 import { loadCherry } from "./cherry.mjs";
+import { runGlobInPool } from "./glob-pool.mjs";
 import {
 	reFind as regexWorkerFind,
 	reMatches as regexWorkerMatches,
@@ -6924,6 +6925,49 @@ async function invokeCapability(name, args, state, session, program) {
 		});
 		return normalizeResult(receipt);
 	}
+	if (name === "glob") {
+		const capability = program.capabilities.get("glob");
+		if (typeof capability !== "function") {
+			fail("CAPABILITY_DENIED", "Capability glob is not available", { capability: "glob" });
+		}
+		const execRaw = mapGet(argument, V("exec"), MISSING);
+		const fnRaw = execRaw !== MISSING ? execRaw : mapGet(argument, V("fn"), MISSING);
+		if (fnRaw === MISSING || fnRaw === null || !isCallableValue(fnRaw)) {
+			fail("INVALID_ARGUMENT", "glob requires a callable :exec (or :fn) function", { function: "glob" });
+		}
+		const cleanArg = data().core.dissoc(argument, V("exec"), V("fn"));
+		state.awaited = true;
+		const rawGlob = await capability(capabilityObject(cleanArg), { session, program, map: cleanArg });
+		const normalizedGlob = normalizeResult(rawGlob);
+		const entriesVal = mapGet(normalizedGlob, V("entries"), null);
+		const entries = entriesVal ? seqToArray(entriesVal) : [];
+		const baseRaw = mapGet(cleanArg, V("path"), "");
+		const basePrefix = typeof baseRaw === "string" && baseRaw.length > 0 ? `${baseRaw.replace(/\/+$/, "")}/` : "";
+		const fullPaths = entries.map((rel) => (basePrefix.length > 0 ? `${basePrefix}${rel}` : rel));
+		const fnDesc = fullPaths.length > 1 && session.roots?.writeRoot ? serializeCallable(fnRaw) : null;
+		let results;
+		if (fnDesc !== null) {
+			const pooled = await runGlobInPool({
+				writeRoot: session.roots.writeRoot,
+				fnDesc,
+				paths: fullPaths,
+			});
+			results = pooled.results.map((item) => normalizeResult(item));
+		} else {
+			results = new Array(fullPaths.length);
+			const concurrency = Math.min(16, Math.max(1, fullPaths.length));
+			let nextIndex = 0;
+			const runWorker = async () => {
+				while (nextIndex < fullPaths.length) {
+					const idx = nextIndex;
+					nextIndex += 1;
+					results[idx] = await runCallableIsolated(session, program, fnRaw, [fullPaths[idx]]);
+				}
+			};
+			await Promise.all(Array.from({ length: concurrency }, () => runWorker()));
+		}
+		return data().assoc(normalizedGlob, V("results"), data().vectorFromArray(results));
+	}
 	const capability = program.capabilities.get(name);
 	if (typeof capability !== "function") {
 		fail("CAPABILITY_DENIED", `Capability ${name} is not available`, { capability: name });
@@ -7141,6 +7185,221 @@ async function resumeTry(state, error) {
 		}
 		searchFrom = index - 1;
 	}
+}
+
+const POOL_ALLOWED_CAPABILITIES = new Set(["cat", "stat", "ls", "whereAll"]);
+
+function serializeAst(node, seen = new Set()) {
+	if (node === null || node === undefined) return null;
+	if (typeof node === "string" || typeof node === "number" || typeof node === "boolean") return node;
+	if (typeof node === "bigint") return { __edn: "bigint", value: node.toString() };
+	if (node instanceof EdnSymbol) return { __edn: "sym", name: node.name };
+	if (node instanceof EdnKeyword) return { __edn: "kw", name: node.name };
+	if (node instanceof EdnList) {
+		const items = [];
+		for (const item of node) {
+			const s = serializeAst(item, seen);
+			if (s === undefined) return undefined;
+			items.push(s);
+		}
+		return { __edn: "list", items };
+	}
+	if (Array.isArray(node)) {
+		const items = [];
+		for (const item of node) {
+			const s = serializeAst(item, seen);
+			if (s === undefined) return undefined;
+			items.push(s);
+		}
+		return { __edn: "arr", items };
+	}
+	if (DATA !== null) {
+		if (DATA.isKeyword(node)) return { __edn: "kw", name: DATA.name(node) };
+		if (DATA.isSymbol(node)) return { __edn: "sym", name: DATA.name(node) };
+		if (DATA.isVector(node)) {
+			const items = [];
+			for (const item of seqToArray(node)) {
+				const s = serializeAst(item, seen);
+				if (s === undefined) return undefined;
+				items.push(s);
+			}
+			return { __edn: "vec", items };
+		}
+		if (DATA.isMap(node)) {
+			const entries = [];
+			for (const [k, v] of DATA.mapEntries(node)) {
+				const sk = serializeAst(k, seen);
+				const sv = serializeAst(v, seen);
+				if (sk === undefined || sv === undefined) return undefined;
+				entries.push([sk, sv]);
+			}
+			return { __edn: "map", entries };
+		}
+		if (DATA.isSet(node)) {
+			const items = [];
+			for (const item of seqToArray(node)) {
+				const s = serializeAst(item, seen);
+				if (s === undefined) return undefined;
+				items.push(s);
+			}
+			return { __edn: "set", items };
+		}
+	}
+	if (typeof node === "object") {
+		if (seen.has(node)) return undefined;
+		seen.add(node);
+		try {
+			if (node.kind === "builtin") return { __edn: "builtin", name: node.name };
+			if (node.kind === "capability") {
+				if (!POOL_ALLOWED_CAPABILITIES.has(node.name)) return undefined;
+				return { __edn: "cap", name: node.name };
+			}
+			if (node.kind === "fn") {
+				return serializeFnObject(node, seen) ?? undefined;
+			}
+			return undefined;
+		} finally {
+			seen.delete(node);
+		}
+	}
+	return undefined;
+}
+
+function serializeEnv(env, seen) {
+	if (env === null || env === undefined) return null;
+	const entries = [];
+	for (const [k, v] of env.bindings.entries()) {
+		if (v && typeof v === "object" && v.kind === "capability" && !POOL_ALLOWED_CAPABILITIES.has(v.name)) {
+			continue;
+		}
+		if (v && typeof v === "object" && v.kind === "builtin") {
+			continue;
+		}
+		const sv = serializeAst(v, seen);
+		if (sv === undefined) return undefined;
+		entries.push([k, sv]);
+	}
+	const parent = env.parent ? serializeEnv(env.parent, seen) : null;
+	if (parent === undefined) return undefined;
+	return { entries, parent };
+}
+
+function serializeFnObject(fn, seen = new Set()) {
+	if (!fn || typeof fn !== "object" || fn.kind !== "fn" || fn.constant !== undefined) {
+		return null;
+	}
+	const arities = [];
+	for (const arity of fn.arities ?? []) {
+		const params = serializeAst(arity.params, seen);
+		const body = serializeAst(arity.body, seen);
+		if (params === undefined || body === undefined) return null;
+		arities.push({ params, body });
+	}
+	const env = serializeEnv(fn.env, seen);
+	if (env === undefined) return null;
+	return { __edn: "fn", name: fn.name ?? null, arities, env };
+}
+
+function serializeCallable(fn) {
+	if (!fn || typeof fn !== "object") return null;
+	if (fn.kind === "builtin") return { __edn: "builtin", name: fn.name };
+	if (fn.kind === "fn") return serializeFnObject(fn);
+	return null;
+}
+
+function deserializeAst(node, session) {
+	if (node === null || node === undefined || typeof node !== "object") return node;
+	switch (node.__edn) {
+		case "bigint":
+			return BigInt(node.value);
+		case "sym":
+			return new EdnSymbol(node.name);
+		case "kw":
+			return V(node.name);
+		case "list":
+			return new EdnList(node.items.map((item) => deserializeAst(item, session)));
+		case "arr":
+			return node.items.map((item) => deserializeAst(item, session));
+		case "vec":
+			return data().vectorFromArray(node.items.map((item) => deserializeAst(item, session)));
+		case "map":
+			return data().mapFromEntries(
+				node.entries.map(([k, v]) => [deserializeAst(k, session), deserializeAst(v, session)]),
+			);
+		case "set":
+			return data().setFromArray(node.items.map((item) => deserializeAst(item, session)));
+		case "builtin":
+			return { kind: "builtin", name: node.name };
+		case "cap":
+			return { kind: "capability", name: node.name };
+		case "fn": {
+			const env = deserializeEnv(node.env, session);
+			const fn = {
+				kind: "fn",
+				name: node.name,
+				arities: node.arities.map((a) => ({
+					params: deserializeAst(a.params, session),
+					body: deserializeAst(a.body, session),
+				})),
+				env,
+			};
+			if (node.name !== null) {
+				fn.env = extendEnvironment(env, [[node.name, fn]]);
+			}
+			return fn;
+		}
+		default:
+			return node;
+	}
+}
+
+function deserializeEnv(desc, session) {
+	if (desc === null || desc === undefined) return buildRootEnv(session);
+	const parent = desc.parent ? deserializeEnv(desc.parent, session) : buildRootEnv(session);
+	const bindings = desc.entries.map(([k, v]) => [k, deserializeAst(v, session)]);
+	return extendEnvironment(parent, bindings);
+}
+
+export async function runSerializedCallable(session, fnDesc, args) {
+	if (DATA === null) {
+		await ensureDataRuntime(session);
+	}
+	const tempProgram = createProgram(
+		session,
+		{ name: "glob-pool", code: "nil" },
+		{ name: "glob-pool", body: [] },
+		sessionNow(session) + 60_000,
+	);
+	const fn = deserializeAst(fnDesc, session);
+	const result = await runCallableIsolated(session, tempProgram, fn, args);
+	return ednSafe(result);
+}
+
+async function runCallableIsolated(session, program, fn, args) {
+	const subState = {
+		mode: "return",
+		control: null,
+		env: null,
+		value: null,
+		kont: [],
+		done: false,
+		awaited: false,
+	};
+	await applyCallable(subState, fn, args, session, program);
+	while (!subState.done) {
+		if (program.aborted !== null) {
+			throw new SessionAbort(program.aborted.reason);
+		}
+		try {
+			await step(session, program, subState);
+		} catch (error) {
+			if (!(error instanceof ParkSignal) && !(error instanceof SessionAbort) && (await resumeTry(subState, error))) {
+				continue;
+			}
+			throw error;
+		}
+	}
+	return subState.value;
 }
 
 async function executeProgram(session, program, initialState) {

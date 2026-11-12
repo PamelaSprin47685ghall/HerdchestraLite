@@ -40,11 +40,13 @@ function fakeHost({ active, baseWaitMs } = {}) {
 			surface.splice(0, surface.length, ...next);
 		},
 	};
-	registerCljTools(pi, {
+	const state = registerCljTools(pi, {
 		ownerId: "clj-test",
 		...(baseWaitMs !== undefined ? { baseWaitMs } : {}),
 	});
-	return { tools, pi, hooks };
+	const host = { tools, pi, hooks, state };
+	activeHosts.push(host);
+	return host;
 }
 
 function forkTool(tools, name, id, params, cwd) {
@@ -70,6 +72,8 @@ async function callTool(
 	return await joinTool(tools, `${id}-join`, nextIndependentWork, cwd);
 }
 
+const activeHosts = [];
+
 describe("clj-only async dogfood surface", () => {
 	let root;
 
@@ -78,6 +82,7 @@ describe("clj-only async dogfood surface", () => {
 	});
 
 	afterEach(() => {
+		while (activeHosts.length > 0) activeHosts.pop().state?.terminate?.();
 		rmSync(root, { recursive: true, force: true });
 	});
 
@@ -141,6 +146,40 @@ describe("clj-only async dogfood surface", () => {
 		expect(deadlineFor("x".repeat(1_000), now) - now).toBe(51_000);
 	});
 
+	it("grants 1s total call grace at fork time across sequential calls before backgrounding", async () => {
+		const { tools } = fakeHost({ baseWaitMs: 220 });
+		const fast = await forkTool(
+			tools,
+			"clj_devops",
+			"grace-ok",
+			{
+				name: "grace-ok",
+				code: `[(call {:argv ["sh" "-c" "sleep 0.04 && printf a"]}) (call {:argv ["sh" "-c" "sleep 0.04 && printf b"]})]`,
+			},
+			root,
+		);
+		expect(fast.isError).not.toBe(true);
+		expect(fast.content[0].text).toContain(":state :completed");
+		expect(fast.content[0].text).not.toContain(":state :forked");
+
+		const slow = await forkTool(
+			tools,
+			"clj_devops",
+			"grace-exceeded",
+			{
+				name: "grace-exceeded",
+				code: `[(call {:argv ["sh" "-c" "sleep 0.14 && printf c"]}) (call {:argv ["sh" "-c" "sleep 0.14 && printf d"]})]`,
+			},
+			root,
+		);
+		expect(slow.isError).not.toBe(true);
+		expect(slow.content[0].text).toContain(":state :forked");
+
+		const joined = await joinTool(tools, "j-grace", "collect backgrounded sequential calls", root);
+		expect(joined.isError).not.toBe(true);
+		expect(joined.content[0].text).toContain(":state :completed");
+	});
+
 	it("rejects intent on fork and requires otherwise_independent_work on join", async () => {
 		const { tools } = fakeHost();
 		const forkWithIntent = await forkTool(
@@ -159,7 +198,7 @@ describe("clj-only async dogfood surface", () => {
 	});
 
 	it("applies barrier semantics when join is called concurrently in the same batch as a call", async () => {
-		const { tools } = fakeHost();
+		const { tools } = fakeHost({ baseWaitMs: 0 });
 		const [forked, joined] = await Promise.all([
 			forkTool(
 				tools,
@@ -206,7 +245,7 @@ describe("clj-only async dogfood surface", () => {
 	});
 
 	it("returns all backlogged call results at once without blocking", async () => {
-		const { tools } = fakeHost();
+		const { tools } = fakeHost({ baseWaitMs: 0 });
 		const f1 = await forkTool(tools, "clj_devops", "b1", { name: "p1", code: `(call {:argv ["printf" "one"]})` }, root);
 		const f2 = await forkTool(tools, "clj_devops", "b2", { name: "p2", code: `(call {:argv ["printf" "two"]})` }, root);
 		expect(f1.content[0].text).toContain(":state :forked");
@@ -228,7 +267,7 @@ describe("clj-only async dogfood surface", () => {
 	});
 
 	it("runs non-call tools synchronously while a call task runs in background, then joins the call", async () => {
-		const { tools } = fakeHost();
+		const { tools } = fakeHost({ baseWaitMs: 0 });
 		const slow = await forkTool(
 			tools,
 			"clj_devops",
@@ -296,7 +335,7 @@ describe("clj-only async dogfood surface", () => {
 	});
 
 	it("auto-backgrounds worker write when W is held by a slow call instead of hanging", async () => {
-		const { tools } = fakeHost();
+		const { tools } = fakeHost({ baseWaitMs: 0 });
 		const callFork = await forkTool(
 			tools,
 			"clj_devops",
@@ -325,7 +364,7 @@ describe("clj-only async dogfood surface", () => {
 		expect(readFileSync(join(root, "queued.txt"), "utf8")).toBe("queued-ok");
 	});
 	it("queues concurrent call and worker write on W instead of failing with BOARD_CONFLICT", async () => {
-		const { tools } = fakeHost();
+		const { tools } = fakeHost({ baseWaitMs: 0 });
 		const [cRes, wRes] = await Promise.all([
 			forkTool(
 				tools,
@@ -344,17 +383,22 @@ describe("clj-only async dogfood surface", () => {
 		]);
 		expect(cRes.isError).not.toBe(true);
 		expect(wRes.isError).not.toBe(true);
-		const wFinal = wRes.content[0].text.includes(":state :forked")
-			? await joinTool(tools, "j-w", "collect queued worker write", root)
-			: wRes;
-		expect(wFinal.isError).not.toBe(true);
+		const parts = [];
+		if (!wRes.content[0].text.includes(":state :forked")) {
+			parts.push(wRes.content[0].text);
+		}
+		if (!cRes.content[0].text.includes(":state :forked")) {
+			parts.push(cRes.content[0].text);
+		}
+		while (true) {
+			const j = await joinTool(tools, `j-mix-${parts.length}`, "collect queued mixed results", root);
+			expect(j.isError).not.toBe(true);
+			if (j.content[0].text.includes(":state :idle")) break;
+			parts.push(j.content[0].text);
+		}
+		const combined = parts.join("\n");
+		expect(combined).toContain("mixed-ok");
 		expect(readFileSync(join(root, "mixed.txt"), "utf8")).toBe("w-ok");
-
-		const cFinal = cRes.content[0].text.includes(":state :forked")
-			? await joinTool(tools, "j-c", "collect mixed call result", root)
-			: cRes;
-		expect(cFinal.isError).not.toBe(true);
-		expect(cFinal.content[0].text).toContain("mixed-ok");
 	});
 	it("parks all running tasks on join call-timeout and supports named unpark", async () => {
 		const { tools } = fakeHost({ baseWaitMs: 0 });
@@ -675,26 +719,47 @@ describe("clj-only async dogfood surface", () => {
 		const afterAbandon = await ctxHandler({ messages: [{ role: "user", content: "hi" }] }, { cwd: root });
 		expect(afterAbandon).toBeUndefined();
 	});
-	it("supports async glob + cat composition without creating control dirs or taking W", async () => {
+	it("requires :exec/:fn on glob and runs it across the multi-core Worker pool", async () => {
 		mkdirSync(join(root, "sub"), { recursive: true });
 		writeFileSync(join(root, "sub", "a.mjs"), "alpha");
 		writeFileSync(join(root, "sub", "b.mjs"), "beta");
 		writeFileSync(join(root, "sub", "c.txt"), "gamma");
 		const { tools } = fakeHost();
+
+		const missingExec = await callTool(
+			tools,
+			"clj_review",
+			"glob-missing-exec",
+			{ name: "glob-err", code: `(glob {:pattern "**/*.mjs" :path "sub"})` },
+			root,
+		);
+		expect(missingExec.isError).toBe(true);
+		expect(missingExec.content[0].text).toContain(":INVALID_ARGUMENT");
+
+		const namesOnly = await callTool(
+			tools,
+			"clj_review",
+			"glob-names",
+			{ name: "glob-id", code: `(glob {:pattern "**/*.mjs" :path "sub" :exec identity})` },
+			root,
+		);
+		expect(namesOnly.isError).not.toBe(true);
+		expect(namesOnly.content[0].text).toContain('"sub/a.mjs"');
+		expect(namesOnly.content[0].text).toContain('"sub/b.mjs"');
+
 		const res = await callTool(
 			tools,
 			"clj_review",
 			"glob-1",
 			{
 				name: "glob-cat",
-				code: `(let [g (glob {:pattern "**/*.mjs" :path "sub"})]
-  (mapv (fn [p] [p (cat {:path (str "sub/" p)})]) (:entries g)))`,
+				code: `(glob {:pattern "**/*.mjs" :path "sub" :exec (fn [p] [p (cat {:path p})])})`,
 			},
 			root,
 		);
 		expect(res.isError).not.toBe(true);
-		expect(res.content[0].text).toContain('["a.mjs" "alpha"]');
-		expect(res.content[0].text).toContain('["b.mjs" "beta"]');
+		expect(res.content[0].text).toContain('["sub/a.mjs" "alpha"]');
+		expect(res.content[0].text).toContain('["sub/b.mjs" "beta"]');
 		expect(res.content[0].text).not.toContain("c.txt");
 		expect(existsSync(join(root, ".herd"))).toBe(false);
 	});
