@@ -1,7 +1,7 @@
 /**
  * G0: the wire-schema side of the tool gate.
  *
- * Every non-exempt tool schema in a provider request gains four required
+ * Every non-exempt tool schema in a provider request gains three required
  * arguments. The model sees the fields. The tools never receive them because
  * the execution side strips them.
  *
@@ -11,13 +11,12 @@
  * never overwrites a definition that a tool already declares.
  */
 
-const MUST_THINK_IN = "must_think_in";
 const WORKERS = "how_many_more_workers_are_allowed_without_hitting_mythical_man_month";
 const INTENT = "intent";
 const SCOPE = "scope";
 
 /** Gate keys in wire order. The hyphenated spellings are aliases, not keys. */
-export const GATE_KEYS = Object.freeze([MUST_THINK_IN, WORKERS, INTENT, SCOPE]);
+export const GATE_KEYS = Object.freeze([WORKERS, INTENT, SCOPE]);
 
 /** @param {unknown} value @returns {value is Record<string, unknown>} */
 function isObject(value) {
@@ -56,11 +55,6 @@ function clone(value) {
  * the runtime ledger validates the fields that each kind requires.
  */
 export const GATE_DEFINITIONS = deepFreeze({
-	[MUST_THINK_IN]: {
-		type: "string",
-		enum: ["zh-cn"],
-		description: "Language used to reason about this call. The only accepted value is zh-cn.",
-	},
 	[WORKERS]: {
 		type: "integer",
 		description:
@@ -107,7 +101,6 @@ const STRICT_SCOPE_DEFINITION = deepFreeze({
 
 /** The same contract without the optional scheduling self-check. */
 const GATE_DEFINITIONS_WITHOUT_WORKERS = deepFreeze({
-	[MUST_THINK_IN]: GATE_DEFINITIONS[MUST_THINK_IN],
 	[INTENT]: GATE_DEFINITIONS[INTENT],
 	[SCOPE]: GATE_DEFINITIONS[SCOPE],
 });
@@ -444,7 +437,7 @@ export function stripGateFields(input) {
 	for (const key of GATE_KEYS) {
 		if (Object.hasOwn(input, key)) present.push(key);
 	}
-	for (const key of ["must-think-in", "how-many-more-workers-are-allowed-without-hitting-mythical-man-month"]) {
+	for (const key of ["how-many-more-workers-are-allowed-without-hitting-mythical-man-month"]) {
 		if (Object.hasOwn(input, key) && !present.includes(key)) present.push(key);
 	}
 	if (present.length === 0) return undefined;

@@ -32,7 +32,7 @@ const MISSION_PORT_KEY = Symbol.for("herdchestra.mission.v1");
 export const ROLE_SURFACE_SYMBOL = Symbol.for("herdchestra.roleSurfaces.v1");
 const CALL_META_LIMIT = 2048;
 const ANONYMOUS_CALL_LIMIT = 100000;
-const [THINK_KEY, , INTENT_KEY, SCOPE_KEY] = GATE_KEYS;
+const [, INTENT_KEY, SCOPE_KEY] = GATE_KEYS;
 
 /**
  * Cross-entry mission snapshot. M0 publishes a frozen object under
@@ -919,18 +919,6 @@ export default function activate(pi) {
 			if (!isObject(input)) return undefined;
 
 			const missing = [];
-			const think = Object.hasOwn(input, THINK_KEY) ? input[THINK_KEY] : undefined;
-			if (!Object.hasOwn(input, THINK_KEY)) {
-				missing.push(THINK_KEY);
-			} else if (think !== "zh-cn") {
-				return blockReason(
-					herdError(":SCOPE_INVALID", `${THINK_KEY} must be zh-cn`, {
-						tool: event.toolName,
-						field: THINK_KEY,
-						expected: "zh-cn",
-					}),
-				);
-			}
 
 			const intent = Object.hasOwn(input, INTENT_KEY) ? input[INTENT_KEY] : undefined;
 			if (typeof intent !== "string" || intent.trim().length === 0) {
@@ -958,7 +946,7 @@ export default function activate(pi) {
 					herdError(":SCOPE_INVALID", "missing gate fields", {
 						tool: event.toolName,
 						missing,
-						next: "resend the same tool call with all missing fields; must_think_in='zh-cn', scope={kind:'keepLast'} or a resetScope object",
+						next: "resend the same tool call with all missing fields; scope={kind:'keepLast'} or a resetScope object",
 					}),
 				);
 			}

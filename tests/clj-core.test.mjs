@@ -682,6 +682,17 @@ describe("clj-only async dogfood surface", () => {
 		expect(readFileSync(join(root, "sliced.txt"), "utf8")).toBe("X\nx\n");
 	});
 
+	it("always injects language requirement in context tail even when nothing is parked", async () => {
+		const { hooks } = fakeHost();
+		const ctxHandler = hooks.get("context")[0];
+		const out = await ctxHandler({ messages: [{ role: "user", content: "hi" }] }, { cwd: root });
+		expect(out.messages).toHaveLength(2);
+		expect(out.messages[1].role).toBe("user");
+		const tailText = out.messages[1].content[0].text;
+		expect(tailText).toContain("<LANGUAGE-REQUIREMENT>");
+		expect(tailText).toContain("简体中文");
+		expect(tailText).not.toContain("<UNDECIDED-PARKED-PROGRAMS>");
+	});
 	it("abandons parked programs cleanly and reminds LLM of undecided parked programs in context hook", async () => {
 		const { tools, hooks } = fakeHost();
 		const parked = await callTool(
@@ -717,7 +728,10 @@ describe("clj-only async dogfood surface", () => {
 		expect(() => readFileSync(join(root, "should-not-exist.txt"), "utf8")).toThrow();
 
 		const afterAbandon = await ctxHandler({ messages: [{ role: "user", content: "hi" }] }, { cwd: root });
-		expect(afterAbandon).toBeUndefined();
+		expect(afterAbandon.messages).toHaveLength(2);
+		const afterText = afterAbandon.messages[1].content[0].text;
+		expect(afterText).toContain("<LANGUAGE-REQUIREMENT>");
+		expect(afterText).not.toContain("<UNDECIDED-PARKED-PROGRAMS>");
 	});
 	it("requires :exec/:fn on glob and runs it across the multi-core Worker pool", async () => {
 		mkdirSync(join(root, "sub"), { recursive: true });

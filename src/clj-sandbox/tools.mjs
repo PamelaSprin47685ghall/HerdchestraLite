@@ -146,7 +146,6 @@ const TOOL_NAMES = Object.freeze({
 const GATE_FIELDS = new Set([
 	"scope",
 	"intent",
-	"must_think_in",
 	"how_many_more_workers_are_allowed_without_hitting_mythical_man_month",
 ]);
 
@@ -1203,7 +1202,7 @@ function validateParams(params) {
 		if (GATE_FIELDS.has(key)) {
 			throw invalidArgument("gate field reached the sandbox tool before stripping", {
 				field: key,
-				next: "the tool gate must strip scope, intent, and must_think_in first",
+				next: "the tool gate must strip scope and intent first",
 			});
 		}
 		if (!TOOL_FIELDS.has(key)) {

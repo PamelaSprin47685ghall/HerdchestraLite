@@ -10,13 +10,11 @@ import {
 	stripGateFields,
 } from "../src/tool-gate/schema.mjs";
 
-const THINK = "must_think_in";
 const WORKERS = "how_many_more_workers_are_allowed_without_hitting_mythical_man_month";
 const INTENT = "intent";
 const SCOPE = "scope";
 
 const LEGACY_WORKERS = "how-many-more-workers-are-allowed-without-hitting-mythical-man-month";
-const LEGACY_THINK = "must-think-in";
 
 function objectSchema() {
 	return { type: "object", properties: { query: { type: "string" } } };
@@ -42,8 +40,8 @@ function injectOne(tool, options) {
 }
 
 describe("wire contract", () => {
-	it("exports the four snake_case keys in wire order", () => {
-		expect(GATE_KEYS).toEqual([THINK, WORKERS, INTENT, SCOPE]);
+	it("exports the three snake_case keys in wire order", () => {
+		expect(GATE_KEYS).toEqual([WORKERS, INTENT, SCOPE]);
 		expect(Object.isFrozen(GATE_KEYS)).toBe(true);
 		expect(GATE_KEYS.some((key) => key.includes("-"))).toBe(false);
 	});
@@ -53,11 +51,7 @@ describe("wire contract", () => {
 		expect(Object.isFrozen(GATE_DEFINITIONS)).toBe(true);
 		expect(Object.isFrozen(GATE_DEFINITIONS[SCOPE])).toBe(true);
 		expect(Object.isFrozen(GATE_DEFINITIONS[SCOPE].properties)).toBe(true);
-		expect(GATE_DEFINITIONS[THINK]).toEqual({
-			type: "string",
-			enum: ["zh-cn"],
-			description: "Language used to reason about this call. The only accepted value is zh-cn.",
-		});
+
 		expect(GATE_DEFINITIONS[INTENT].type).toBe("string");
 		expect(GATE_DEFINITIONS[INTENT].minLength).toBe(1);
 		expect(GATE_DEFINITIONS[WORKERS].type).toBe("integer");
@@ -215,7 +209,6 @@ describe("idempotency and preservation", () => {
 		expect(parameters.properties[INTENT]).toBe(customIntent);
 		expect(parameters.properties[SCOPE]).toBe(customScope);
 		expect(parameters.required.filter((key) => key === INTENT)).toHaveLength(1);
-		expect(parameters.required).toContain(THINK);
 		expect(parameters.required).toContain(WORKERS);
 	});
 
@@ -283,7 +276,7 @@ describe("strict sampling compatibility", () => {
 		]);
 		expect(scope.properties.replacement.anyOf).toEqual([{ type: "string", minLength: 1 }, { type: "null" }]);
 
-		for (const key of [THINK, WORKERS, INTENT]) {
+		for (const key of [WORKERS, INTENT]) {
 			expect(parameters.properties[key]).toEqual(GATE_DEFINITIONS[key]);
 		}
 	});
@@ -336,7 +329,7 @@ describe("strict sampling compatibility", () => {
 		expect(injectGateFields({ tools: [{ function: { name: "read", parameters } }] }, { includeWorkers: false })).toBe(
 			true,
 		);
-		expect(parameters.required).toEqual(["query", THINK, INTENT, SCOPE]);
+		expect(parameters.required).toEqual(["query", INTENT, SCOPE]);
 		expect(parameters.properties[SCOPE].required).toHaveLength(4);
 		expect(parameters.properties[WORKERS]).toBeUndefined();
 	});
@@ -463,9 +456,9 @@ describe("scheduling self-check", () => {
 		const parameters = objectSchema();
 
 		expect(injectGateFields({ tools: [{ function: { parameters } }] }, { includeWorkers: false })).toBe(true);
-		expect(parameters.required).toEqual([THINK, INTENT, SCOPE]);
+		expect(parameters.required).toEqual([INTENT, SCOPE]);
 		expect(parameters.properties[WORKERS]).toBeUndefined();
-		for (const key of [THINK, INTENT, SCOPE]) {
+		for (const key of [INTENT, SCOPE]) {
 			expect(parameters.properties[key]).toEqual(GATE_DEFINITIONS[key]);
 		}
 	});
@@ -478,7 +471,7 @@ describe("scheduling self-check", () => {
 		expect(injectGateFields(payload, { includeWorkers: false })).toBe(false);
 		expect(injectGateFields(payload)).toBe(true);
 		expect(parameters.required).toContain(WORKERS);
-		expect(parameters.required).toHaveLength(4);
+		expect(parameters.required).toHaveLength(3);
 		expect(injectGateFields(payload)).toBe(false);
 	});
 
@@ -517,10 +510,9 @@ describe("stripGateFields", () => {
 		}
 	});
 
-	it("removes all four fields without mutating the input", () => {
+	it("removes all three fields without mutating the input", () => {
 		const input = {
 			query: "x",
-			[THINK]: "zh-cn",
 			[WORKERS]: 4,
 			[INTENT]: "查资料",
 			[SCOPE]: { kind: "keepLast" },
@@ -531,7 +523,6 @@ describe("stripGateFields", () => {
 		expect(stripped).not.toBe(input);
 		expect(input).toEqual({
 			query: "x",
-			[THINK]: "zh-cn",
 			[WORKERS]: 4,
 			[INTENT]: "查资料",
 			[SCOPE]: { kind: "keepLast" },
@@ -539,14 +530,13 @@ describe("stripGateFields", () => {
 	});
 
 	it("removes the hyphenated aliases too", () => {
-		const input = { query: "x", [LEGACY_THINK]: "zh-cn", [LEGACY_WORKERS]: 2 };
+		const input = { query: "x", [LEGACY_WORKERS]: 2 };
 
 		expect(stripGateFields(input)).toEqual({ query: "x" });
 	});
 
 	it("returns an empty object when only gate fields are present", () => {
 		const input = {
-			[THINK]: "zh-cn",
 			[WORKERS]: 1,
 			[INTENT]: "推进",
 			[SCOPE]: { kind: "keepLast" },

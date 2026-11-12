@@ -1,4 +1,5 @@
-# 万象术轻量版 Herdchestra Lite 用户指南与系统总规格书
+    │   ├── subprocess.mjs        # runSubprocess 封装（超时、递归 AbortSignal、Agent Hub 产物）
+    │   └── hack-context.mjs      # O(1) branch+append 最小 delta 持久化 context 包装器|`tool-gate` 只注入两个字段，无 Scope/intent|注入 `scope`/`intent`/并发自检；执行前剥离（语言约束由 `context` 尾注统一承担）。||**上下文与界面**|Wire Schema 级 `scope` / `intent` 注入与剥离、`context` 请求尾注总是注入语言要求（可选附带残余 `:parked` 提醒）；# 万象术轻量版 Herdchestra Lite 用户指南与系统总规格书
 
 > 本说明书阐明万象术轻量版（Herdchestra Lite）的完整用户侧行为、五阶段研发协议、ClojureScript 沙箱工具面、蜂群协作原语、并发实操验收机制与 `omp` 宿主边界，是本仓库产品与代码的最高依据（SSOT）。
 > 本文件只能由人类操作员批准修改；S1 门禁的“手工批准”及其隔离测试例外不适用于本文件的修改。AI 有权利和义务让各子目录局部规格说明（`AGENTS.md`）、源码与 `DEBT.md` 追上本文件的最新状态，无需请示，直接实施。
@@ -156,7 +157,7 @@ Lite 的实现只能依赖以下宿主语义。具体类型签名以 `omp` 当�
 7. **工作区写入一律经 ClojureScript 沙箱 VFS 干跑 + 纳秒 `stamp` + 写入口 $W$（L07）。** `cat` / `stat` 不加锁，自动采集精确凭据 `stamp = {mtime-sec, mtime-nsec, size}`（忽略 `atime`）。REPL 内的 `write` / `mkdir` / `rm` / `mv` 先按执行顺序作用于批内内存 VFS；程序正常返回（或 `call` 前排空）时申请该 Slice 的写锁 $W$，在锁内复核全部 `read-set`（含只读依赖文件）与结构条件，固定 `:applying` 资格后一次性原子落盘。任何可拒绝冲突必须在触碰真实磁盘前拒绝；正常路径零回滚。见 §4.3。
 8. **抢令牌（`board_take_or_die`）不可逆，持令者独占 `call` 且无责即死，新生无记忆（L08）。** 普通个体在 `clj_worker` 中调用 `(call ...)` 一律拒收 `:TOKEN_REQUIRED`。个体仅在耗尽有价值的受保护工作且存在未结 `:needs-token` 任务时调用 `board_take_or_die`：赢者成为唯一 `Holder`，动态承担全看板 `:needs-token` 责任（仅在单次 `call` 运行期或文件提交期占 $W$，等待期释放 $W$）；输者在同一看板锁事务内公开移交剩余责任与认领并逻辑死亡；`Holder` 在完整责任集合 $R(a) = \emptyset$ 时同事务释放令牌并逻辑死亡。死亡槽位拉起全新 `agent_id`，绝不继承前世上下文。见 §3.5。
 9. **规划期源码只读锁与模型归属铁律（L09）。** S1–S4 的 `Plan` 除通过 `advance_s1..s4` 交由框架保存对应阶段文档外，无任何仓库文件写入能力；调查仓库事实只能调用同步工具 `devops`，复用本任期专属只读 `Plan DevOps`。`Plan`、`Reviewer`、`Manual Auditor`、`Blocker Oracle`、`Coordinator` 使用主模型；`Plan DevOps`、`Swarm Worker`、`Swarm Holder` 使用用户配置的 `@task` 模型。一切子代理经 `runSubprocess` 持久化产物并在 Agent Hub 实名可见。见 §2.1、§4.2。
-10. **投影不改写：出站 Scope 裁剪与系统输出一律 EDN + UFSS（L10）。** 每个非豁免工具调用必须携带 `scope`、`intent` 与中文思考锚点；`tool_call` 核验记账后剥离这些字段，底层工具收不到。历史裁剪只作用于 `context` 钩子的出站请求副本，绝不涂改宿主 `.jsonl` 历史。框架向模型返回的一切工具回执、看板快照、挂起诊断与错误详情，一律渲染为支持 UFSS 的 EDN，严禁投喂带 `\"`、`\\`、`\n` 转义噪音的裸 JSON。见 §5。
+10. **投影不改写：出站 Scope 裁剪与系统输出一律 EDN + UFSS（L10）。** 每个非豁免工具调用必须携带 `scope` 与 `intent`；每次出站请求末尾总是注入简体中文思考与输出要求（可选附带残余 `:parked` 提醒）；`tool_call` 核验记账后剥离这些字段，底层工具收不到。历史裁剪只作用于 `context` 钩子的出站请求副本，绝不涂改宿主 `.jsonl` 历史。框架向模型返回的一切工具回执、看板快照、挂起诊断与错误详情，一律渲染为支持 UFSS 的 EDN，严禁投喂带 `\"`、`\\`、`\n` 转义噪音的裸 JSON。见 §5。
 
 **补充：终局可解释。** 用户侧只有三种状态词：**进行中**、**已交付**、**未交付（必附具体理由与教训）**。中间过程（等待、重试、应用中等）属于实现细节，不向用户暴露细分状态。允许善意误解：用户的心智模型可以比实现简单，只要有助于理解产品。
 
@@ -976,7 +977,7 @@ join({ otherwise_independent_work })
 - `clj_review` 严格只读；没有 `write`、没有 `call`、没有 `park`。`Reviewer` 不能修改它正在评审的东西。
 - `clj_worker` 的路径不受 VFS 根目录限制：`..`、绝对路径与越界符号链接都按进程权限执行。写入仍经批内 VFS、写锁 $W$ 与（若读过）`stamp` 复核。`Holder` 额外拥有 `call`。
 - `clj_auditor` 的 VFS 路径不再设白名单；隔离由 bwrap 会话与专属 `/tmp` 负责，不再由 VFS 拒绝路径。它可以用 `call` 做 tmux 抓屏与破坏实验。
-- 所有角色都受 `scope` / `intent` / 中文锚点门禁约束；`Scope` 辅助工具（`ask_previous_scope` / `assume`）对所有角色可用。
+- 所有角色都受 `scope` / `intent` 门禁与出站尾注语言要求约束；`Scope` 辅助工具（`ask_previous_scope` / `assume`）对所有角色可用。
 
 ### 4.3 受保护文件提交合同
 
@@ -1100,7 +1101,7 @@ join({ otherwise_independent_work })
    - 慢 `call` 因 `join` 超时 `park` 时，将自上次展示以来的增量 `{:stdout ... :stderr ...}` 放入 `:payload`，满足 `sum(各次 park) + final === all`。
    - `(unpark {:name ... :value ...})` 恢复 `pendingCall` 时，字符串或 `{:stdin ... :eof ...}` 作为键盘输入灌入子进程 `stdin`。
    - `(abandon {:name ...})` 抛弃挂起程序、丢弃未提交 VFS、中止遗留 `call` 子进程释放 `$W$` 并释放内存。
-   - 存在未裁决 `:parked` 程序时，`context` 钩子在每次请求末尾追加带 `<UNDECIDED-PARKED-PROGRAMS>` XML 标记的 `user` 消息提醒模型裁决。
+   - `context` 钩子在每次 LLM 请求末尾总是追加带 `<LANGUAGE-REQUIREMENT>` 的 `user` 消息强制简体中文思考与输出，并在存在未裁决 `:parked` 程序时同消息可选追加 `<UNDECIDED-PARKED-PROGRAMS>` XML 标记提醒模型裁决。
    - 同回合混发 `call` 与写操作遇到 `$W$` 被占用时排队等待（并触发后台化 `:state :forked`），先抢到锁的先执行，禁止同步 hang。
 8. **名字占用**：同名程序仍处于 `:running` / `:waiting` / `:parked` 时，新程序占用同名启动被拒 `:NAME_TAKEN`；进入 `:completed` / `:failed` 后名字可复用。同一物理工具调用（同一 `call-id`）带相同载荷再次到达，直接重放原回执；不同载荷返回 `:CALL_REPLAY_MISMATCH`。
 9. **`ask_user` 与挂起的关系**：`ask_user` 属于 S1，语义等价于“挂起 + 中断回合 + 交还人类”。人类回答后，模型在新程序中 `unpark` 原程序；回答只作为新需求进入上下文，不重开任期、不制造评审。S5 仅保留一个例外：初任 `Reviewer` 首次空账、主工作区已满足契约且无 Slice 可做时，允许一次性询问；问完即恢复无人值守，不得把 `ask_user` 当作常规评审出口。
@@ -1192,7 +1193,6 @@ COMMON_RULES
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `must_think_in` | `string`，枚举 `["zh-cn"]` | 在解码层锁死中文推理轨道。唯一合法值。 |
 | `intent` | `string`，非空 | 本步动作的简明中文意图；用于期限核定（1000ms + UTF-8 字节数 × 50ms）。必须在通过三闸门后写。 |
 | `scope` | `object` | 上下文所有权注解；字段形状见 §5.3。 |
 | `how_many_more_workers_are_allowed_without_hitting_mythical_man_month` | `integer` | 兼容旧版的自检字段：提示模型按因果最大化并发，不要越干越少。它是调度自检，不改变协议语义；可通过 `/herd-settings` 关闭注入。设计讨论中的连字符写法是同一字段的别名。 |
@@ -1213,8 +1213,8 @@ COMMON_RULES
 
 `tool_call` 钩子按顺序：
 
-1. 读取 `scope`、`intent`、`must_think_in` 与并发自检字段；
-2. 校验 `must_think_in === "zh-cn"`、`intent` 非空、`scope.kind` 合法；
+1. 读取 `scope`、`intent` 与并发自检字段；
+2. 校验 `intent` 非空、`scope.kind` 合法；
 3. 校验 Scope 准入（冷启未初始化、预算耗尽、`resetScope` 必填字段）；
 4. 记账（扣减 retention、登记边界、记录事件）；
 5. 从 `event.input` 中删除这些字段，把剩余参数交给底层工具；
@@ -1225,9 +1225,10 @@ COMMON_RULES
 - **准入拒收**：发生在工具执行前，调用未运行、状态未变（例如 `:SCOPE_BUDGET_SPENT`、`:SCOPE_UNINITIALIZED`、`:INTENT_REQUIRED`）。
 - **结算拒收**：工具已经生效，但注解不记账或回执附带警告（例如同一 `call-id` 的重复注解）；不得把已发生的副作用说成“没有执行”。
 
-#### 5.2.3 气闸与语言锚点
+#### 5.2.3 气闸与请求尾注语言要求
 
-- 中文锚点只约束推理语言，不替代工具参数校验；模型可以在思考中用英文术语，但首词与主体必须是简体中文。
+- 工具参数不再注入 `must_think_in`；改为由 `context` 钩子在每次 LLM 请求末尾通过统一的 `buildOutboundTailReminder` / `appendOutboundContextTail` 总是追加 `<system-reminder><LANGUAGE-REQUIREMENT>...</LANGUAGE-REQUIREMENT></system-reminder>`，强制简体中文思考（首词亦须简体中文）与简体中文输出，并在存在未裁决 `:parked` 程序时同消息可选追加 `<UNDECIDED-PARKED-PROGRAMS>`。
+- **尾轮缓存边界与改写自由**：承认最后一轮生成的 `thinking` 与 `toolCall` 本身不参与跨轮前缀缓存（因第 $N$ 轮末尾的临时尾注会在第 $N+1$ 轮移至新末尾，此前缀变化只影响最后一轮回复，不影响 `0 .. H_{k-1}` 的历史前缀缓存）。这一事实同时赋予系统在出站或持久化边界自由改写最后一轮 `thinking` 与 `toolCall` 的能力而无额外缓存惩罚；若需在 `context` 发出时刻持久化改写，使用 `hackContext`（`src/host/hack-context.mjs`）自动对 `event.messages` 与出站结果计算最长公共前缀 delta，并通过 `sessionManager.branch(parentId)` + `appendMessage(...)` 做 $O(1)$ 最小化单行追加落盘（避免全量 `rewriteEntries()` 的 $O(N^2)$ 磁盘 I/O）；`<LANGUAGE-REQUIREMENT>` 由此实现“一次追加、后续轮次不再重复写入”。
 - `intent` 是期限计量参数；不要在里面塞大段计划。期限到期自动 `park`，不是失败。
 - 工具结果中返回的 `scope` 回执必须简短，不重复系统提示词里的完整规则。
 
@@ -1919,11 +1920,6 @@ export function rewriteVibeModeContext(content) {
 
 ```text
 export const TOOL_GATE_DEFINITIONS = Object.freeze({
-  must_think_in: {
-    type: "string",
-    enum: ["zh-cn"],
-    description: "Language used to reason about this call. The only accepted value is zh-cn.",
-  },
   how_many_more_workers_are_allowed_without_hitting_mythical_man_month: {
     type: "integer",
     description:
@@ -2028,7 +2024,7 @@ HerdchestraLite/
     │   ├── vfs.mjs               # 批内内存 VFS、stamp 采集、W 提交流水线
     │   └── tools.mjs             # clj_plan / clj_devops / clj_review / clj_worker / clj_auditor
     ├── tool-gate/
-    │   ├── index.mjs             # 清单入口 2：注入/剥离 scope、intent、must_think_in
+    │   ├── index.mjs             # 清单入口 2：注入/剥离 scope、intent
     │   └── schema.mjs            # OpenAI/Anthropic/Google/Bedrock 多传输 Schema 注入
     ├── scope/
     │   ├── ledger.mjs            # Scope 准入、回合结算、retention、ask_previous_scope/assume

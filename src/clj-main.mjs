@@ -15,7 +15,9 @@ import { resolve } from "node:path";
 import { Worker } from "node:worker_threads";
 import { cherryStatus, loadCherry } from "./clj-sandbox/cherry.mjs";
 import { describeSandboxTool } from "./clj-sandbox/tools.mjs";
+import { hackContext } from "./host/hack-context.mjs";
 import { recordHealth } from "./host/health.mjs";
+import { appendOutboundContextTail } from "./prompts/runtime-wires.mjs";
 import { herdError } from "./util/errors.mjs";
 
 const VERSION = "1";
@@ -886,31 +888,13 @@ export function registerCljTools(pi, deps = {}) {
 			state.worker?.terminate?.();
 			state.worker = null;
 		});
-		pi.on("context", (event, ctx) => {
+		hackContext(pi, (event, ctx) => {
 			const root = rootFor(ctx);
 			const pool = state.pools.get(hostSessionKey(ctx, root));
-			const list = pool?.parkedList ?? [];
-			if (list.length === 0) return undefined;
-			const undecided = list.map((item) => `- ${item.toolName}: ${item.name}`);
-			const reminder = {
-				role: "user",
-				content: [
-					{
-						type: "text",
-						text: [
-							"<system-reminder>",
-							"<UNDECIDED-PARKED-PROGRAMS>",
-							"The following sandbox programs are still parked and undecided (holding continuations and memory).",
-							'Resolve each one by calling `(unpark {:name "..." :value ...})` to resume or `(abandon {:name "..."})` to abort and discard it:',
-							...undecided,
-							"</UNDECIDED-PARKED-PROGRAMS>",
-							"</system-reminder>",
-						].join("\n"),
-					},
-				],
+			const parkedPrograms = pool?.parkedList ?? [];
+			return {
+				messages: appendOutboundContextTail(event?.messages, { parkedPrograms }),
 			};
-			const messages = Array.isArray(event?.messages) ? [...event.messages, reminder] : [reminder];
-			return { messages };
 		});
 	}
 

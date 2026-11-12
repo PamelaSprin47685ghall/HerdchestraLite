@@ -9,7 +9,6 @@ import activate, {
 	writeCallMeta,
 } from "../src/tool-gate/index.mjs";
 
-const THINK = "must_think_in";
 const WORKERS = "how_many_more_workers_are_allowed_without_hitting_mythical_man_month";
 const INTENT = "intent";
 const SCOPE = "scope";
@@ -97,7 +96,6 @@ function ctxFor(sessionId, agentId = "agent-1", kind = "main") {
 
 function resetInput(goal = "goal", budget = 5) {
 	return {
-		[THINK]: "zh-cn",
 		[INTENT]: "推进",
 		[SCOPE]: {
 			kind: "resetScope",
@@ -110,7 +108,6 @@ function resetInput(goal = "goal", budget = 5) {
 
 function keepLastInput() {
 	return {
-		[THINK]: "zh-cn",
 		[INTENT]: "继续",
 		[SCOPE]: { kind: "keepLast" },
 	};
@@ -118,7 +115,6 @@ function keepLastInput() {
 
 function meTooInput() {
 	return {
-		[THINK]: "zh-cn",
 		[INTENT]: "并行",
 		[SCOPE]: { kind: "meToo" },
 	};
@@ -239,7 +235,7 @@ describe("provider schema injection", () => {
 		const payload = { tools: [{ type: "function", function: { name: "search", parameters } }] };
 
 		expect(emit(handlers, "before_provider_request", { payload })).toBe(payload);
-		for (const key of [THINK, WORKERS, INTENT, SCOPE]) {
+		for (const key of [WORKERS, INTENT, SCOPE]) {
 			expect(parameters.required).toContain(key);
 		}
 		expect(emit(handlers, "before_provider_request", { payload })).toBeUndefined();
@@ -254,7 +250,7 @@ describe("provider schema injection", () => {
 
 		expect(emit(handlers, "before_provider_request", { payload })).toBe(payload);
 		expect(parameters.properties[WORKERS]).toBeUndefined();
-		expect(parameters.required).toEqual([THINK, INTENT, SCOPE]);
+		expect(parameters.required).toEqual([INTENT, SCOPE]);
 		expect(healthEntry().capabilities.workersInjection).toBe(false);
 	});
 
@@ -322,7 +318,6 @@ describe("admission and stripping", () => {
 		expect(result.input).not.toBe(originalInput);
 		expect(event.input).toBe(originalInput);
 		expect(input).toEqual({
-			[THINK]: "zh-cn",
 			[INTENT]: "推进",
 			[SCOPE]: { kind: "resetScope", new_scope_goal: "goal", new_scope_retention_budget: 5 },
 			query: "x",
@@ -335,42 +330,15 @@ describe("admission and stripping", () => {
 		expect(meta.scopeDigest).toMatch(/^[a-f0-9]{64}$/);
 	});
 
-	it("reports a missing must_think_in", () => {
-		const { pi, handlers } = fakePi();
-		activate(pi);
-		const input = resetInput();
-		delete input[THINK];
-		const result = callTool(handlers, ctxFor("session-think-fill"), "search", "think-fill-1", input);
-
-		expect(result.block).toBe(true);
-		expect(result.reason).toContain("missing gate fields");
-		expect(result.reason).toContain(THINK);
-		expect(readCallMeta("think-fill-1")).toBeUndefined();
-	});
-
-	it("blocks a non-zh-cn must_think_in", () => {
-		const { pi, handlers } = fakePi();
-		activate(pi);
-		const result = callTool(handlers, ctxFor("session-think-wrong"), "search", "think-wrong-1", {
-			[THINK]: "en",
-			[INTENT]: "推进",
-			[SCOPE]: { kind: "keepLast" },
-		});
-
-		expect(result.block).toBe(true);
-		expect(result.reason).toContain(":SCOPE_INVALID");
-		expect(result.reason).toContain("must_think_in");
-	});
-
 	it("blocks a missing or blank intent", () => {
 		const { pi, handlers } = fakePi();
 		activate(pi);
 		const ctx = ctxFor("session-intent");
 
 		for (const [index, input] of [
-			{ [THINK]: "zh-cn", [SCOPE]: { kind: "keepLast" } },
-			{ [THINK]: "zh-cn", [INTENT]: "", [SCOPE]: { kind: "keepLast" } },
-			{ [THINK]: "zh-cn", [INTENT]: "   ", [SCOPE]: { kind: "keepLast" } },
+			{ [SCOPE]: { kind: "keepLast" } },
+			{ [INTENT]: "", [SCOPE]: { kind: "keepLast" } },
+			{ [INTENT]: "   ", [SCOPE]: { kind: "keepLast" } },
 		].entries()) {
 			const result = callTool(handlers, ctx, "search", `intent-${index}`, input);
 			expect(result.block).toBe(true);
@@ -383,7 +351,6 @@ describe("admission and stripping", () => {
 		const { pi, handlers } = fakePi();
 		activate(pi);
 		const input = {
-			[THINK]: "zh-cn",
 			[SCOPE]: { kind: "resetScope", new_scope_goal: "probe", new_scope_retention_budget: 2 },
 			slug: "probe",
 			verbose_intent: "probe request",
@@ -405,7 +372,6 @@ describe("admission and stripping", () => {
 
 		expect(result.block).toBe(true);
 		expect(result.reason).toContain("missing gate fields");
-		expect(result.reason).toContain(THINK);
 		expect(result.reason).toContain(INTENT);
 		expect(result.reason).toContain(SCOPE);
 	});
@@ -505,7 +471,6 @@ describe("admission and stripping", () => {
 		emit(handlers, "turn_start", { turnIndex: 1 }, ctx);
 		expect(callTool(handlers, ctx, "search", "reject-keep", keepLastInput()).block).toBeUndefined();
 		const rejected = callTool(handlers, ctx, "search", "reject-bad", {
-			[THINK]: "zh-cn",
 			[SCOPE]: { kind: "keepLast" },
 		});
 		expect(rejected.block).toBe(true);
@@ -557,7 +522,6 @@ describe("admission and stripping", () => {
 		const { pi, handlers } = fakePi();
 		activate(pi);
 		const result = callTool(handlers, ctxFor("session-scope-invalid"), "search", "scope-invalid-1", {
-			[THINK]: "zh-cn",
 			[INTENT]: "推进",
 			[SCOPE]: { kind: "not-a-kind" },
 		});
@@ -575,7 +539,6 @@ describe("admission and stripping", () => {
 		emit(handlers, "turn_start", { turnIndex: 0 }, ctx);
 		expect(callTool(handlers, ctx, "search", "remove-reset", resetInput()).block).toBeUndefined();
 		const result = callTool(handlers, ctx, "search", "remove-invalid", {
-			[THINK]: "zh-cn",
 			[INTENT]: "修正",
 			[SCOPE]: { kind: "removeLast", replacement: "lesson" },
 		});

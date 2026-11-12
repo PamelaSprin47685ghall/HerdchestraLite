@@ -247,13 +247,12 @@ describe("main assembly", () => {
 		}
 		for (const name of ["advance_s1", "clj_plan", "board_split", "submit_case_audit"]) {
 			const parameters = pi.tools.get(name).parameters;
-			expect(parameters.properties.must_think_in).toBeDefined();
+			expect(parameters.properties.must_think_in).toBeUndefined();
 			expect(parameters.properties.intent).toBeDefined();
 			expect(parameters.properties.scope).toBeDefined();
 			expect(parameters.required).not.toContain("intent");
-			expect(parameters.required).not.toContain("must_think_in");
 		}
-		expect(pi.tools.get("ask_previous_scope").parameters.properties.must_think_in).toBeUndefined();
+		expect(pi.tools.get("ask_previous_scope").parameters.properties.intent).toBeUndefined();
 		expect(pi.tools.get("clj_plan").description).toContain("No stat, ls, write, mkdir, rm, mv, or call");
 		expect(pi.tools.get("board_claim").parameters.properties.actor).toBeUndefined();
 		expect(pi.tools.get("board_claim").parameters.properties.task_id).toBeDefined();

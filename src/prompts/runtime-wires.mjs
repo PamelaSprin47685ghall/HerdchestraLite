@@ -26,11 +26,6 @@ export function rewriteVibeModeContext(content) {
 }
 
 export const TOOL_GATE_DEFINITIONS = Object.freeze({
-	must_think_in: {
-		type: "string",
-		enum: ["zh-cn"],
-		description: "Language used to reason about this call. The only accepted value is zh-cn.",
-	},
 	how_many_more_workers_are_allowed_without_hitting_mythical_man_month: {
 		type: "integer",
 		description:
@@ -84,4 +79,74 @@ export function buildUnattendedNudge({ stage, expectedTool, openItems = [], park
 		);
 	}
 	return lines.join("\n");
+}
+
+/**
+ * Build the single outbound `user` tail reminder injected on every LLM request.
+ * Always enforces Simplified Chinese thinking and output; optionally includes
+ * undecided parked sandbox programs when any exist.
+ *
+ * @param {{ parkedPrograms?: Array<{ toolName?: string, name: string }> }} [options]
+ * @returns {{ role: "user", content: Array<{ type: "text", text: string }> }}
+ */
+function messageText(message) {
+	if (!message || typeof message !== "object") return "";
+	if (typeof message.content === "string") return message.content;
+	if (!Array.isArray(message.content)) return "";
+	return message.content.map((block) => (block && typeof block.text === "string" ? block.text : "")).join("\n");
+}
+
+function hasLanguageRequirement(messages) {
+	if (!Array.isArray(messages)) return false;
+	return messages.some((msg) => messageText(msg).includes("<LANGUAGE-REQUIREMENT>"));
+}
+
+export function buildOutboundTailReminder({ parkedPrograms = [], includeLanguage = true } = {}) {
+	const sections = ["<system-reminder>"];
+	if (includeLanguage) {
+		sections.push(
+			"<LANGUAGE-REQUIREMENT>",
+			"强制以简体中文思考，尤其要以简体中文词开头；强制以简体中文向用户输出。",
+			"</LANGUAGE-REQUIREMENT>",
+		);
+	}
+	if (Array.isArray(parkedPrograms) && parkedPrograms.length > 0) {
+		const undecided = parkedPrograms.map((item) =>
+			item?.toolName ? `- ${item.toolName}: ${item.name}` : `- ${item?.name ?? item}`,
+		);
+		sections.push(
+			"<UNDECIDED-PARKED-PROGRAMS>",
+			"The following sandbox programs are still parked and undecided (holding continuations and memory).",
+			'Resolve each one by calling `(unpark {:name "..." :value ...})` to resume or `(abandon {:name "..."})` to abort and discard it:',
+			...undecided,
+			"</UNDECIDED-PARKED-PROGRAMS>",
+		);
+	}
+	sections.push("</system-reminder>");
+	return {
+		role: "user",
+		content: [{ type: "text", text: sections.join("\n") }],
+	};
+}
+
+/**
+ * Append the outbound tail reminder to a shallow copy of `messages`.
+ * Once `<LANGUAGE-REQUIREMENT>` is persisted in `messages`, it is not
+ * duplicated on subsequent turns unless `parkedPrograms` is non-empty.
+ *
+ * @param {unknown} messages
+ * @param {{ parkedPrograms?: Array<{ toolName?: string, name: string }> }} [options]
+ * @returns {unknown[]}
+ */
+export function appendOutboundContextTail(messages, options = {}) {
+	const parkedPrograms = Array.isArray(options?.parkedPrograms) ? options.parkedPrograms : [];
+	const alreadyHasLang = hasLanguageRequirement(messages);
+	if (alreadyHasLang && parkedPrograms.length === 0) {
+		return Array.isArray(messages) ? messages : [];
+	}
+	const reminder = buildOutboundTailReminder({
+		parkedPrograms,
+		includeLanguage: !alreadyHasLang,
+	});
+	return Array.isArray(messages) ? [...messages, reminder] : [reminder];
 }
