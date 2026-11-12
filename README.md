@@ -16,7 +16,8 @@ Herdchestra Lite 是面向 `omp` 终端宿主的轻量多智能体研发插件�
 - 未装配：`/herd*` 命令、`advance_s1..s4`、`ask_user`、`devops` 子代理、`realign_frozen`、`board_*`、`fork_slices`/`join_slice`、`submit_case_audit`、TUI 看板、Scope 注入/裁剪、tool-gate 入口。
 - 同一会话内，程序续体（`park`/`unpark`）与 VFS 按工具角色缓存；不同角色不共享续体。
 - 黑名单是减法的，不是白名单：实现只从 `getActiveTools()` 过滤，不重建一个“只允许这些工具”的列表；四个 `clj_*` 工具由注册方显式激活。
-- `call` 子进程使用清洗后的环境：移除 `BUN_OPTIONS`、`NODE_OPTIONS`、`BASH_ENV`、`ENV`、`PROMPT_COMMAND`，避免宿主预加载钩子改变普通命令。每次调用的期限是 `1000ms + intent UTF-8 字节数 × 50ms`，固定白送 1 秒，不按角色加码。
+- `call` 只接受 `{:argv ["<program>" "<arg>" ...] :cwd ...}`：CreateProcess 风格参数数组，`argc = (count argv)`；不经过系统 shell，因此不支持管道、重定向、通配、变量展开或 `&&`。需要 shell 语法时必须显式把 `sh`/`bash` 放进 argv 并传 `-c`。
+- 环境清洗：移除 `BUN_OPTIONS`、`NODE_OPTIONS`、`BASH_ENV`、`ENV`、`PROMPT_COMMAND`，避免宿主预加载钩子改变普通命令。每次调用的期限是 `1000ms + intent UTF-8 字节数 × 50ms`，固定白送 1 秒，不按角色加码。
 - 普通 VFS 不再限制路径：`..`、绝对路径、越界符号链接、盲写与覆盖 `AGENTS.md` 都允许；写锁 `$W$`、批内 VFS 与已读文件的 `stamp` 冲突检查保留。
 
 ## 启用
@@ -28,7 +29,7 @@ omp plugin list --json
 
 之后启动 `omp`，四个 `clj_*` 工具即出现在工具列表中。`/clj-status` 可在交互会话中查看 Cherry 是否加载。
 
-直接提交 REPL 输入：任意数量的顶层表达式，最后一个值作为回执返回；不需要 `(defprogram ...)` 壳。`program_name` 可选，省略时自动生成。例：
+直接提交 REPL 输入：任意数量的顶层表达式，最后一个值作为回执返回；`program_name` 可选，省略时自动生成。例：
 
 ```clojure
 (let [src (cat {:path "src/config.mjs"})
@@ -46,11 +47,11 @@ omp plugin list --json
 
 - 宿主：`omp 18.19.0`；模型：`ctyun/deepseek-v4.1-flash`。
 - `omp plugin link` 后，自动发现的插件入口成功注册四个工具。
-- 真实模型调用 `clj_worker` 写入 `LINKED_PROBE.txt`；调用 `clj_plan` 写文件被 `:CAPABILITY_DENIED` 拒绝且未创建文件；调用 `clj_devops` 的 `(call {:command "printf devops-ok"})` 返回 `:completed` 与日志路径。
+- 真实模型调用 `clj_worker` 写入 `LINKED_PROBE.txt`；调用 `clj_plan` 写文件被 `:CAPABILITY_DENIED` 拒绝且未创建文件；调用 `clj_devops` 的 `(call {:argv ["printf" "devops-ok"]})` 返回 `:completed` 与日志路径。
 - 真实模型在同一会话中先让 `where` 多匹配挂起，再 `unpark` 恢复并成功落盘。
-- 最终源码在独立 `/tmp` 工作区嵌套 omp 中执行裸 REPL：无 `program_name`、写 `/tmp` 根外文件、覆盖 `AGENTS.md`，返回 `:state :completed` 与两个文件内容。
+- 最终源码在独立 `/tmp` 工作区嵌套 omp 中执行裸 REPL 与 argv call：无 `program_name`、写 `/tmp` 根外文件、覆盖 `AGENTS.md`，返回 `:state :completed` 与两个文件内容。
 - 真实宿主 `getActiveTools()` 捕获结果：`task`、`wait`、`todo`、`web_search`、`debug` 与四个 `clj_*`；黑名单中的 `read`/`write`/`edit`/`bash`/`grep`/`glob`/`find`/`eval` 均不在集合中。
-- 本地直接测试覆盖 `cat`/`write` 的受保护提交、`where` 挂起/恢复、只读拒绝、`stamp` 冲突、黑名单过滤、环境清洗、期限下限与 `stat` 类型：`tests/clj-core.test.mjs` 15 pass / 0 fail。
+- 本地直接测试覆盖 `cat`/`write` 的受保护提交、`where` 挂起/恢复、只读拒绝、`stamp` 冲突、黑名单过滤、环境清洗、期限下限与 `stat` 类型：`tests/clj-core.test.mjs` 17 pass / 0 fail。
 
 这些只证明最小执行器在真实宿主可调用，不构成根规格的 CASE 验收，也不证明 `/herd` 可用。
 

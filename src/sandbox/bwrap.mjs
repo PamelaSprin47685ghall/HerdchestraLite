@@ -420,6 +420,7 @@ export function buildBwrapArgs({
 	socketPath,
 	sessionName,
 	cwd,
+	argv,
 	command,
 	sessionHost = false,
 	network = "isolated",
@@ -490,9 +491,11 @@ export function buildBwrapArgs({
 			throw herdError("INVALID_ARGUMENT", "sessionName is required for a session host", {});
 		}
 		target = [capability.tmux, "-D", "-S", real.socketPath, "-f", "/dev/null"];
+	} else if (Array.isArray(argv) && argv.length > 0 && argv.every((arg) => typeof arg === "string")) {
+		target = [...argv];
 	} else {
 		if (typeof command !== "string" || command.trim().length === 0) {
-			throw herdError("INVALID_ARGUMENT", "command must be a non-empty string", {});
+			throw herdError("INVALID_ARGUMENT", "argv must be a non-empty string array", { argv });
 		}
 		target = ["/bin/sh", "-c", command];
 	}
@@ -516,16 +519,16 @@ export function shellQuote(value) {
  * model provider.
  */
 export function createSandboxedRunCommand(config) {
-	return (command, options = {}) => {
+	return (argv, options = {}) => {
 		const cwd = options.cwd ?? config.root;
-		const argv = buildBwrapArgs({
+		const bwrapArgv = buildBwrapArgs({
 			...config,
 			cwd,
-			command,
+			argv,
 			sessionHost: false,
 			network: "isolated",
 		});
-		return defaultRunCommand(command, { ...options, cwd, argv });
+		return defaultRunCommand(bwrapArgv, { ...options, cwd });
 	};
 }
 
@@ -535,7 +538,7 @@ export function createSandboxedRunCommand(config) {
  */
 export function runSandboxedSetup(config, command, { cwd = config.root, maxBytes = 1 << 20, signal = null } = {}) {
 	const argv = buildBwrapArgs({ ...config, cwd, command, sessionHost: false, network: "isolated" });
-	return defaultRunCommand(command, { cwd, signal, maxBytes, argv });
+	return defaultRunCommand(argv, { cwd, signal, maxBytes });
 }
 
 export const SANDBOX_LIMITS = Object.freeze({ maxSocketPath: MAX_SOCKET_PATH, socketDirPattern: SOCKET_DIR_PATTERN });

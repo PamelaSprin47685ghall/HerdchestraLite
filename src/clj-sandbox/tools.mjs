@@ -838,10 +838,23 @@ function makeCapabilityTable(context, ports, execution) {
 					next: "start the per-auditor bwrap session; never fall back to an unsandboxed shell",
 				});
 			}
-			const command = requireArgumentString(args, "command");
+			const rawArgv = args.argv;
+			const argv =
+				Array.isArray(rawArgv) ||
+				(rawArgv !== null && typeof rawArgv === "object" && typeof rawArgv[Symbol.iterator] === "function")
+					? [...rawArgv]
+					: rawArgv;
+			if (
+				!Array.isArray(argv) ||
+				argv.length === 0 ||
+				argv.some((arg) => typeof arg !== "string") ||
+				argv[0].length === 0
+			) {
+				throw invalidArgument("call argv must be a non-empty string array", { argv });
+			}
 			if (execution.signal?.aborted === true) {
 				throw herdError("UPSTREAM_ABORTED", "call was cancelled before drain", {
-					command,
+					argv,
 				});
 			}
 			if (!context.roots.callLogDir && !context.roots.callLimits.logPath) {
@@ -893,13 +906,13 @@ function makeCapabilityTable(context, ports, execution) {
 			try {
 				if (execution.signal?.aborted === true) {
 					throw herdError("UPSTREAM_ABORTED", "call was cancelled before drain", {
-						command,
+						argv,
 					});
 				}
 				drainedFacts = hasOverlay(context) ? await commitContext(context, ports, execution.signal ?? undefined) : null;
 				const result = await runCall({
 					batch: context.primary,
-					command,
+					argv,
 					cwd: targetCwd,
 					writeGate: ports.writeGate,
 					control: callControl,
@@ -984,7 +997,7 @@ function createContext(role, roots, observations = null, observationScope = null
 
 const PARAMETER_TEXT = Object.freeze({
 	programName: "Optional REPL name for park/unpark; auto-generated when omitted.",
-	code: "ClojureScript REPL input. Any number of top-level forms; the last value is returned. No defprogram wrapper is required.",
+	code: "Bare ClojureScript REPL input. Any number of top-level forms; the last value is returned.",
 	intent: "Concrete zh-cn action intent. Deadline = UTF-8 bytes * 50ms + 1000ms.",
 });
 
@@ -1026,7 +1039,7 @@ const ROLE_DENIALS = Object.freeze({
 
 function toolDescription(role) {
 	const capabilities = CAPABILITY_MATRIX[role].join(", ");
-	return `Run ClojureScript REPL input in the ${ROLE_LABELS[role]} sandbox. Bound capabilities: ${capabilities}. ${ROLE_DENIALS[role]} No defprogram wrapper is required. Other sandbox names from COMMON are not bound. Gate fields must be stripped before execution; deadlines come from the CallMeta port.`;
+	return `Run ClojureScript REPL input in the ${ROLE_LABELS[role]} sandbox. Bound capabilities: ${capabilities}. ${ROLE_DENIALS[role]} Submit bare REPL input; other sandbox names from COMMON are not bound. call is argv-only: (call {:argv ["prog" "arg"] :cwd ...}); no shell, pipes, redirects, globbing, or &&. Gate fields must be stripped before execution; deadlines come from the CallMeta port.`;
 }
 
 const TOOL_DESCRIPTION_BY_NAME = Object.freeze({
@@ -1180,7 +1193,12 @@ function validateParams(params) {
 	}
 	const name = providedName ?? `repl-${randomUUID().slice(0, 12)}`;
 	const trimmed = code.trimStart();
-	const source = trimmed.startsWith("(defprogram") ? code : `(defprogram ${name} []\n${code}\n)`;
+	if (trimmed.startsWith("(defprogram")) {
+		throw invalidArgument("code must be bare REPL input; the defprogram wrapper is no longer accepted", {
+			field: "code",
+		});
+	}
+	const source = `(defprogram ${name} []\n${code}\n)`;
 	return { name, code: source };
 }
 

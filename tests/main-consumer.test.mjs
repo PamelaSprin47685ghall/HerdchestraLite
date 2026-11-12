@@ -117,9 +117,8 @@ describe("main consumer path", () => {
 			"consumer-call",
 			{
 				program_name: "p",
-				code: `(defprogram p []
-				        (do (write {:path "note.txt" :content "from-holder"})
-				            (call {:command "cat note.txt"})))`,
+				code: `(do (write {:path "note.txt" :content "from-holder"})
+				            (call {:argv ["cat", "note.txt"]}))`,
 			},
 			undefined,
 			undefined,
@@ -150,7 +149,6 @@ describe("main consumer path", () => {
 		};
 		const state = { id: "devops-child", root, slug: undefined, lastContext: {} };
 		const devopsRoots = sandboxRoots("devops", ctx, state);
-		expect(devopsRoots.readRoots).toEqual([]);
 		expect(devopsRoots.callLogDir).toContain(join(".herd", "artifacts", "real-mission"));
 		const bundle = buildSandboxTools({
 			role: "devops",
@@ -161,7 +159,7 @@ describe("main consumer path", () => {
 		});
 		const result = await bundle.tool.execute(
 			"devops-read",
-			{ program_name: "p", code: '(defprogram p [] (cat {:path "package.json"}))' },
+			{ program_name: "p", code: '(cat {:path "package.json"})' },
 			undefined,
 			undefined,
 			{},

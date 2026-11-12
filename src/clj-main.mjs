@@ -55,7 +55,7 @@ const SANDBOX_PARAMETERS = Object.freeze({
 		code: {
 			type: "string",
 			minLength: 1,
-			description: "ClojureScript REPL input; no defprogram wrapper required; the last value is returned.",
+			description: "Bare ClojureScript REPL input; the last value is returned.",
 		},
 		intent: {
 			type: "string",

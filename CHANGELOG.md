@@ -17,7 +17,8 @@
 - `package.json` 的清单入口改为单一 `./src/clj-main.mjs`；`tool-gate`、`bootstrap-main`、`main.mjs` 保留为后续扩张代码，当前不加载。
 - `clj-main` 在 `session_start` 与 `before_agent_start` 按黑名单移除被 clj 取代的宿主工具：`read`/`write`/`edit`/`apply_patch`/`ast_edit`/`ast_grep`/`bash`/`exec`/`eval`/`glob`/`grep`/`find`。其他工具不重建白名单，保持原有激活状态；四个 `clj_*` 由注册方显式激活。
 - evaluator 从 `clj-sandbox/cherry.mjs` 加载 Cherry；`host/imports.mjs` 重导出同一加载器，保持完整装配的导入边界。
-- 工具参数改为 REPL：`code` 直接接受任意顶层表达式，最后一个值返回；`program_name` 可选，省略时生成 `repl-<id>`；不再要求 `defprogram` 壳。
+- 工具参数改为 REPL：`code` 直接接受任意顶层表达式，最后一个值返回；`program_name` 可选，省略时生成 `repl-<id>`；只接受裸 REPL 输入。
+- `call` 改为 argv-only：`{:argv [...] :cwd ...}`，直接 spawn，无 shell/管道/重定向/通配/`&&`；回执包含 `:argv`/`:argc`，旧 `:command` 字段被拒绝。
 - 普通 VFS 路径完全放开：不再拒绝 `..`、绝对路径、越界符号链接；盲写不再要求先读；`AGENTS.md` 不再受特殊保护。
 - 删除 `readRoots`、`allowWritePaths`、控制路径、plans/AGENTS 保护与 call cwd/log 白名单等权限代码。
 - README 改为描述当前 clj-only 面、启用步骤、真实冒烟与扩张顺序。
@@ -37,7 +38,7 @@
 - 真实宿主中 `clj_plan` 写文件被 `:CAPABILITY_DENIED` 拒绝且未落盘；`clj_devops` 的 `call` 返回 `:completed`。
 - 真实宿主中同一会话先 `where` 多匹配挂起，再 `unpark` 恢复并落盘。
 - 真实宿主 `getActiveTools()` 捕获到 `task`/`wait`/`todo`/`web_search`/`debug` 与四个 `clj_*`；黑名单中的本地文件与命令工具均不存在。
-- 本地 `bun test tests/clj-core.test.mjs`：15 pass / 0 fail。
+- 本地 `bun test tests/clj-core.test.mjs`：17 pass / 0 fail。
 
 ## [Unreleased] — clean-break（进行中，未验收）
 

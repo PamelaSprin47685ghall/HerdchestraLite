@@ -155,6 +155,43 @@ describe("clj-only dogfood surface", () => {
 		expect(readFileSync(join(root, "AGENTS.md"), "utf8")).toBe("new");
 	});
 
+	it("executes argv directly without shell interpretation", async () => {
+		const { tools } = fakeHost();
+		const result = await callTool(
+			tools,
+			"clj_devops",
+			"argv",
+			{
+				program_name: "argv",
+				intent: "argv 直执行",
+				code: `(call {:argv ["printf" "%s" "a|b"]})`,
+			},
+			root,
+		);
+		const text = result.content[0].text;
+		expect(result.isError).not.toBe(true);
+		expect(text).toContain(":argc 3");
+		expect(text).toContain(':stdout "a|b"');
+	});
+
+	it("rejects the removed command string API", async () => {
+		const { tools } = fakeHost();
+		const result = await callTool(
+			tools,
+			"clj_devops",
+			"command",
+			{
+				program_name: "command",
+				intent: "旧 command 拒绝",
+				code: `(call {:command "printf hi"})`,
+			},
+			root,
+		);
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain(":INVALID_ARGUMENT");
+		expect(result.content[0].text).toContain("argv");
+	});
+
 	it("does not create control directories for read-only tools", async () => {
 		writeFileSync(join(root, "package.json"), "{}");
 		const { tools } = fakeHost();
@@ -165,7 +202,7 @@ describe("clj-only dogfood surface", () => {
 			{
 				program_name: "readonly",
 				intent: "读取包清单",
-				code: `(defprogram readonly [] (cat {:path "package.json"}))`,
+				code: `(cat {:path "package.json"})`,
 			},
 			root,
 		);
@@ -183,9 +220,8 @@ describe("clj-only dogfood surface", () => {
 			{
 				program_name: "write-probe",
 				intent: "读取并写入探针文件",
-				code: `(defprogram write-probe []
-  (let [src (cat {:path "input.txt"})]
-    (write {:path "output.txt" :content (str src "!")})))`,
+				code: `(let [src (cat {:path "input.txt"})]
+    (write {:path "output.txt" :content (str src "!")}))`,
 			},
 			root,
 		);
@@ -206,13 +242,12 @@ describe("clj-only dogfood surface", () => {
 			{
 				program_name: "stat-file",
 				intent: "验证虚拟文件 stat 类型",
-				code: `(defprogram stat-file []
-  (let [_ (mkdir {:path "d"})
+				code: `(let [_ (mkdir {:path "d"})
         _ (write {:path "d/f" :content "hi"})
         s (stat {:path "d/f"})
         _ (rm {:path "d/f"})
         _ (rm {:path "d"})]
-    s))`,
+    s)`,
 			},
 			root,
 		);
@@ -226,11 +261,10 @@ describe("clj-only dogfood surface", () => {
 			{
 				program_name: "stat-dir",
 				intent: "验证虚拟目录 stat 类型",
-				code: `(defprogram stat-dir []
-  (let [_ (mkdir {:path "d"})
+				code: `(let [_ (mkdir {:path "d"})
         s (stat {:path "d"})
         _ (rm {:path "d"})]
-    s))`,
+    s)`,
 			},
 			root,
 		);
@@ -250,7 +284,7 @@ describe("clj-only dogfood surface", () => {
 				{
 					program_name: "short-call",
 					intent: "短",
-					code: `(defprogram short-call [] (call {:command "env | grep '^BUN_OPTIONS=' || true"}))`,
+					code: `(call {:argv ["env"]})`,
 				},
 				root,
 			);
@@ -274,8 +308,7 @@ describe("clj-only dogfood surface", () => {
 			{
 				program_name: "dedupe",
 				intent: "验证 written 去重",
-				code: `(defprogram dedupe []
-  (let [_ (mkdir {:path "d"})
+				code: `(let [_ (mkdir {:path "d"})
         _ (write {:path "d/f" :content "one"})
         _ (cat {:path "d/f"})
         _ (write {:path "d/f" :content "two"})
@@ -284,7 +317,7 @@ describe("clj-only dogfood surface", () => {
         _ (rm {:path "d/f"})
         _ (stat {:path "d"})
         _ (rm {:path "d"})]
-    {:ok true}))`,
+    {:ok true})`,
 			},
 			root,
 		);
@@ -304,10 +337,9 @@ describe("clj-only dogfood surface", () => {
 			{
 				program_name: "slice",
 				intent: "多匹配挂起探针",
-				code: `(defprogram slice []
-  (let [src (cat {:path "multi.txt"})
+				code: `(let [src (cat {:path "multi.txt"})
         [b e] (where {:content src :needle "x"})]
-    (write {:path "sliced.txt" :content (str (subs src 0 b) "X" (subs src e))})))`,
+    (write {:path "sliced.txt" :content (str (subs src 0 b) "X" (subs src e))}))`,
 			},
 			root,
 		);
@@ -321,7 +353,7 @@ describe("clj-only dogfood surface", () => {
 			{
 				program_name: "resume",
 				intent: "恢复挂起程序",
-				code: `(defprogram resume [] (unpark {:name "slice" :value [0 1]}))`,
+				code: `(unpark {:name "slice" :value [0 1]})`,
 			},
 			root,
 		);
@@ -338,7 +370,7 @@ describe("clj-only dogfood surface", () => {
 			{
 				program_name: "deny-probe",
 				intent: "验证只读角色拒绝写入",
-				code: `(defprogram deny-probe [] (write {:path "forbidden.txt" :content "no"}))`,
+				code: `(write {:path "forbidden.txt" :content "no"})`,
 			},
 			root,
 		);
@@ -358,10 +390,9 @@ describe("clj-only dogfood surface", () => {
 			{
 				program_name: "conflict",
 				intent: "构造挂起以测试冲突",
-				code: `(defprogram conflict []
-  (let [src (cat {:path "conflict.txt"})
+				code: `(let [src (cat {:path "conflict.txt"})
         [b e] (where {:content src :needle "x"})]
-    (write {:path "conflict.txt" :content (str (subs src 0 b) "X" (subs src e))})))`,
+    (write {:path "conflict.txt" :content (str (subs src 0 b) "X" (subs src e))}))`,
 			},
 			root,
 		);
@@ -375,7 +406,7 @@ describe("clj-only dogfood surface", () => {
 			{
 				program_name: "conflict-resume",
 				intent: "恢复并触发冲突",
-				code: `(defprogram conflict-resume [] (unpark {:name "conflict" :value [0 1]}))`,
+				code: `(unpark {:name "conflict" :value [0 1]})`,
 			},
 			root,
 		);

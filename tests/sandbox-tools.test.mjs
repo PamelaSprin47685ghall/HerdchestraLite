@@ -256,7 +256,7 @@ describe("capability matrix", () => {
 		expect(bundle.session).toBe(session);
 		const { receipt } = await runTool(bundle, {
 			program_name: "p",
-			code: "(defprogram p [] 1)",
+			code: "1",
 		});
 		expect(keywordName(field(receipt, "state"))).toBe("completed");
 		const error = caught(() =>
@@ -292,7 +292,7 @@ describe("capability matrix", () => {
 		});
 		const { receipt } = await runTool(bundle, {
 			program_name: "p",
-			code: "(defprogram p [] 1)",
+			code: "1",
 		});
 		expect(keywordName(field(receipt, "state"))).toBe("completed");
 		const abandoned = field(receipt, "abandoned-capabilities");
@@ -308,7 +308,7 @@ describe("capability matrix", () => {
 		const plan = describeSandboxTool("clj_plan");
 		expect(plan).toContain("Bound capabilities: cat, where, whereAll, park, unpark");
 		expect(plan).toContain("No stat, ls, write, mkdir, rm, mv, or call");
-		expect(plan).toContain("Other sandbox names from COMMON are not bound");
+		expect(plan.toLowerCase()).toContain("other sandbox names from common are not bound");
 
 		const review = describeSandboxTool("clj_review");
 		expect(review).toContain("No write, mkdir, rm, mv, call, or park");
@@ -339,7 +339,7 @@ describe("CallMeta and parameters", () => {
 		});
 		const { result, receipt } = await runTool(bundle, {
 			program_name: "p",
-			code: "(defprogram p [] 1)",
+			code: "1",
 		});
 
 		expect(result.isError).toBe(true);
@@ -355,7 +355,7 @@ describe("CallMeta and parameters", () => {
 		});
 		const { receipt } = await runTool(bundle, {
 			program_name: "p",
-			code: "(defprogram p [] 7)",
+			code: "7",
 		});
 
 		expect(keywordName(field(receipt, "state"))).toBe("completed");
@@ -370,8 +370,8 @@ describe("CallMeta and parameters", () => {
 			ports: makePorts(),
 		});
 		const [first, second] = await Promise.all([
-			runTool(bundle, { program_name: "p1", code: "(defprogram p1 [] 1)" }),
-			runTool(bundle, { program_name: "p2", code: "(defprogram p2 [] 2)" }),
+			runTool(bundle, { program_name: "p1", code: "1" }),
+			runTool(bundle, { program_name: "p2", code: "2" }),
 		]);
 		expect(first.result.isError).not.toBe(true);
 		expect(second.result.isError).not.toBe(true);
@@ -392,8 +392,8 @@ describe("CallMeta and parameters", () => {
 			ports: makePorts(),
 		});
 		const [bad, good] = await Promise.all([
-			runTool(bundle, { program_name: "bad", code: "(defprogram bad [] (where))" }),
-			runTool(bundle, { program_name: "good", code: "(defprogram good [] 2)" }),
+			runTool(bundle, { program_name: "bad", code: "(where)" }),
+			runTool(bundle, { program_name: "good", code: "2" }),
 		]);
 		expect(keywordName(field(bad.receipt, "state"))).toBe("failed");
 		expect(bad.result.isError).toBe(true);
@@ -410,7 +410,7 @@ describe("CallMeta and parameters", () => {
 		});
 		const { result, receipt } = await runTool(bundle, {
 			program_name: "p",
-			code: "(defprogram p [] (where))",
+			code: "(where)",
 		});
 
 		expect(keywordName(field(receipt, "state"))).toBe("failed");
@@ -430,7 +430,7 @@ describe("CallMeta and parameters", () => {
 		});
 		const { result, receipt } = await runTool(bundle, {
 			program_name: "p",
-			code: "(defprogram p [] 1)",
+			code: "1",
 			intent: "leaked",
 		});
 
@@ -448,8 +448,8 @@ describe("CallMeta and parameters", () => {
 		for (const params of [
 			null,
 			{ program_name: "p" },
-			{ program_name: "p", code: "(defprogram p [] 1)", extra: true },
-			{ program_name: "", code: "(defprogram p [] 1)" },
+			{ program_name: "p", code: "1", extra: true },
+			{ program_name: "", code: "1" },
 		]) {
 			const { result } = await runTool(bundle, params);
 			expect(result.isError).toBe(true);
@@ -466,7 +466,7 @@ describe("CallMeta and parameters", () => {
 		});
 		const { receipt } = await runTool(bundle, {
 			program_name: "p",
-			code: '(defprogram p [] (write {:path "a.txt" :content "new"}))',
+			code: '(write {:path "a.txt" :content "new"})',
 		});
 
 		expect(keywordName(field(receipt, "state"))).toBe("parked");
@@ -487,16 +487,16 @@ describe("role capability boundaries", () => {
 
 		const cat = await runTool(bundle, {
 			program_name: "catp",
-			code: '(defprogram catp [] (cat {:path "s1.md"}))',
+			code: '(cat {:path "s1.md"})',
 		});
 		expect(keywordName(field(cat.receipt, "state"))).toBe("completed");
 		expect(field(cat.receipt, "value")).toBe("contract");
 
 		for (const [name, code] of [
-			["w", '(defprogram w [] (write {:path "x" :content "y"}))'],
-			["s", '(defprogram s [] (stat {:path "s1.md"}))'],
-			["l", '(defprogram l [] (ls {:path "."}))'],
-			["c", '(defprogram c [] (call {:command "true"}))'],
+			["w", '(write {:path "x" :content "y"})'],
+			["s", '(stat {:path "s1.md"})'],
+			["l", '(ls {:path "."})'],
+			["c", '(call {:argv ["true"]})'],
 		]) {
 			const { receipt } = await runTool(bundle, { program_name: name, code });
 			expect(keywordName(field(field(receipt, "error"), "code"))).toBe("CAPABILITY_DENIED");
@@ -513,7 +513,7 @@ describe("role capability boundaries", () => {
 		});
 		const { receipt } = await runTool(bundle, {
 			program_name: "p",
-			code: '(defprogram p [] (cat {:path "s1.md"}))',
+			code: '(cat {:path "s1.md"})',
 		});
 
 		expect(keywordName(field(receipt, "state"))).toBe("completed");
@@ -532,7 +532,7 @@ describe("role capability boundaries", () => {
 		});
 		const { receipt } = await runTool(bundle, {
 			program_name: "cases",
-			code: '(defprogram cases [] (cat {:path ".herd/missions/demo/cases.edn"}))',
+			code: '(cat {:path ".herd/missions/demo/cases.edn"})',
 		});
 		expect(keywordName(field(receipt, "state"))).toBe("completed");
 		expect(field(receipt, "value")).toBe('[{:case_id "CASE-1"}]');
@@ -549,16 +549,16 @@ describe("role capability boundaries", () => {
 
 		const stat = await runTool(bundle, {
 			program_name: "s",
-			code: '(defprogram s [] (stat {:path "a.txt"}))',
+			code: '(stat {:path "a.txt"})',
 		});
 		expect(keywordName(field(stat.receipt, "state"))).toBe("completed");
 		expect(field(field(stat.receipt, "value"), "exists")).toBe(true);
 		expect(field(field(stat.receipt, "value"), "is-dir")).toBe(false);
 
 		for (const [name, code, capability] of [
-			["w", '(defprogram w [] (write {:path "a.txt" :content "x"}))', "write"],
-			["c", '(defprogram c [] (call {:command "true"}))', "call"],
-			["p", "(defprogram p [] (park {:payload 1}))", "park"],
+			["w", '(write {:path "a.txt" :content "x"})', "write"],
+			["c", '(call {:argv ["true"]})', "call"],
+			["p", "(park {:payload 1})", "park"],
 		]) {
 			const { receipt } = await runTool(bundle, { program_name: name, code });
 			expect(keywordName(field(field(receipt, "error"), "code"))).toBe("CAPABILITY_DENIED");
@@ -576,7 +576,7 @@ describe("role capability boundaries", () => {
 		});
 		const { receipt } = await runTool(bundle, {
 			program_name: "p",
-			code: `(defprogram p [] (call {:command "touch ${marker}"}))`,
+			code: `(call {:argv ["touch" ${JSON.stringify(marker)}]})`,
 		});
 
 		expect(keywordName(field(receipt, "state"))).toBe("failed");
@@ -596,25 +596,25 @@ describe("role capability boundaries", () => {
 
 		const cat = await runTool(bundle, {
 			program_name: "c",
-			code: '(defprogram c [] (cat {:path "a.txt"}))',
+			code: '(cat {:path "a.txt"})',
 		});
 		expect(field(cat.receipt, "value")).toBe("alpha");
 
 		const ls = await runTool(bundle, {
 			program_name: "l",
-			code: '(defprogram l [] (ls {:path "."}))',
+			code: '(ls {:path "."})',
 		});
 		expect(field(field(ls.receipt, "value"), "exists")).toBe(true);
 
 		const call = await runTool(bundle, {
 			program_name: "x",
-			code: '(defprogram x [] (call {:command "printf devops"}))',
+			code: '(call {:argv ["printf", "devops"]})',
 		});
 		expect(field(field(call.receipt, "value"), "stdout")).toBe("devops");
 
 		const write = await runTool(bundle, {
 			program_name: "w",
-			code: '(defprogram w [] (write {:path "a.txt" :content "x"}))',
+			code: '(write {:path "a.txt" :content "x"})',
 		});
 		expect(keywordName(field(field(write.receipt, "error"), "code"))).toBe("CAPABILITY_DENIED");
 	});
@@ -638,7 +638,7 @@ describe("role capability boundaries", () => {
 		});
 		const { receipt } = await runTool(bundle, {
 			program_name: "p",
-			code: '(defprogram p [] (call {:command "true"}))',
+			code: '(call {:argv ["true"]})',
 		});
 
 		expect(keywordName(field(receipt, "state"))).toBe("failed");
@@ -659,7 +659,7 @@ describe("VFS and protected commit assembly", () => {
 		});
 		const { receipt } = await runTool(bundle, {
 			program_name: "p",
-			code: '(defprogram p [] (write {:path "a.txt" :content "hello"}))',
+			code: '(write {:path "a.txt" :content "hello"})',
 		});
 
 		expect(keywordName(field(receipt, "state"))).toBe("completed");
@@ -682,7 +682,7 @@ describe("VFS and protected commit assembly", () => {
 		});
 		const { receipt } = await runTool(bundle, {
 			program_name: "p",
-			code: '(defprogram p [] (write {:path "a.txt" :content "hello"}))',
+			code: '(write {:path "a.txt" :content "hello"})',
 		});
 
 		expect(keywordName(field(receipt, "state"))).toBe("failed");
@@ -713,7 +713,7 @@ describe("VFS and protected commit assembly", () => {
 		});
 		const { receipt } = await runTool(bundle, {
 			program_name: "readonly",
-			code: '(defprogram readonly [] (cat {:path "a.txt"}))',
+			code: '(cat {:path "a.txt"})',
 		});
 
 		expect(keywordName(field(receipt, "state"))).toBe("failed");
@@ -741,7 +741,7 @@ describe("VFS and protected commit assembly", () => {
 			bundle,
 			{
 				program_name: "p",
-				code: '(defprogram p [] (write {:path "a.txt" :content "x"}))',
+				code: '(write {:path "a.txt" :content "x"})',
 			},
 			{ signal: controller.signal },
 		);
@@ -761,9 +761,8 @@ describe("VFS and protected commit assembly", () => {
 		});
 		const first = await runTool(bundle, {
 			program_name: "patch",
-			code: `(defprogram patch []
-			        (do (write {:path "pending.txt" :content "later"})
-			            (where {:content "aa" :needle "a"})))`,
+			code: `(do (write {:path "pending.txt" :content "later"})
+			            (where {:content "aa" :needle "a"}))`,
 		});
 
 		expect(keywordName(field(first.receipt, "state"))).toBe("parked");
@@ -771,7 +770,7 @@ describe("VFS and protected commit assembly", () => {
 
 		const second = await runTool(bundle, {
 			program_name: "resume",
-			code: '(defprogram resume [] (unpark {:name "patch" :value [0 1]}))',
+			code: '(unpark {:name "patch" :value [0 1]})',
 		});
 		const resumed = field(second.receipt, "value");
 		expect(keywordName(field(resumed, "state"))).toBe("completed");
@@ -788,17 +787,16 @@ describe("VFS and protected commit assembly", () => {
 		});
 		const first = await runTool(bundle, {
 			program_name: "patch",
-			code: `(defprogram patch []
-			        (let [src (cat {:path "a.txt"})]
+			code: `(let [src (cat {:path "a.txt"})]
 			          (do (write {:path "a.txt" :content (str src "-staged")})
-			              (where {:content "aa" :needle "a"}))))`,
+			              (where {:content "aa" :needle "a"})))`,
 		});
 		expect(keywordName(field(first.receipt, "state"))).toBe("parked");
 
 		writeFileSync(target, "external!", "utf8");
 		const second = await runTool(bundle, {
 			program_name: "resume",
-			code: '(defprogram resume [] (unpark {:name "patch" :value [0 1]}))',
+			code: '(unpark {:name "patch" :value [0 1]})',
 		});
 		const resumed = field(second.receipt, "value");
 		expect(keywordName(field(resumed, "state"))).toBe("failed");
@@ -820,10 +818,9 @@ describe("call: drain, output, and cancellation", () => {
 		});
 		const { receipt } = await runTool(bundle, {
 			program_name: "p",
-			code: `(defprogram p []
-			        (let [old (cat {:path "a.txt"})]
+			code: `(let [old (cat {:path "a.txt"})]
 			          (do (write {:path "a.txt" :content "new"})
-			              (call {:command "cat a.txt"}))))`,
+			              (call {:argv ["cat", "a.txt"]})))`,
 		});
 
 		const call = field(receipt, "value");
@@ -852,7 +849,7 @@ describe("call: drain, output, and cancellation", () => {
 		});
 		const { receipt } = await runTool(bundle, {
 			program_name: "p",
-			code: '(defprogram p [] (call {:command "printf 123456789"}))',
+			code: '(call {:argv ["printf", "123456789"]})',
 		});
 		const call = field(receipt, "value");
 
@@ -877,7 +874,7 @@ describe("call: drain, output, and cancellation", () => {
 		});
 		const { receipt } = await runTool(bundle, {
 			program_name: "p",
-			code: '(defprogram p [] (call {:command "setsid sleep 0.5 &"}))',
+			code: '(call {:argv ["sh", "-c", "setsid sleep 0.5 &"]})',
 		});
 		const call = field(receipt, "value");
 
@@ -903,7 +900,7 @@ describe("call: drain, output, and cancellation", () => {
 		});
 		const { receipt } = await runTool(bundle, {
 			program_name: "p",
-			code: '(defprogram p [] (call {:command "true"}))',
+			code: '(call {:argv ["true"]})',
 		});
 		expect(keywordName(field(field(receipt, "error"), "code"))).toBe("INVALID_ARGUMENT");
 	});
@@ -918,9 +915,8 @@ describe("call: drain, output, and cancellation", () => {
 		});
 		const { receipt } = await runTool(bundle, {
 			program_name: "p",
-			code: `(defprogram p []
-			        (do (write {:path "pending.txt" :content "later"})
-			            (call {:command "true"})))`,
+			code: `(do (write {:path "pending.txt" :content "later"})
+			            (call {:argv ["true"]}))`,
 		});
 
 		expect(keywordName(field(receipt, "state"))).toBe("failed");
@@ -937,7 +933,7 @@ describe("call: drain, output, and cancellation", () => {
 		});
 		const { receipt } = await runTool(bundle, {
 			program_name: "p",
-			code: '(defprogram p [] (call {:command "printf prod"}))',
+			code: '(call {:argv ["printf", "prod"]})',
 		});
 		const call = field(receipt, "value");
 		expect(field(call, "stdout")).toBe("prod");
@@ -958,7 +954,7 @@ describe("call: drain, output, and cancellation", () => {
 		});
 		const { receipt } = await runTool(bundle, {
 			program_name: "p",
-			code: '(defprogram p [] (call {:command "pwd"}))',
+			code: '(call {:argv ["pwd"]})',
 		});
 		const call = field(receipt, "value");
 		expect(field(call, "cwd")).toBe(join(root, "sub"));
@@ -980,7 +976,7 @@ describe("call: drain, output, and cancellation", () => {
 			bundle,
 			{
 				program_name: "p",
-				code: '(defprogram p [] (write {:path "never.txt" :content "x"}))',
+				code: '(write {:path "never.txt" :content "x"})',
 			},
 			{ signal: controller.signal },
 		);
@@ -1004,7 +1000,7 @@ describe("call: drain, output, and cancellation", () => {
 			bundle,
 			{
 				program_name: "p",
-				code: '(defprogram p [] (call {:command "sleep 5"}))',
+				code: '(call {:argv ["sleep", "5"]})',
 			},
 			{ signal: controller.signal },
 		);
@@ -1030,10 +1026,9 @@ describe("call: drain, output, and cancellation", () => {
 			bundle,
 			{
 				program_name: "p",
-				code: `(defprogram p []
-				        (let [src (cat {:path "a.txt"})]
+				code: `(let [src (cat {:path "a.txt"})]
 				          (do (write {:path "a.txt" :content "new"})
-				              (call {:command "sleep 5"}))))`,
+				              (call {:argv ["sleep", "5"]})))`,
 			},
 			{ signal: controller.signal },
 		);
@@ -1058,14 +1053,14 @@ describe("call: drain, output, and cancellation", () => {
 			bundle,
 			{
 				program_name: "cancelled",
-				code: '(defprogram cancelled [] (call {:command "sleep 5"}))',
+				code: '(call {:argv ["sleep", "5"]})',
 			},
 			{ signal: controller.signal },
 		);
 
 		const next = await runTool(bundle, {
 			program_name: "next",
-			code: "(defprogram next [] 42)",
+			code: "42",
 		});
 		expect(keywordName(field(next.receipt, "state"))).toBe("completed");
 		expect(field(next.receipt, "value")).toBe(42);
@@ -1081,7 +1076,7 @@ describe("call-id replay", () => {
 			roots: { writeRoot: root },
 			ports,
 		});
-		const params = { program_name: "p", code: "(defprogram p [] 1)" };
+		const params = { program_name: "p", code: "1" };
 		const first = await runTool(bundle, params, { callId: "replay-1" });
 		expect(keywordName(field(first.receipt, "state"))).toBe("completed");
 
@@ -1097,8 +1092,8 @@ describe("call-id replay", () => {
 			roots: { writeRoot: root },
 			ports: makePorts(),
 		});
-		await runTool(bundle, { program_name: "p", code: "(defprogram p [] 1)" }, { callId: "replay-2" });
-		const second = await runTool(bundle, { program_name: "p", code: "(defprogram p [] 2)" }, { callId: "replay-2" });
+		await runTool(bundle, { program_name: "p", code: "1" }, { callId: "replay-2" });
+		const second = await runTool(bundle, { program_name: "p", code: "2" }, { callId: "replay-2" });
 
 		expect(second.result.isError).toBe(true);
 		expect(keywordName(field(field(second.receipt, "error"), "code"))).toBe("CALL_REPLAY_MISMATCH");
@@ -1115,7 +1110,7 @@ describe("call-id replay", () => {
 		});
 		const params = {
 			program_name: "p",
-			code: '(defprogram p [] (call {:command "sleep 0.3"}))',
+			code: '(call {:argv ["sleep", "0.3"]})',
 		};
 		const [first, second] = await Promise.all([bundle.execute("replay-3", params), bundle.execute("replay-3", params)]);
 		const firstReceipt = readUfss(first.content[0].text);
@@ -1158,10 +1153,9 @@ describe("auditor roots", () => {
 		const tmpTarget = join(auditTmp, "scratch.txt");
 		const { receipt } = await runTool(bundle, {
 			program_name: "audit",
-			code: `(defprogram audit []
-			        (do (write {:path "plans/slug/evidence/CASE-1/note.md" :content "evidence"})
+			code: `(do (write {:path "plans/slug/evidence/CASE-1/note.md" :content "evidence"})
 			            (write {:path ${JSON.stringify(tmpTarget)} :content "scratch"})
-			            [(cat {:path "product.mjs"}) (cat {:path ${JSON.stringify(tmpTarget)}})]))`,
+			            [(cat {:path "product.mjs"}) (cat {:path ${JSON.stringify(tmpTarget)}})])`,
 		});
 
 		expect(keywordName(field(receipt, "state"))).toBe("completed");
@@ -1202,10 +1196,9 @@ describe("auditor roots", () => {
 		const tmpFile = join(auditTmp, "probe.txt");
 		const { receipt } = await runTool(bundle, {
 			program_name: "prod",
-			code: `(defprogram prod []
-			        (do (write {:path "plans/slug/evidence/CASE-1/prod.md" :content "evidence"})
+			code: `(do (write {:path "plans/slug/evidence/CASE-1/prod.md" :content "evidence"})
 			            (write {:path ${JSON.stringify(tmpFile)} :content "tmp"})
-			            (cat {:path "product.mjs"})))`,
+			            (cat {:path "product.mjs"}))`,
 		});
 
 		expect(keywordName(field(receipt, "state"))).toBe("completed");
@@ -1227,9 +1220,8 @@ describe("auditor roots", () => {
 
 		const { receipt } = await runTool(bundle, {
 			program_name: "uncertain",
-			code: `(defprogram uncertain []
-			        (do (write {:path "plans/slug/evidence/CASE-1/a/one.txt" :content "one"})
-			            (write {:path "plans/slug/evidence/CASE-1/b/two.txt" :content "two"})))`,
+			code: `(do (write {:path "plans/slug/evidence/CASE-1/a/one.txt" :content "one"})
+			            (write {:path "plans/slug/evidence/CASE-1/b/two.txt" :content "two"}))`,
 		});
 		const error = field(receipt, "error");
 		const data = field(error, "data");
@@ -1259,9 +1251,8 @@ describe("auditor roots", () => {
 
 		const { receipt } = await runTool(bundle, {
 			program_name: "facts",
-			code: `(defprogram facts []
-			        (let [src (cat {:path "product.mjs"})]
-			          (write {:path ${JSON.stringify(written)} :content "t"})))`,
+			code: `(let [src (cat {:path "product.mjs"})]
+			          (write {:path ${JSON.stringify(written)} :content "t"}))`,
 		});
 
 		expect(keywordName(field(receipt, "state"))).toBe("failed");
@@ -1280,7 +1271,7 @@ describe("auditor roots", () => {
 		const marker = join(auditTmp, "auditor-shell-ran.txt");
 		const { receipt } = await runTool(bundle, {
 			program_name: "p",
-			code: `(defprogram p [] (call {:command ${JSON.stringify(`printf shell-ran > ${marker}`)}}))`,
+			code: `(call {:argv ["printf" "shell-ran"]})`,
 		});
 		expect(keywordName(field(receipt, "state"))).toBe("failed");
 		const error = field(receipt, "error");
@@ -1291,8 +1282,8 @@ describe("auditor roots", () => {
 
 	it("runs auditor call only through the injected sandbox runCommand", async () => {
 		const seen = [];
-		const runCommand = async (command, options) => {
-			seen.push({ command, options });
+		const runCommand = async (argv, options) => {
+			seen.push({ argv, options });
 			return {
 				stdout: "sandboxed\n",
 				stderr: "",
@@ -1315,12 +1306,12 @@ describe("auditor roots", () => {
 		});
 		const { receipt } = await runTool(bundle, {
 			program_name: "p",
-			code: '(defprogram p [] (call {:command "printf hi"}))',
+			code: '(call {:argv ["printf", "hi"]})',
 		});
 		const call = field(receipt, "value");
 		expect(field(call, "stdout")).toBe("sandboxed\n");
 		expect(seen).toHaveLength(1);
-		expect(seen[0].command).toBe("printf hi");
+		expect(seen[0].argv).toEqual(["printf", "hi"]);
 	});
 });
 
@@ -1338,11 +1329,11 @@ describe("observed read facts", () => {
 		const docsPath = join(root, "docs/readme.md");
 		await runTool(bundle, {
 			program_name: "read-product",
-			code: `(defprogram read-product [] (cat {:path "product.mjs"}))`,
+			code: `(cat {:path "product.mjs"})`,
 		});
 		await runTool(bundle, {
 			program_name: "read-docs",
-			code: `(defprogram read-docs [] (cat {:path "docs/readme.md"}))`,
+			code: `(cat {:path "docs/readme.md"})`,
 		});
 		const snapshot = bundle.readSetForActor();
 		expect(snapshot.ok).toBe(true);
@@ -1372,7 +1363,7 @@ describe("observed read facts", () => {
 		});
 		await runTool(first, {
 			program_name: "read-a",
-			code: `(defprogram read-a [] (cat {:path "a.mjs"}))`,
+			code: `(cat {:path "a.mjs"})`,
 		});
 		const second = buildSandboxTools({
 			role: "worker",
@@ -1385,7 +1376,7 @@ describe("observed read facts", () => {
 		});
 		await runTool(second, {
 			program_name: "read-b",
-			code: `(defprogram read-b [] (cat {:path "b.mjs"}))`,
+			code: `(cat {:path "b.mjs"})`,
 		});
 		const credential = second.readSetForActor();
 		expect(credential.ok).toBe(true);
@@ -1415,7 +1406,7 @@ describe("observed read facts", () => {
 		});
 		await runTool(bundle, {
 			program_name: "read-a",
-			code: `(defprogram read-a [] (cat {:path "a.mjs"}))`,
+			code: `(cat {:path "a.mjs"})`,
 		});
 		expect(bundle.observations).toBeNull();
 		expect(bundle.observationScope).toBeNull();

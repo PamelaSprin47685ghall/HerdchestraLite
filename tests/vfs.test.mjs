@@ -1499,7 +1499,7 @@ describe("mandatory production ports", () => {
 		await expect(drain(batch, { writeGate: fakeGate() })).rejects.toMatchObject({
 			code: ":INVALID_ARGUMENT",
 		});
-		await expect(runCall({ batch, command: "true", writeGate: fakeGate() })).rejects.toMatchObject({
+		await expect(runCall({ batch, argv: ["true"], writeGate: fakeGate() })).rejects.toMatchObject({
 			code: ":INVALID_ARGUMENT",
 		});
 		expect(existsSync(join(root, "a.txt"))).toBe(false);
@@ -1555,7 +1555,7 @@ describe("drain and runCall", () => {
 		write(owned, "pre.txt", "ready");
 		const result = await runCall({
 			batch: owned,
-			command: "true",
+			argv: ["true"],
 			writeGate: gate,
 			...fakePorts({ control: fakeControl(control) }),
 			limits: { inlineBytes: 100, logBytes: 1000 },
@@ -1585,7 +1585,7 @@ describe("drain and runCall", () => {
 		const owned = createBatch({ writeRoot: root, io });
 		const result = await runCall({
 			batch: owned,
-			command: "false",
+			argv: ["false"],
 			writeGate: fakeGate(),
 			...fakePorts(),
 		});
@@ -1607,7 +1607,7 @@ describe("drain and runCall", () => {
 		write(owned, "a.txt", "A");
 		const result = await runCall({
 			batch: owned,
-			command: "true",
+			argv: ["true"],
 			writeGate: fakeGate(),
 			signal: controller.signal,
 			...fakePorts(),
@@ -1653,7 +1653,7 @@ describe("drain and runCall", () => {
 		};
 		const promise = runCall({
 			batch,
-			command: "sleep",
+			argv: ["sleep"],
 			writeGate: fakeGate(),
 			signal: controller.signal,
 			...fakePorts({ control: fakeControl(control) }),
@@ -1688,7 +1688,7 @@ describe("drain and runCall", () => {
 		write(batch, "a.txt", "A");
 		const result = await runCall({
 			batch,
-			command: "true",
+			argv: ["true"],
 			writeGate: fakeGate(),
 			signal: controller.signal,
 			...fakePorts(),
@@ -1718,7 +1718,7 @@ describe("drain and runCall", () => {
 		const batch = createBatch({ writeRoot: root, io });
 		const result = await runCall({
 			batch,
-			command: "verbose",
+			argv: ["verbose"],
 			writeGate: fakeGate(),
 			limits: { inlineBytes: 10, logBytes: 20, logPath },
 			...fakePorts(),
@@ -1741,7 +1741,7 @@ describe("drain and runCall", () => {
 		const batch = createBatch({ writeRoot: root, io });
 		const result = await runCall({
 			batch,
-			command: "true",
+			argv: ["true"],
 			writeGate: fakeGate(),
 			...fakePorts({
 				control: fakeControl({
@@ -1777,7 +1777,7 @@ describe("drain and runCall", () => {
 		});
 		const result = await runCall({
 			batch,
-			command: "true",
+			argv: ["true"],
 			writeGate: fakeGate(),
 			control,
 			signal: controller.signal,
@@ -1810,7 +1810,7 @@ describe("drain and runCall", () => {
 		});
 		const result = await runCall({
 			batch,
-			command: "true",
+			argv: ["true"],
 			writeGate: fakeGate(),
 			...fakePorts({ control }),
 		});
@@ -1836,7 +1836,7 @@ describe("drain and runCall", () => {
 		});
 		const result = await runCall({
 			batch,
-			command: "true",
+			argv: ["true"],
 			writeGate: fakeGate(),
 			limits: { actionId: "chosen-action" },
 			...fakePorts({ control }),
@@ -1851,7 +1851,7 @@ describe("drain and runCall", () => {
 		const batch = createBatch({ writeRoot: root });
 		const result = await runCall({
 			batch,
-			command: "(sleep 0.15; printf late > child.txt) & printf parent",
+			argv: ["sh", "-c", "(sleep 0.15; printf late > child.txt) & printf parent"],
 			writeGate: fakeGate(),
 			limits: { inlineBytes: 100, logBytes: 1000 },
 			...fakePorts(),
@@ -1882,7 +1882,7 @@ describe("drain and runCall", () => {
 			},
 		};
 		const batch = createBatch({ writeRoot: root, io });
-		const result = await runCall({ batch, command: "true", writeGate: fakeGate(), ...fakePorts() });
+		const result = await runCall({ batch, argv: ["true"], writeGate: fakeGate(), ...fakePorts() });
 		expect(result.status).toBe(":completed");
 		expect(result.managedChildren).toBe(false);
 		expect(result.stdioClosed).toBe(false);
@@ -1895,7 +1895,7 @@ describe("drain and runCall", () => {
 		const batch = createBatch({ writeRoot: root });
 		const result = await runCall({
 			batch,
-			command: "printf 'AAAAAAA😀'",
+			argv: ["printf", "AAAAAAA😀"],
 			writeGate: fakeGate(),
 			limits: { inlineBytes: 100, logBytes: 10, logPath },
 			...fakePorts(),
@@ -1923,7 +1923,7 @@ describe("drain and runCall", () => {
 		const batch = createBatch({ writeRoot: root, io });
 		const result = await runCall({
 			batch,
-			command: "true",
+			argv: ["true"],
 			writeGate: fakeGate(),
 			limits: { logPath },
 			...fakePorts(),
@@ -1946,7 +1946,7 @@ describe("drain and runCall", () => {
 		write(batch, "a.txt", "A");
 		const result = await runCall({
 			batch,
-			command: "true",
+			argv: ["true"],
 			writeGate: fakeGate(),
 			control,
 			signal: controller.signal,
@@ -1969,7 +1969,7 @@ describe("drain and runCall", () => {
 		const batch = createBatch({ writeRoot: root, io });
 		const result = await runCall({
 			batch,
-			command: "verbose",
+			argv: ["verbose"],
 			writeGate: fakeGate(),
 			limits: { inlineBytes: 10, logBytes: 1000, logPath },
 			...fakePorts(),
@@ -1993,7 +1993,7 @@ describe("drain and runCall", () => {
 		const batch = createBatch({ writeRoot: root, io });
 		const result = await runCall({
 			batch,
-			command: "true",
+			argv: ["true"],
 			writeGate: fakeGate(),
 			limits: { inlineBytes: 10, logBytes: 100, logPath, logRoot: artifacts },
 			...fakePorts(),
@@ -2017,7 +2017,7 @@ describe("drain and runCall", () => {
 		const batch = createBatch({ writeRoot: root, io });
 		const result = await runCall({
 			batch,
-			command: "true",
+			argv: ["true"],
 			writeGate: fakeGate(),
 			limits: { logPath, inlineBytes: 10, logBytes: 100 },
 			...fakePorts(),
@@ -2039,7 +2039,7 @@ describe("drain and runCall", () => {
 		mkdir(batch, "out");
 		const result = await runCall({
 			batch,
-			command: "true",
+			argv: ["true"],
 			cwd: "out",
 			writeGate: fakeGate(),
 			...fakePorts(),
@@ -2064,7 +2064,7 @@ describe("drain and runCall", () => {
 		move(batch, "D", "E");
 		const result = await runCall({
 			batch,
-			command: "true",
+			argv: ["true"],
 			cwd: "E",
 			writeGate: fakeGate(),
 			...fakePorts(),

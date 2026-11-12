@@ -2004,7 +2004,7 @@ export function callEnvironment(env = process.env) {
 	return next;
 }
 
-export function defaultRunCommand(command, { cwd, signal, maxBytes, argv } = {}) {
+export function defaultRunCommand(argv, { cwd, signal, maxBytes } = {}) {
 	return new Promise((settle) => {
 		if (signal?.aborted) {
 			settle({
@@ -2022,23 +2022,36 @@ export function defaultRunCommand(command, { cwd, signal, maxBytes, argv } = {})
 			});
 			return;
 		}
+		if (
+			!Array.isArray(argv) ||
+			argv.length === 0 ||
+			argv.some((arg) => typeof arg !== "string") ||
+			argv[0].length === 0
+		) {
+			settle({
+				stdout: "",
+				stderr: "",
+				exitCode: null,
+				signal: null,
+				error: herdError("INVALID_ARGUMENT", "argv must be a non-empty string array", { argv }),
+				aborted: false,
+				started: false,
+				truncated: false,
+				managedChildren: false,
+				stdioClosed: true,
+				externalBestEffort: true,
+			});
+			return;
+		}
 		let child;
 		try {
-			child = Array.isArray(argv)
-				? spawn(argv[0], argv.slice(1), {
-						cwd,
-						shell: false,
-						env: callEnvironment(),
-						detached: process.platform !== "win32",
-						stdio: ["ignore", "pipe", "pipe"],
-					})
-				: spawn(command, {
-						cwd,
-						shell: true,
-						env: callEnvironment(),
-						detached: process.platform !== "win32",
-						stdio: ["ignore", "pipe", "pipe"],
-					});
+			child = spawn(argv[0], argv.slice(1), {
+				cwd,
+				shell: false,
+				env: callEnvironment(),
+				detached: process.platform !== "win32",
+				stdio: ["ignore", "pipe", "pipe"],
+			});
 		} catch (error) {
 			settle({
 				stdout: "",
@@ -2234,7 +2247,7 @@ function defaultIo() {
 }
 
 /**
- * Drain pending writes, then run one shell command while holding the gate.
+ * Drain pending writes, then run one argv command while holding the gate.
  *
  * Output status:
  * - `:completed` for exit code 0;
@@ -2250,13 +2263,19 @@ function defaultIo() {
  * dedicated artifacts directory, pass that directory as `limits.logRoot`.
  * The result never pretends that a truncated stream is whole.
  */
-export async function runCall({ batch, command, cwd, writeGate, control, identity, claim, limits, signal } = {}) {
+export async function runCall({ batch, argv, cwd, writeGate, control, identity, claim, limits, signal } = {}) {
 	assertBatch(batch);
 	requireProductionPorts({ control, identity, claim });
 	requireCallPort(control);
-	if (typeof command !== "string" || command.trim().length === 0) {
-		throw invalidArgument("command", "a non-empty string", command);
+	if (
+		!Array.isArray(argv) ||
+		argv.length === 0 ||
+		argv.some((arg) => typeof arg !== "string") ||
+		argv[0].length === 0
+	) {
+		throw invalidArgument("argv", "a non-empty string array", argv);
 	}
+	const argc = argv.length;
 	const callLimits = normalizeCallLimits(limits);
 	const resolvedLogPath = resolveCallLogPath(batch, callLimits);
 	const workdir = resolveCallCwd(batch, cwd);
@@ -2266,7 +2285,8 @@ export async function runCall({ batch, command, cwd, writeGate, control, identit
 			code: ":STALE_CONTROL",
 			phase: ":before-drain",
 			actionId: null,
-			command,
+			argv,
+			argc,
 			cwd: workdir,
 			written: [],
 			drained: null,
@@ -2279,7 +2299,8 @@ export async function runCall({ batch, command, cwd, writeGate, control, identit
 			code: ":STALE_CONTROL",
 			phase: ":drain",
 			actionId: drained.actionId ?? null,
-			command,
+			argv,
+			argc,
 			cwd: workdir,
 			written: [],
 			drained,
@@ -2291,7 +2312,8 @@ export async function runCall({ batch, command, cwd, writeGate, control, identit
 			code: drained.code,
 			phase: ":drain",
 			actionId: drained.actionId ?? null,
-			command,
+			argv,
+			argc,
 			cwd: workdir,
 			written: drained.written ?? [],
 			drained,
@@ -2303,7 +2325,8 @@ export async function runCall({ batch, command, cwd, writeGate, control, identit
 			code: ":STALE_CONTROL",
 			phase: ":before-call",
 			actionId: null,
-			command,
+			argv,
+			argc,
 			cwd: workdir,
 			written: drained.written ?? [],
 			drained,
@@ -2316,7 +2339,8 @@ export async function runCall({ batch, command, cwd, writeGate, control, identit
 				code: ":STALE_CONTROL",
 				phase: ":before-call",
 				actionId: null,
-				command,
+				argv,
+				argc,
 				cwd: workdir,
 				written: drained.written ?? [],
 				drained,
@@ -2330,7 +2354,8 @@ export async function runCall({ batch, command, cwd, writeGate, control, identit
 				message: verdict.message,
 				phase: ":identity",
 				actionId: null,
-				command,
+				argv,
+				argc,
 				cwd: workdir,
 				written: drained.written ?? [],
 				drained,
@@ -2340,7 +2365,8 @@ export async function runCall({ batch, command, cwd, writeGate, control, identit
 		const fields = portIdentityFields(identity, claim);
 		const marking = await callControl(control, "markRunning", {
 			actionId,
-			command,
+			argv,
+			argc,
 			cwd: workdir,
 			...fields,
 		});
@@ -2351,7 +2377,8 @@ export async function runCall({ batch, command, cwd, writeGate, control, identit
 				message: marking.result?.message ?? `call registration failed: ${messageOf(marking.error)}`,
 				phase: ":register",
 				actionId,
-				command,
+				argv,
+				argc,
 				cwd: workdir,
 				written: drained.written ?? [],
 				drained,
@@ -2368,7 +2395,8 @@ export async function runCall({ batch, command, cwd, writeGate, control, identit
 				code: ":STALE_CONTROL",
 				phase: ":before-call",
 				actionId,
-				command,
+				argv,
+				argc,
 				cwd: workdir,
 				written: drained.written ?? [],
 				drained,
@@ -2384,7 +2412,7 @@ export async function runCall({ batch, command, cwd, writeGate, control, identit
 		let outcome;
 		try {
 			outcome =
-				(await batch.io.runCommand(command, {
+				(await batch.io.runCommand(argv, {
 					cwd: workdir,
 					signal,
 					maxBytes: callLimits.logBytes,
@@ -2395,7 +2423,8 @@ export async function runCall({ batch, command, cwd, writeGate, control, identit
 				code: ":BOARD_CONFLICT",
 				phase: ":call",
 				actionId,
-				command,
+				argv,
+				argc,
 				cwd: workdir,
 				exitCode: null,
 				signal: null,
@@ -2427,7 +2456,8 @@ export async function runCall({ batch, command, cwd, writeGate, control, identit
 				code: ":STALE_CONTROL",
 				phase: ":before-call",
 				actionId,
-				command,
+				argv,
+				argc,
 				cwd: workdir,
 				exitCode: null,
 				signal: null,
@@ -2481,7 +2511,8 @@ export async function runCall({ batch, command, cwd, writeGate, control, identit
 			code: truncated ? ":OUTPUT_TRUNCATED" : null,
 			phase: ":call",
 			actionId,
-			command,
+			argv,
+			argc,
 			cwd: workdir,
 			exitCode: outcome.exitCode ?? null,
 			signal: outcome.signal ?? null,

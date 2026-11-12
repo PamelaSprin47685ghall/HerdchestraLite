@@ -1,5 +1,16 @@
+// biome-ignore-all lint/correctness/noUnusedImports: fs helpers are used in test callbacks
 import { afterEach, describe, expect, it } from "bun:test";
-import { existsSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	lstatSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	readlinkSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commit, createBatch, list, prepare, readText, stat, write } from "../src/clj-sandbox/vfs.mjs";
