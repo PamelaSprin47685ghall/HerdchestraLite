@@ -1041,7 +1041,7 @@ export function registerCljTools(pi, deps = {}) {
 					const leafId = ctx?.sessionManager?.getLeafId?.() ?? null;
 					const parkedNames = (pool.parkedList ?? []).map((item) => item.name);
 					const res = ariadne.verseJump(sessionKey, params, { jumpCallId, leafId, parkedNames });
-					const text = `{:state :verse-jumped :kind ${JSON.stringify(res.kind)} :target ${JSON.stringify(res.target)} :lca-distance ${res.lcaDistance} :remaining-turns ${res.remaining === null ? "nil" : res.remaining} :refunded-turns ${res.refunded}}`;
+					const text = `{:state :verse-jumped :kind ${JSON.stringify(res.kind)} :target ${JSON.stringify(res.target)} :remaining-turns ${res.remaining === null ? "nil" : res.remaining}}`;
 					return { content: [{ type: "text", text }], details: res };
 				} catch (error) {
 					return toolFailure(error);
