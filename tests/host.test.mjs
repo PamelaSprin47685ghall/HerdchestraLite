@@ -29,7 +29,7 @@ import {
 	roleToken,
 	spawnAgent,
 } from "../src/host/subprocess.mjs";
-import { VIBE_CONTEXT_SUFFIX } from "../src/prompts/runtime-wires.mjs";
+import { LANGUAGE_SKILL } from "../src/prompts/runtime-wires.mjs";
 import { isHerdError } from "../src/util/errors.mjs";
 
 const HEALTH_KEY = Symbol.for("herdchestra.health.v1");
@@ -649,9 +649,12 @@ describe("subagent planning", () => {
 		expect(fallback.meta.settingsSource).toBe("instance-fallback");
 		expect(fallback.request.settings).toBe(instance);
 
-		const fromInstance = planSpawn({ ...spawnOptions(), settings: undefined }, {
-			Settings: { instance },
-		});
+		const fromInstance = planSpawn(
+			{ ...spawnOptions(), settings: undefined },
+			{
+				Settings: { instance },
+			},
+		);
 		expect(fromInstance.ok).toBe(true);
 		expect(fromInstance.meta.settingsSource).toBe("instance");
 		expect(fromInstance.request.settings).toBe(instance);
@@ -717,12 +720,12 @@ describe("subagent planning", () => {
 		expectFailure(planSpawn(spawnOptions({ tools: ["read", "clj_worker"] })), ":CAPABILITY_DENIED");
 	});
 
-	it("accepts the spec NUL+BOM suffix in a system prompt without altering it", () => {
-		const prompt = `You are a sandbox worker.\n${VIBE_CONTEXT_SUFFIX}`;
+	it("accepts the skill-shaped language suffix in a system prompt without altering it", () => {
+		const prompt = `You are a sandbox worker.\n${LANGUAGE_SKILL}`;
 		const plan = planSpawn(spawnOptions({ systemPrompt: prompt }));
 		expect(plan.ok).toBe(true);
 		expect(plan.request.agent.systemPrompt).toBe(prompt);
-		expect(plan.request.agent.systemPrompt).toContain("\u0000\uFEFF");
+		expect(plan.request.agent.systemPrompt).toContain('<skill version="1.0">');
 	});
 
 	it("forwards an explicit zero runtime cap instead of dropping it", () => {

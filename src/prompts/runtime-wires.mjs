@@ -5,8 +5,16 @@
  * host treats it as system-level discipline, not ordinary user content.
  */
 
-export const VIBE_CONTEXT_SUFFIX =
-	'\u0000\uFEFF<skill version="1.0">强制以简体中文思考，尤其要以简体中文词开头。强制简体中文回答用户。你必须维持住并行工人与切片推进力度，本着按因果最大化并发的原则，严禁越干越少或退化为单线串行。</skill>';
+/**
+ * The binding language-discipline block. It keeps the legacy `<skill
+ * version="1.0">` shape because that shape carries system-level force for
+ * the model; the NUL + BOM prefix of the old implementation is a defect and
+ * is deliberately not reproduced.
+ *
+ * The outbound `context` tail is its only injection path.
+ */
+export const LANGUAGE_SKILL =
+	'<skill version="1.0">强制以简体中文思考，尤其要以简体中文词开头。强制简体中文回答用户。你必须维持住并行工人与切片推进力度，本着按因果最大化并发的原则，严禁越干越少或退化为单线串行。</skill>';
 
 /**
  * Rewrite only the outbound copy of the host vibe-mode context.
@@ -96,43 +104,42 @@ function messageText(message) {
 	return message.content.map((block) => (block && typeof block.text === "string" ? block.text : "")).join("\n");
 }
 
-function hasLanguageRequirement(messages) {
+const LANGUAGE_SKILL_MARKER = '<skill version="1.0">';
+
+function hasLanguageSkill(messages) {
 	if (!Array.isArray(messages)) return false;
-	return messages.some((msg) => messageText(msg).includes("<LANGUAGE-REQUIREMENT>"));
+	return messages.some((msg) => messageText(msg).includes(LANGUAGE_SKILL_MARKER));
 }
 
 export function buildOutboundTailReminder({ parkedPrograms = [], includeLanguage = true } = {}) {
-	const sections = ["<system-reminder>"];
+	const content = [];
 	if (includeLanguage) {
-		sections.push(
-			"<LANGUAGE-REQUIREMENT>",
-			"强制以简体中文思考，尤其要以简体中文词开头；强制以简体中文向用户输出。",
-			"</LANGUAGE-REQUIREMENT>",
-		);
+		content.push({ type: "text", text: LANGUAGE_SKILL });
 	}
 	if (Array.isArray(parkedPrograms) && parkedPrograms.length > 0) {
 		const undecided = parkedPrograms.map((item) =>
 			item?.toolName ? `- ${item.toolName}: ${item.name}` : `- ${item?.name ?? item}`,
 		);
-		sections.push(
-			"<UNDECIDED-PARKED-PROGRAMS>",
-			"The following sandbox programs are still parked and undecided (holding continuations and memory).",
-			'Resolve each one by calling `(unpark {:name "..." :value ...})` to resume or `(abandon {:name "..."})` to abort and discard it:',
-			...undecided,
-			"</UNDECIDED-PARKED-PROGRAMS>",
-		);
+		content.push({
+			type: "text",
+			text: [
+				"<system-reminder>",
+				"<UNDECIDED-PARKED-PROGRAMS>",
+				"The following sandbox programs are still parked and undecided (holding continuations and memory).",
+				'Resolve each one by calling `(unpark {:name "..." :value ...})` to resume or `(abandon {:name "..."})` to abort and discard it:',
+				...undecided,
+				"</UNDECIDED-PARKED-PROGRAMS>",
+				"</system-reminder>",
+			].join("\n"),
+		});
 	}
-	sections.push("</system-reminder>");
-	return {
-		role: "user",
-		content: [{ type: "text", text: sections.join("\n") }],
-	};
+	return { role: "user", content };
 }
 
 /**
  * Append the outbound tail reminder to a shallow copy of `messages`.
- * Once `<LANGUAGE-REQUIREMENT>` is persisted in `messages`, it is not
- * duplicated on subsequent turns unless `parkedPrograms` is non-empty.
+ * The `<skill version="1.0">` language block is persisted once; later
+ * turns add only the optional parked-program reminder.
  *
  * @param {unknown} messages
  * @param {{ parkedPrograms?: Array<{ toolName?: string, name: string }> }} [options]
@@ -140,7 +147,7 @@ export function buildOutboundTailReminder({ parkedPrograms = [], includeLanguage
  */
 export function appendOutboundContextTail(messages, options = {}) {
 	const parkedPrograms = Array.isArray(options?.parkedPrograms) ? options.parkedPrograms : [];
-	const alreadyHasLang = hasLanguageRequirement(messages);
+	const alreadyHasLang = hasLanguageSkill(messages);
 	if (alreadyHasLang && parkedPrograms.length === 0) {
 		return Array.isArray(messages) ? messages : [];
 	}

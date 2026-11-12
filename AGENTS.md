@@ -1101,7 +1101,7 @@ join({ otherwise_independent_work })
    - 慢 `call` 因 `join` 超时 `park` 时，将自上次展示以来的增量 `{:stdout ... :stderr ...}` 放入 `:payload`，满足 `sum(各次 park) + final === all`。
    - `(unpark {:name ... :value ...})` 恢复 `pendingCall` 时，字符串或 `{:stdin ... :eof ...}` 作为键盘输入灌入子进程 `stdin`。
    - `(abandon {:name ...})` 抛弃挂起程序、丢弃未提交 VFS、中止遗留 `call` 子进程释放 `$W$` 并释放内存。
-   - `context` 钩子在每次 LLM 请求末尾总是追加带 `<LANGUAGE-REQUIREMENT>` 的 `user` 消息强制简体中文思考与输出，并在存在未裁决 `:parked` 程序时同消息可选追加 `<UNDECIDED-PARKED-PROGRAMS>` XML 标记提醒模型裁决。
+   - `context` 钩子在每次 LLM 请求末尾总是注入 `<skill version="1.0">…</skill>` 语言纪律块强制简体中文思考与输出，并在存在未裁决 `:parked` 程序时同消息另附 `<UNDECIDED-PARKED-PROGRAMS>` 文本块提醒模型裁决。
    - 同回合混发 `call` 与写操作遇到 `$W$` 被占用时排队等待（并触发后台化 `:state :forked`），先抢到锁的先执行，禁止同步 hang。
 8. **名字占用**：同名程序仍处于 `:running` / `:waiting` / `:parked` 时，新程序占用同名启动被拒 `:NAME_TAKEN`；进入 `:completed` / `:failed` 后名字可复用。同一物理工具调用（同一 `call-id`）带相同载荷再次到达，直接重放原回执；不同载荷返回 `:CALL_REPLAY_MISMATCH`。
 9. **`ask_user` 与挂起的关系**：`ask_user` 属于 S1，语义等价于“挂起 + 中断回合 + 交还人类”。人类回答后，模型在新程序中 `unpark` 原程序；回答只作为新需求进入上下文，不重开任期、不制造评审。S5 仅保留一个例外：初任 `Reviewer` 首次空账、主工作区已满足契约且无 Slice 可做时，允许一次性询问；问完即恢复无人值守，不得把 `ask_user` 当作常规评审出口。
@@ -1227,8 +1227,8 @@ COMMON_RULES
 
 #### 5.2.3 气闸与请求尾注语言要求
 
-- 工具参数不再注入 `must_think_in`；改为由 `context` 钩子在每次 LLM 请求末尾通过统一的 `buildOutboundTailReminder` / `appendOutboundContextTail` 总是追加 `<system-reminder><LANGUAGE-REQUIREMENT>...</LANGUAGE-REQUIREMENT></system-reminder>`，强制简体中文思考（首词亦须简体中文）与简体中文输出，并在存在未裁决 `:parked` 程序时同消息可选追加 `<UNDECIDED-PARKED-PROGRAMS>`。
-- **尾轮缓存边界与改写自由**：承认最后一轮生成的 `thinking` 与 `toolCall` 本身不参与跨轮前缀缓存（因第 $N$ 轮末尾的临时尾注会在第 $N+1$ 轮移至新末尾，此前缀变化只影响最后一轮回复，不影响 `0 .. H_{k-1}` 的历史前缀缓存）。这一事实同时赋予系统在出站或持久化边界自由改写最后一轮 `thinking` 与 `toolCall` 的能力而无额外缓存惩罚；若需在 `context` 发出时刻持久化改写，使用 `hackContext`（`src/host/hack-context.mjs`）自动对 `event.messages` 与出站结果计算最长公共前缀 delta，并通过 `sessionManager.branch(parentId)` + `appendMessage(...)` 做 $O(1)$ 最小化单行追加落盘（避免全量 `rewriteEntries()` 的 $O(N^2)$ 磁盘 I/O）；`<LANGUAGE-REQUIREMENT>` 由此实现“一次追加、后续轮次不再重复写入”。
+- 工具参数不再注入 `must_think_in`；改为由 `context` 钩子在每次 LLM 请求末尾通过统一的 `buildOutboundTailReminder` / `appendOutboundContextTail` 注入语言要求。该语言块沿用旧式 `<skill version="1.0">…</skill>` 外形（该外形对模型有约束力，普通 `<system-reminder>` 文本没有；旧实现的 NUL + BOM 前缀是弊病，不再复现），并取代旧的 `systemPrompt` 尾注注入；存在未裁决 `:parked` 程序时，同消息另附独立的 `<UNDECIDED-PARKED-PROGRAMS>` 文本块。
+- **尾轮缓存边界与改写自由**：承认最后一轮生成的 `thinking` 与 `toolCall` 本身不参与跨轮前缀缓存（因第 $N$ 轮末尾的临时尾注会在第 $N+1$ 轮移至新末尾，此前缀变化只影响最后一轮回复，不影响 `0 .. H_{k-1}` 的历史前缀缓存）。这一事实同时赋予系统在出站或持久化边界自由改写最后一轮 `thinking` 与 `toolCall` 的能力而无额外缓存惩罚；若需在 `context` 发出时刻持久化改写，使用 `hackContext`（`src/host/hack-context.mjs`）自动对 `event.messages` 与出站结果计算最长公共前缀 delta，并通过 `sessionManager.branch(parentId)` + `appendMessage(...)` 做 $O(1)$ 最小化单行追加落盘（避免全量 `rewriteEntries()` 的 $O(N^2)$ 磁盘 I/O）；`<skill version="1.0">` 语言块由此实现“一次追加、后续轮次不再重复写入”。
 - `intent` 是期限计量参数；不要在里面塞大段计划。期限到期自动 `park`，不是失败。
 - 工具结果中返回的 `scope` 回执必须简短，不重复系统提示词里的完整规则。
 
@@ -1894,11 +1894,11 @@ Finish strictly by calling `submit_case_audit` once with `case_id: "${caseSpec.c
 #### 8.5.1 语言纪律后缀
 
 ```text
-export const VIBE_CONTEXT_SUFFIX =
-  "\u0000\uFEFF<skill version=\"1.0\">强制以简体中文思考，尤其要以简体中文词开头。强制简体中文回答用户。你必须维持住并行工人与切片推进力度，本着按因果最大化并发的原则，严禁越干越少或退化为单线串行。</skill>";
+export const LANGUAGE_SKILL =
+  '<skill version="1.0">强制以简体中文思考，尤其要以简体中文词开头。强制简体中文回答用户。你必须维持住并行工人与切片推进力度，本着按因果最大化并发的原则，严禁越干越少或退化为单线串行。</skill>';
 ```
 
-保留 NUL + BOM 前缀：它让宿主把这段文本识别为系统级纪律，而不是普通用户内容。不要把它改成普通 Markdown。
+保留 `<skill version="1.0">` 外形：它让模型把这段文本当作系统级纪律，而不是普通用户内容。旧实现的 NUL + BOM 前缀是弊病，不得复现。不要把它改成普通 Markdown。
 
 #### 8.5.2 宿主 vibe-mode 文案修正
 
@@ -2043,7 +2043,7 @@ HerdchestraLite/
     ├── prompts/
     │   ├── common.mjs            # COMMON（无 S2–S5 剧透）
     │   ├── roles.mjs             # 角色提示词与 buildCaseAuditorPrompt
-    │   └── runtime-wires.mjs     # VIBE_CONTEXT_SUFFIX、tool-gate 定义、Nudge
+    │   └── runtime-wires.mjs     # LANGUAGE_SKILL、tool-gate 定义、Nudge
     └── tui/
         ├── dashboard-model.mjs   # 纯数据看板与审计矩阵模型
         └── dashboard-widget.mjs  # pi-tui 双态渲染与 applyStableHeightBound

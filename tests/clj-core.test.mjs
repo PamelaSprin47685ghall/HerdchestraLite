@@ -689,7 +689,7 @@ describe("clj-only async dogfood surface", () => {
 		expect(out.messages).toHaveLength(2);
 		expect(out.messages[1].role).toBe("user");
 		const tailText = out.messages[1].content[0].text;
-		expect(tailText).toContain("<LANGUAGE-REQUIREMENT>");
+		expect(tailText).toContain('<skill version="1.0">');
 		expect(tailText).toContain("简体中文");
 		expect(tailText).not.toContain("<UNDECIDED-PARKED-PROGRAMS>");
 	});
@@ -710,10 +710,11 @@ describe("clj-only async dogfood surface", () => {
 		const ctxHandler = hooks.get("context")[0];
 		const withParked = await ctxHandler({ messages: [{ role: "user", content: "hi" }] }, { cwd: root });
 		expect(withParked?.messages?.length).toBe(2);
-		const reminderText = withParked.messages[1].content[0].text;
 		expect(withParked.messages[1].role).toBe("user");
-		expect(reminderText).toContain("<UNDECIDED-PARKED-PROGRAMS>");
-		expect(reminderText).toContain("clj_worker: abandoned-job");
+		const blocks = withParked.messages[1].content;
+		expect(blocks[0].text).toContain('<skill version="1.0">');
+		expect(blocks[1].text).toContain("<UNDECIDED-PARKED-PROGRAMS>");
+		expect(blocks[1].text).toContain("clj_worker: abandoned-job");
 
 		const abandoned = await callTool(
 			tools,
@@ -729,9 +730,9 @@ describe("clj-only async dogfood surface", () => {
 
 		const afterAbandon = await ctxHandler({ messages: [{ role: "user", content: "hi" }] }, { cwd: root });
 		expect(afterAbandon.messages).toHaveLength(2);
-		const afterText = afterAbandon.messages[1].content[0].text;
-		expect(afterText).toContain("<LANGUAGE-REQUIREMENT>");
-		expect(afterText).not.toContain("<UNDECIDED-PARKED-PROGRAMS>");
+		expect(afterAbandon.messages).toHaveLength(2);
+		expect(afterAbandon.messages[1].content[0].text).toContain('<skill version="1.0">');
+		expect(afterAbandon.messages[1].content).toHaveLength(1);
 	});
 	it("requires :exec/:fn on glob and runs it across the multi-core Worker pool", async () => {
 		mkdirSync(join(root, "sub"), { recursive: true });

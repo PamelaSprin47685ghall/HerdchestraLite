@@ -88,12 +88,12 @@ describe("hackContext", () => {
 		]);
 		const ctx = { sessionManager: sm };
 
-		// Turn 1: appends <LANGUAGE-REQUIREMENT> once without branching
+		// Turn 1: appends the skill block once without branching
 		const res1 = await handlers.get("context")({ messages: sm.getBranch().map((e) => e.message) }, ctx);
 		expect(res1.messages).toHaveLength(2);
 		expect(sm.calls).toHaveLength(1);
 		expect(sm.calls[0].op).toBe("appendMessage");
-		expect(sm.calls[0].message.content[0].text).toContain("<LANGUAGE-REQUIREMENT>");
+		expect(sm.calls[0].message.content[0].text).toContain('<skill version="1.0">');
 
 		// Turn 2: already present -> zero disk writes, zero duplication
 		sm.calls.length = 0;

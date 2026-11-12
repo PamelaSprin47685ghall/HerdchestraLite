@@ -19,7 +19,7 @@ import { EdnKeyword, printUfss, readUfss } from "./clj-sandbox/ufss.mjs";
 import { readHealth, recordHealth } from "./host/health.mjs";
 import { COMMON_RULES_TEXT } from "./prompts/common.mjs";
 import { buildCaseAuditorPrompt, ROLE_PROMPTS_EARLY, ROLE_PROMPTS_LATE } from "./prompts/roles.mjs";
-import { buildUnattendedNudge, rewriteVibeModeContext, VIBE_CONTEXT_SUFFIX } from "./prompts/runtime-wires.mjs";
+import { buildUnattendedNudge, LANGUAGE_SKILL, rewriteVibeModeContext } from "./prompts/runtime-wires.mjs";
 import { createSandboxedRunCommand, sandboxCapability } from "./sandbox/bwrap.mjs";
 import { createAuditorSandbox } from "./sandbox/session.mjs";
 import { askPreviousScope, assume, ledgerFor } from "./scope/ledger.mjs";
@@ -2551,7 +2551,7 @@ function devopsAgentDefinition(agentName, model) {
 	return {
 		name: agentName,
 		description: `Plan DevOps: ${agentName}`,
-		systemPrompt: appendPrompt(COMMON_RULES_TEXT, prompt, VIBE_CONTEXT_SUFFIX),
+		systemPrompt: appendPrompt(COMMON_RULES_TEXT, prompt, LANGUAGE_SKILL),
 		tools: [...ROLE_SURFACES["Plan DevOps"]],
 		model: [...model],
 		source: "project",
@@ -2743,7 +2743,7 @@ async function startAgent(request, state) {
 	if (!prompt && role !== "Manual Auditor") {
 		return { ok: false, error: { code: ":CAPABILITY_DENIED", message: `no prompt for role: ${role}` } };
 	}
-	const defaultSystemPrompt = appendPrompt(COMMON_RULES_TEXT, prompt ?? "", VIBE_CONTEXT_SUFFIX);
+	const defaultSystemPrompt = appendPrompt(COMMON_RULES_TEXT, prompt ?? "", LANGUAGE_SKILL);
 	try {
 		const { spawnAgent } = await import("./host/subprocess.mjs");
 		const name =
@@ -3061,7 +3061,7 @@ async function runMissionAudit(state) {
 				modelRegistry: state.modelRegistry,
 				model: state.model,
 				preloadedExtensionPaths: extensionPaths,
-				systemPrompt: appendPrompt(COMMON_RULES_TEXT, VIBE_CONTEXT_SUFFIX),
+				systemPrompt: appendPrompt(COMMON_RULES_TEXT, LANGUAGE_SKILL),
 				buildPrompt: ({ caseSpec, s1Summary }) =>
 					buildCaseAuditorPrompt({
 						mission: {
@@ -3695,7 +3695,7 @@ export default async function activate(pi) {
 					error: String(error?.message ?? error),
 				});
 			}
-			return { systemPrompt: appendPrompt(event.systemPrompt, VIBE_CONTEXT_SUFFIX) };
+			return { systemPrompt: appendPrompt(event.systemPrompt, LANGUAGE_SKILL) };
 		}
 		// A role token in the main session is untrusted prose, not an identity.
 		state.role = undefined;
@@ -3703,7 +3703,7 @@ export default async function activate(pi) {
 		const stage = mission?.stage;
 		if (stage !== undefined) await applyStageSurface(pi, stage);
 		return {
-			systemPrompt: appendPrompt(event.systemPrompt, COMMON_RULES_TEXT, missionBriefing(stage), VIBE_CONTEXT_SUFFIX),
+			systemPrompt: appendPrompt(event.systemPrompt, COMMON_RULES_TEXT, missionBriefing(stage), LANGUAGE_SKILL),
 		};
 	});
 
