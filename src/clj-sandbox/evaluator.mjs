@@ -7354,8 +7354,8 @@ function deserializeAst(node, session) {
 }
 
 function deserializeEnv(desc, session) {
-	if (desc === null || desc === undefined) return buildRootEnv(session);
-	const parent = desc.parent ? deserializeEnv(desc.parent, session) : buildRootEnv(session);
+	if (desc === null || desc === undefined) return new Environment(null);
+	const parent = desc.parent ? deserializeEnv(desc.parent, session) : new Environment(null);
 	const bindings = desc.entries.map(([k, v]) => [k, deserializeAst(v, session)]);
 	return extendEnvironment(parent, bindings);
 }
