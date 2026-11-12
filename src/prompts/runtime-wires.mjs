@@ -152,12 +152,14 @@ export function appendOutboundContextTail(messages, options = {}) {
 	const parkedPrograms = Array.isArray(options?.parkedPrograms) ? options.parkedPrograms : [];
 	const ariadneBlock = typeof options?.ariadneBlock === "string" ? options.ariadneBlock : null;
 	const alreadyHasLang = hasLanguageSkill(messages);
-	if (alreadyHasLang && parkedPrograms.length === 0 && !ariadneBlock) {
+	const lastText = Array.isArray(messages) && messages.length > 0 ? messageText(messages[messages.length - 1]) : "";
+	const effectiveAriadne = ariadneBlock && lastText.includes(ariadneBlock) ? null : ariadneBlock;
+	if (alreadyHasLang && parkedPrograms.length === 0 && !effectiveAriadne) {
 		return Array.isArray(messages) ? messages : [];
 	}
 	const reminder = buildOutboundTailReminder({
 		parkedPrograms,
-		ariadneBlock,
+		ariadneBlock: effectiveAriadne,
 		includeLanguage: !alreadyHasLang,
 	});
 	return Array.isArray(messages) ? [...messages, reminder] : [reminder];

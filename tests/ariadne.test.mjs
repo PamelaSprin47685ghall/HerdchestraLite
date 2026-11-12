@@ -147,7 +147,6 @@ describe("Everything Everywhere Verse-Jumping + Ariadne's Thread", () => {
 		expect(forked.messages[1].role).toBe("user");
 		expect(forked.messages[1].content[0].text).toContain("Goal: fix login");
 		expect(forked.messages[1].content[0].text).toContain("use approach B");
-		expect(forked.messages[1].content[0].text).toContain("alpha");
 
 		// Resume-verse cuts at alpha's verse_jump call ("vj-1"), leaving p1 + its result intact!
 		const resumed = applyVerseJumpToMessages(forked.messages, {
@@ -163,7 +162,6 @@ describe("Everything Everywhere Verse-Jumping + Ariadne's Thread", () => {
 		expect(resumed.messages[2].role).toBe("toolResult");
 		expect(resumed.messages[3].role).toBe("user");
 		expect(resumed.messages[3].content[0].text).toContain("B failed, back to alpha");
-		expect(resumed.messages[3].content[0].text).toContain("p1");
 	});
 
 	it("requires cleaning up parked programs missing from target universe, while allowing parked programs present in target history", () => {

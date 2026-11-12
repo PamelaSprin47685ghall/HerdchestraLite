@@ -419,20 +419,10 @@ function formatVerseEntry(v) {
 	return `- ${v.verseName}${goalPart}${beaconPart}`;
 }
 
-function buildVerseJumpUserMessage({ targetGoal, experience, otherVerses = [] }) {
+function buildVerseJumpUserMessage({ targetGoal, experience }) {
 	const sections = [];
 	if (targetGoal) sections.push(`Goal: ${targetGoal}`);
 	sections.push(experience);
-	if (Array.isArray(otherVerses) && otherVerses.length > 0) {
-		sections.push(
-			[
-				"<OTHER-VERSES>",
-				"以下平行宇宙曾主动接过或交出过聚光灯令牌，但不在当前历史内可见：",
-				...otherVerses.map(formatVerseEntry),
-				"</OTHER-VERSES>",
-			].join("\n"),
-		);
-	}
 	return {
 		role: "user",
 		content: [{ type: "text", text: sections.join("\n\n") }],
