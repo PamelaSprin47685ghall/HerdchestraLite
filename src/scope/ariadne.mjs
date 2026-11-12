@@ -224,11 +224,11 @@ export function createAriadneStore() {
 		if (st.remaining <= 0) {
 			const overdue = Math.abs(st.remaining);
 			lines.push(
-				`【警告：你出门太久忘本了！已超期 ${overdue} 回合（剩余 ${st.remaining} 回合）】`,
-				"你已经走出了祖先立下的安全线，继续盲目往下走很容易彻底偏离初衷。",
-				"最紧的限制来自以下历史时刻：",
+				`【阿里阿德涅之线已绷断 · 出门太久忘本了！已超期 ${overdue} 回合（剩余 ${st.remaining} 回合）】`,
+				"你已走出祖先为你系上的安全线；迷宫越走越深，越容易把当初的真问题忘在身后。",
+				"此刻勒得最紧的历史锚点：",
 				anchors,
-				"请认真反思：如果当前路线走偏了，请立刻调用 `time_leap` 回到上述某个程序名并带上教训；如果确认方向正确，请在下次 `clj_*` 中重新立下明确的 `ariadne_thread` 与 `ariadne_goal`。",
+				"请停下来想清楚：若路线已偏，立刻调用 `time_leap` 带着你在未来踩坑换来的**完整、详尽的记忆与线索**（别省字，写得越具体越好！）跳回上述某个程序名重开；若方向依然扎实，就在下次 `clj_*` 重新立下新的 `ariadne_thread` 与 `ariadne_goal`。",
 			);
 		} else {
 			lines.push(`当前 Ariadne's Thread 剩余 ${st.remaining} 回合（受限于最紧历史时刻）：`, anchors);

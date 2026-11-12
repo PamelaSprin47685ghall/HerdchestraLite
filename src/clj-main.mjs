@@ -101,13 +101,13 @@ const SANDBOX_PARAMETERS = Object.freeze({
 			type: "integer",
 			minimum: 1,
 			description:
-				"Ariadne's Thread: max turns you may wander from this point before losing your anchor (1 turn = 1 point). Required on cold start; optional later to tighten or re-anchor.",
+				"Ariadne's Thread — unspool a golden thread into the labyrinth: declare how many turns you allow yourself from this checkpoint before the thread pulls taut (1 turn = 1 point). Multiple active threads compose by taking the tightest remaining deadline. Optional: leave blank to walk freely or ride your current thread.",
 		},
 		[ARIADNE_GOAL_FIELD]: {
 			type: "string",
 			minLength: 1,
 			description:
-				"Ariadne's Goal: what you intend to accomplish within those ariadne_thread turns (required when ariadne_thread is set).",
+				"Ariadne's Goal — name the exact milestone, proof, or dragon you intend to slay within this thread (required whenever ariadne_thread is set; preserved as your north star if you Time Leap back here).",
 		},
 	},
 });
@@ -161,12 +161,13 @@ const TIME_LEAP_PARAMETERS = Object.freeze({
 			type: "string",
 			minLength: 1,
 			description:
-				"The clj_* program :name to Time Leap back to (replaces that program's tool result with hint, drops sibling tool calls in that turn, and refunds turns).",
+				"The :name of the past clj_* program to leap back to. That program call (and everything after it) is rewound and replaced by your full-memory Time Leap message, refunding all turns spent since then and letting you choose a fresh ariadne_thread budget.",
 		},
 		hint: {
 			type: "string",
 			minLength: 1,
-			description: "The D-Mail / Time-Leap hint that replaces target_program's tool return value.",
+			description:
+				"Full-memory Time Leap transfer (NOT a cramped 36-byte text—write generously!): pack in every hard-won discovery, exact file path, symbol name, falsified dead end, and concrete next step so your past self wakes up with 100% of the wisdom and 0% of the detour.",
 		},
 	},
 });
@@ -991,7 +992,7 @@ export function registerCljTools(pi, deps = {}) {
 			name: "time_leap",
 			label: "Time Leap (Ariadne's Thread)",
 			description:
-				"Barrier-synchronized Time Leap: rewinds history to target_program, drops any sibling tool calls from that turn, replaces target_program's tool result with hint, and refunds turns.",
+				"Time Leap (barrier-synchronized): jump back to a named past clj_* checkpoint, erasing the detour and replacing that turn with a clean user message carrying its original Goal plus your rich, full-memory Time Leap transfer—refunding spent turns and letting you set a fresh Ariadne's Thread budget.",
 			parameters: TIME_LEAP_PARAMETERS,
 			async execute(_toolCallId, params = {}, _signal, _onUpdate, ctx) {
 				if (!isPlainObject(params)) {
