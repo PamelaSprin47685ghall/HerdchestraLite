@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
+import activate, {
 	applyCljToolSurface,
 	deadlineFor,
 	HOST_TOOL_BLACKLIST,
@@ -84,6 +84,28 @@ describe("clj-only async dogfood surface", () => {
 	afterEach(() => {
 		while (activeHosts.length > 0) activeHosts.pop().state?.terminate?.();
 		rmSync(root, { recursive: true, force: true });
+	});
+
+	it("reuses the same sandbox-worker across multiple activations in the same process", async () => {
+		const h1 = fakeHost();
+		const h2 = fakeHost();
+		const s1 = await activate(h1.pi);
+		const s2 = await activate(h2.pi);
+		activeHosts.push({ state: s1 }, { state: s2 });
+		expect(s1.worker).not.toBeNull();
+		expect(s2.worker).toBe(s1.worker);
+	});
+
+	it("pre-warms sandbox-worker in background from activate() without blocking main thread", async () => {
+		const { pi } = fakeHost();
+		const warmed = await activate(pi);
+		activeHosts.push({ state: warmed });
+		expect(warmed.worker).not.toBeNull();
+		const start = Date.now();
+		while (warmed.workerCherry === null && Date.now() - start < 2_000) {
+			await new Promise((r) => setTimeout(r, 10));
+		}
+		expect(warmed.workerCherry?.loaded).toBe(true);
 	});
 
 	it("registers the four sandbox tools and unified join", () => {

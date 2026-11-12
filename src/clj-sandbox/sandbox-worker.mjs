@@ -173,6 +173,17 @@ if (parentPort && workerData?.__sandboxWorker === true) {
 			return;
 		}
 
+		if (msg.type === "disposeSession") {
+			const keys = Array.isArray(msg.sessionKeys) ? msg.sessionKeys : [];
+			for (const sk of keys) {
+				const prefix = `${sk}\u0000`;
+				for (const bundleKey of state.bundles.keys()) {
+					if (bundleKey.startsWith(prefix)) state.bundles.delete(bundleKey);
+				}
+			}
+			return;
+		}
+
 		if (msg.type === "abort") {
 			state.activeSignals.get(msg.callId)?.abort();
 			return;

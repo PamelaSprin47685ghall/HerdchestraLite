@@ -13,7 +13,7 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { Worker } from "node:worker_threads";
-import { cherryStatus, loadCherry } from "./clj-sandbox/cherry.mjs";
+import { cherryStatus } from "./clj-sandbox/cherry.mjs";
 import { describeSandboxTool } from "./clj-sandbox/tools.mjs";
 import { hackContext } from "./host/hack-context.mjs";
 import { recordHealth } from "./host/health.mjs";
@@ -36,6 +36,22 @@ const ROLE_LABELS = Object.freeze({
 	worker: "Worker / read-write",
 });
 const DEFAULT_FORK_DEADLINE_MS = 3_600_000;
+const SHARED_WORKER_SYMBOL = Symbol.for("herdchestra.sandboxWorker.v1");
+
+function getSharedWorkerHost() {
+	let shared = globalThis[SHARED_WORKER_SYMBOL];
+	if (!shared) {
+		shared = {
+			worker: null,
+			cherry: null,
+			owners: new Set(),
+			listeners: new Set(),
+			failListeners: new Set(),
+		};
+		globalThis[SHARED_WORKER_SYMBOL] = shared;
+	}
+	return shared;
+}
 const WORKERS_FIELD = "more_workers_without_hitting_mythical_man_month";
 const WORKERS_FIELD_DESCRIPTION =
 	"自检：按 Brooks《人月神话》推导此刻还能增派多少工人。只数与既有契约互不相交、跨切片通信成本 O(1) 且现在已就绪的切片；无法证明互不相交的一律计 0。";
@@ -401,6 +417,7 @@ export function registerCljTools(pi, deps = {}) {
 		pendingExecs: new Map(),
 		pendingParks: new Map(),
 		worker: null,
+		workerCherry: null,
 		seq: 0,
 	};
 	const ownerId = deps.ownerId ?? `clj-core-${process.pid}`;
@@ -408,106 +425,136 @@ export function registerCljTools(pi, deps = {}) {
 	const baseWaitMs = Number.isFinite(deps.baseWaitMs) && deps.baseWaitMs >= 0 ? deps.baseWaitMs : 1_000;
 	const failures = [];
 
+	const shared = getSharedWorkerHost();
+	shared.owners.add(state);
+	const failPending = (reason) => {
+		for (const [id, resolveExec] of state.pendingExecs.entries()) {
+			state.pendingExecs.delete(id);
+			resolveExec(toolFailure(herdError("HOST_API_MISMATCH", reason)));
+		}
+		for (const [id, resolvePark] of state.pendingParks.entries()) {
+			state.pendingParks.delete(id);
+			resolvePark({ ok: false, code: "HOST_API_MISMATCH" });
+		}
+	};
+	const handleWorkerMessage = (msg) => {
+		if (!msg || typeof msg !== "object") return;
+		if (msg.type === "initDone") {
+			shared.cherry = msg.cherry ?? { loaded: true };
+			state.workerCherry = shared.cherry;
+			publishHealth();
+			return;
+		}
+		if (msg.type === "execDone") {
+			const resolveExec = state.pendingExecs.get(msg.id);
+			if (resolveExec) {
+				state.pendingExecs.delete(msg.id);
+				resolveExec(msg.result);
+			}
+			return;
+		}
+		if (msg.type === "parkResult") {
+			const resolvePark = state.pendingParks.get(msg.id);
+			if (resolvePark) {
+				state.pendingParks.delete(msg.id);
+				resolvePark(msg.result);
+			}
+			return;
+		}
+		const pool = getPool(state, msg.sessionKey);
+		if (msg.type === "callActivity") {
+			const { id, active, program } = msg;
+			if (typeof program !== "string" || program.length === 0) return;
+			const fg = pool.pendingByExecId.get(id) ?? pool.pendingForeground.get(program);
+			if (active) {
+				pool.activeCalls.add(program);
+				if (fg) {
+					fg.setActive(true);
+				} else {
+					for (const entryFg of pool.pendingForeground.values()) {
+						entryFg.setActive(true);
+					}
+				}
+			} else {
+				pool.activeCalls.delete(program);
+				fg?.setActive(false);
+			}
+			for (const item of pool.inFlight.values()) {
+				if (item.programName === program) {
+					item.inCall = active;
+				}
+			}
+			for (const listener of pool.callListeners) {
+				listener();
+			}
+			return;
+		}
+		if (msg.type === "waitLock") {
+			const { waiting, role } = msg;
+			if (waiting) {
+				pool.waitingLocks.add(role);
+				for (const [progName, entryFg] of pool.pendingForeground.entries()) {
+					if (pool.pendingRoles.get(progName) === role) {
+						entryFg.setActive(true);
+					}
+				}
+			} else {
+				pool.waitingLocks.delete(role);
+				for (const [progName, entryFg] of pool.pendingForeground.entries()) {
+					if (pool.pendingRoles.get(progName) === role) {
+						entryFg.setActive(false);
+					}
+				}
+			}
+			for (const listener of pool.callListeners) {
+				listener();
+			}
+			return;
+		}
+		if (msg.type === "parkedList") {
+			pool.parkedList = Array.isArray(msg.list) ? msg.list : [];
+		}
+	};
+	shared.listeners.add(handleWorkerMessage);
+	shared.failListeners.add(failPending);
 	function ensureWorker() {
-		if (state.worker !== null) {
-			return state.worker;
+		shared.owners.add(state);
+		shared.listeners.add(handleWorkerMessage);
+		shared.failListeners.add(failPending);
+		if (shared.worker !== null) {
+			state.worker = shared.worker;
+			if (shared.cherry !== null && state.workerCherry === null) {
+				state.workerCherry = shared.cherry;
+			}
+			return shared.worker;
 		}
 		const worker = new Worker(new URL("./clj-sandbox/sandbox-worker.mjs", import.meta.url), {
 			workerData: { __sandboxWorker: true },
 		});
-		const failAll = (reason) => {
-			if (state.worker === worker) {
-				state.worker = null;
+		worker.unref?.();
+		worker.on("message", (msg) => {
+			for (const listener of shared.listeners) {
+				listener(msg);
 			}
-			for (const [id, resolveExec] of state.pendingExecs.entries()) {
-				state.pendingExecs.delete(id);
-				resolveExec(toolFailure(herdError("HOST_API_MISMATCH", reason)));
+		});
+		const onWorkerDrop = (reason) => {
+			if (shared.worker !== worker) return;
+			shared.worker = null;
+			shared.cherry = null;
+			for (const owner of shared.owners) {
+				if (owner.worker === worker) owner.worker = null;
 			}
-			for (const [id, resolvePark] of state.pendingParks.entries()) {
-				state.pendingParks.delete(id);
-				resolvePark({ ok: false, code: "HOST_API_MISMATCH" });
+			for (const onFail of shared.failListeners) {
+				onFail(reason);
 			}
 		};
-		worker.on("message", (msg) => {
-			if (!msg || typeof msg !== "object") return;
-			if (msg.type === "execDone") {
-				const resolveExec = state.pendingExecs.get(msg.id);
-				if (resolveExec) {
-					state.pendingExecs.delete(msg.id);
-					resolveExec(msg.result);
-				}
-				return;
-			}
-			if (msg.type === "parkResult") {
-				const resolvePark = state.pendingParks.get(msg.id);
-				if (resolvePark) {
-					state.pendingParks.delete(msg.id);
-					resolvePark(msg.result);
-				}
-				return;
-			}
-			const pool = getPool(state, msg.sessionKey);
-			if (msg.type === "callActivity") {
-				const { id, active, program } = msg;
-				if (typeof program !== "string" || program.length === 0) return;
-				const fg = pool.pendingByExecId.get(id) ?? pool.pendingForeground.get(program);
-				if (active) {
-					pool.activeCalls.add(program);
-					if (fg) {
-						fg.setActive(true);
-					} else {
-						for (const entryFg of pool.pendingForeground.values()) {
-							entryFg.setActive(true);
-						}
-					}
-				} else {
-					pool.activeCalls.delete(program);
-					fg?.setActive(false);
-				}
-				for (const item of pool.inFlight.values()) {
-					if (item.programName === program) {
-						item.inCall = active;
-					}
-				}
-				for (const listener of pool.callListeners) {
-					listener();
-				}
-				return;
-			}
-			if (msg.type === "waitLock") {
-				const { waiting, role } = msg;
-				if (waiting) {
-					pool.waitingLocks.add(role);
-					for (const [progName, entryFg] of pool.pendingForeground.entries()) {
-						if (pool.pendingRoles.get(progName) === role) {
-							entryFg.setActive(true);
-						}
-					}
-				} else {
-					pool.waitingLocks.delete(role);
-					for (const [progName, entryFg] of pool.pendingForeground.entries()) {
-						if (pool.pendingRoles.get(progName) === role) {
-							entryFg.setActive(false);
-						}
-					}
-				}
-				for (const listener of pool.callListeners) {
-					listener();
-				}
-				return;
-			}
-			if (msg.type === "parkedList") {
-				pool.parkedList = Array.isArray(msg.list) ? msg.list : [];
-			}
-		});
 		worker.on("error", (error) => {
-			failAll(`sandbox worker failed: ${errorText(error)}`);
+			onWorkerDrop(`sandbox worker failed: ${errorText(error)}`);
 		});
 		worker.on("exit", (code) => {
-			if (state.worker === worker) {
-				failAll(`sandbox worker exited unexpectedly with code ${code}`);
-			}
+			onWorkerDrop(`sandbox worker exited unexpectedly with code ${code}`);
 		});
+		shared.worker = worker;
 		state.worker = worker;
 		return worker;
 	}
@@ -895,7 +942,7 @@ export function registerCljTools(pi, deps = {}) {
 	pi.registerCommand?.("clj-status", {
 		description: "Show the ClojureScript sandbox health.",
 		async handler(_args, ctx) {
-			const cherry = cherryStatus();
+			const cherry = state.workerCherry ?? cherryStatus();
 			const lines = [
 				`clj-core: ${cherry.loaded ? "ready" : "not-loaded"}${cherry.version ? ` (cherry-cljs ${cherry.version})` : ""}`,
 				`tools: ${CLJ_TOOL_NAMES.join(", ")}`,
@@ -924,8 +971,7 @@ export function registerCljTools(pi, deps = {}) {
 		pi.on("session_start", resurface);
 		pi.on("before_agent_start", resurface);
 		pi.on("session_shutdown", () => {
-			state.worker?.terminate?.();
-			state.worker = null;
+			state.terminate();
 		});
 		hackContext(pi, (event, ctx) => {
 			const root = rootFor(ctx);
@@ -937,44 +983,68 @@ export function registerCljTools(pi, deps = {}) {
 		});
 	}
 
-	const cherry = cherryStatus();
 	const hooksReady = typeof pi.on === "function";
-	const degraded = failures.length > 0 || !cherry.loaded || !hooksReady;
-	recordHealth({
-		entry: ENTRY,
-		status: degraded ? "degraded" : "ok",
-		version: VERSION,
-		capabilities: {
-			tools: [...CLJ_TOOL_NAMES],
-			hostToolBlacklist: HOST_TOOL_BLACKLIST.length,
-			cherry: cherry.loaded,
-			hooksReady,
-			failedTools: failures,
-		},
-		requiredCapabilities: degraded ? ["tools", "cherry", "hooks"] : [],
-		degraded,
-		...(degraded
-			? {
-					error:
-						failures.length > 0
-							? `tool registration failed: ${failures.join(", ")}`
-							: !cherry.loaded
-								? "cherry-cljs unavailable"
-								: "pi.on is unavailable; the host tool blacklist cannot be enforced",
-				}
-			: {}),
-	});
+	const publishHealth = () => {
+		const cherry = state.workerCherry;
+		const cherryUnavailable = cherry !== null && cherry.loaded !== true;
+		const degraded = failures.length > 0 || cherryUnavailable || !hooksReady;
+		recordHealth({
+			entry: ENTRY,
+			status: degraded ? "degraded" : "ok",
+			version: VERSION,
+			capabilities: {
+				tools: [...CLJ_TOOL_NAMES],
+				hostToolBlacklist: HOST_TOOL_BLACKLIST.length,
+				cherry: cherry === null ? "warming" : cherry.loaded,
+				hooksReady,
+				failedTools: failures,
+			},
+			requiredCapabilities: degraded ? ["tools", "cherry", "hooks"] : [],
+			degraded,
+			...(degraded
+				? {
+						error:
+							failures.length > 0
+								? `tool registration failed: ${failures.join(", ")}`
+								: cherryUnavailable
+									? "cherry-cljs unavailable"
+									: "pi.on is unavailable; the host tool blacklist cannot be enforced",
+					}
+				: {}),
+		});
+	};
+	publishHealth();
+	state.warmup = () => {
+		try {
+			const worker = ensureWorker();
+			worker.postMessage({ type: "init", id: "warmup" });
+		} catch {
+			// Warmup is best-effort; tool execution reports worker errors explicitly.
+		}
+	};
 	state.terminate = () => {
-		state.worker?.terminate?.();
+		shared.listeners.delete(handleWorkerMessage);
+		shared.failListeners.delete(failPending);
+		shared.owners.delete(state);
+		failPending("sandbox session terminated");
+		if (shared.worker !== null && state.pools.size > 0) {
+			shared.worker.postMessage({ type: "disposeSession", sessionKeys: [...state.pools.keys()] });
+		}
 		state.worker = null;
+		if (shared.owners.size === 0 && shared.worker !== null) {
+			const w = shared.worker;
+			shared.worker = null;
+			shared.cherry = null;
+			w.terminate?.();
+		}
 	};
 	return state;
 }
 
 export default async function activate(pi) {
-	// Load Cherry once up front so `/clj-status` tells the truth before the
-	// first program. A load failure does not throw into the host: each tool
-	// call returns a structured error when the runtime is missing.
-	await loadCherry();
-	return registerCljTools(pi);
+	// Register tools immediately without blocking the host main thread on
+	// cherry-cljs loading; pre-warm the sandbox Worker in the background.
+	const state = registerCljTools(pi);
+	state.warmup();
+	return state;
 }
