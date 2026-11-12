@@ -18,6 +18,12 @@ import { describeSandboxTool } from "./clj-sandbox/tools.mjs";
 import { hackContext } from "./host/hack-context.mjs";
 import { recordHealth } from "./host/health.mjs";
 import { appendOutboundContextTail } from "./prompts/runtime-wires.mjs";
+import {
+	ARIADNE_GOAL_FIELD,
+	ARIADNE_THREAD_FIELD,
+	applyTimeLeapToMessages,
+	createAriadneStore,
+} from "./scope/ariadne.mjs";
 import { herdError } from "./util/errors.mjs";
 
 const VERSION = "1";
@@ -55,7 +61,8 @@ function getSharedWorkerHost() {
 const WORKERS_FIELD = "more_workers_without_hitting_mythical_man_month";
 const WORKERS_FIELD_DESCRIPTION =
 	"自检：按 Brooks《人月神话》推导此刻还能增派多少工人。只数与既有契约互不相交、跨切片通信成本 O(1) 且现在已就绪的切片；无法证明互不相交的一律计 0。";
-const FORK_ALLOWED_FIELDS = new Set(["name", "code", "i", WORKERS_FIELD]);
+const FORK_ALLOWED_FIELDS = new Set(["name", "code", "i", WORKERS_FIELD, ARIADNE_THREAD_FIELD, ARIADNE_GOAL_FIELD]);
+const TIME_LEAP_ALLOWED_FIELDS = new Set(["target_program", "hint", "i"]);
 const JOIN_ALLOWED_FIELDS = new Set(["otherwise_independent_work", "i", WORKERS_FIELD]);
 
 /**
@@ -89,6 +96,18 @@ const SANDBOX_PARAMETERS = Object.freeze({
 			type: "integer",
 			minimum: 0,
 			description: WORKERS_FIELD_DESCRIPTION,
+		},
+		[ARIADNE_THREAD_FIELD]: {
+			type: "integer",
+			minimum: 1,
+			description:
+				"Ariadne's Thread: max turns you may wander from this point before losing your anchor (1 turn = 1 point). Required on cold start; optional later to tighten or re-anchor.",
+		},
+		[ARIADNE_GOAL_FIELD]: {
+			type: "string",
+			minLength: 1,
+			description:
+				"Ariadne's Goal: what you intend to accomplish within those ariadne_thread turns (required when ariadne_thread is set).",
 		},
 	},
 });
@@ -133,7 +152,26 @@ export const HOST_TOOL_BLACKLIST = Object.freeze([
 	"find",
 ]);
 
-const CLJ_TOOL_NAMES = Object.freeze([...TOOL_ROLES.map((role) => TOOL_NAMES[role]), "join"]);
+const TIME_LEAP_PARAMETERS = Object.freeze({
+	type: "object",
+	additionalProperties: false,
+	required: ["target_program", "hint"],
+	properties: {
+		target_program: {
+			type: "string",
+			minLength: 1,
+			description:
+				"The clj_* program :name to Time Leap back to (replaces that program's tool result with hint, drops sibling tool calls in that turn, and refunds turns).",
+		},
+		hint: {
+			type: "string",
+			minLength: 1,
+			description: "The D-Mail / Time-Leap hint that replaces target_program's tool return value.",
+		},
+	},
+});
+
+const CLJ_TOOL_NAMES = Object.freeze([...TOOL_ROLES.map((role) => TOOL_NAMES[role]), "join", "time_leap"]);
 
 function isPlainObject(value) {
 	if (value === null || typeof value !== "object") return false;
@@ -423,6 +461,7 @@ export function registerCljTools(pi, deps = {}) {
 	const ownerId = deps.ownerId ?? `clj-core-${process.pid}`;
 	const forkDeadlineMs = Number.isFinite(deps.forkDeadlineMs) ? deps.forkDeadlineMs : DEFAULT_FORK_DEADLINE_MS;
 	const baseWaitMs = Number.isFinite(deps.baseWaitMs) && deps.baseWaitMs >= 0 ? deps.baseWaitMs : 1_000;
+	const ariadne = deps.ariadne !== false ? createAriadneStore() : null;
 	const failures = [];
 
 	const shared = getSharedWorkerHost();
@@ -586,11 +625,18 @@ export function registerCljTools(pi, deps = {}) {
 					} catch (error) {
 						return toolFailure(error);
 					}
+					const callId =
+						typeof toolCallId === "string" && toolCallId.length > 0 ? toolCallId : `fork-${randomUUID().slice(0, 12)}`;
 					const root = rootFor(ctx);
 					const sessionKey = hostSessionKey(ctx, root);
 					const pool = getPool(state, sessionKey);
-					const callId =
-						typeof toolCallId === "string" && toolCallId.length > 0 ? toolCallId : `fork-${randomUUID().slice(0, 12)}`;
+					if (ariadne) {
+						try {
+							ariadne.validateAndApplyFork(sessionKey, params, validated.programName, callId, toolName);
+						} catch (error) {
+							return toolFailure(error);
+						}
+					}
 					const execId = `exec-${++state.seq}`;
 					const entry = {
 						callId,
@@ -803,6 +849,7 @@ export function registerCljTools(pi, deps = {}) {
 				const finish = (result) => withWorkerNudge(result, plan.workers);
 				const root = rootFor(ctx);
 				const sessionKey = hostSessionKey(ctx, root);
+				ariadne?.markTurnActive(sessionKey);
 				const pool = getPool(state, sessionKey);
 				while (pool.startingPromises.size > 0) {
 					await Promise.all([...pool.startingPromises]);
@@ -939,6 +986,53 @@ export function registerCljTools(pi, deps = {}) {
 		});
 	}
 
+	try {
+		pi.registerTool({
+			name: "time_leap",
+			label: "Time Leap (Ariadne's Thread)",
+			description:
+				"Barrier-synchronized Time Leap: rewinds history to target_program, drops any sibling tool calls from that turn, replaces target_program's tool result with hint, and refunds turns.",
+			parameters: TIME_LEAP_PARAMETERS,
+			async execute(_toolCallId, params = {}, _signal, _onUpdate, ctx) {
+				if (!isPlainObject(params)) {
+					return toolFailure(herdError("INVALID_ARGUMENT", "time_leap parameters must be an object"));
+				}
+				for (const key of Object.keys(params)) {
+					if (!TIME_LEAP_ALLOWED_FIELDS.has(key)) {
+						return toolFailure(herdError("INVALID_ARGUMENT", `unknown time_leap field: ${key}`, { field: key }));
+					}
+				}
+				if (!ariadne) {
+					return toolFailure(herdError("HOST_API_MISMATCH", "Ariadne's Thread is disabled in this session"));
+				}
+				const root = rootFor(ctx);
+				const sessionKey = hostSessionKey(ctx, root);
+				const pool = getPool(state, sessionKey);
+				while (pool.startingPromises.size > 0) {
+					await Promise.all([...pool.startingPromises]);
+				}
+				try {
+					const res = ariadne.timeLeap(sessionKey, params);
+					const text = `{:state :leaped :target ${JSON.stringify(res.targetProgram)} :remaining-turns ${res.remaining} :refunded-turns ${res.refunded}}`;
+					return { content: [{ type: "text", text }], details: res };
+				} catch (error) {
+					return toolFailure(error);
+				}
+			},
+		});
+	} catch (error) {
+		failures.push("time_leap");
+		recordHealth({
+			entry: ENTRY,
+			status: "failed",
+			version: VERSION,
+			capabilities: { tool: "time_leap" },
+			requiredCapabilities: ["tool"],
+			degraded: true,
+			error: errorText(error),
+		});
+	}
+
 	pi.registerCommand?.("clj-status", {
 		description: "Show the ClojureScript sandbox health.",
 		async handler(_args, ctx) {
@@ -970,15 +1064,27 @@ export function registerCljTools(pi, deps = {}) {
 		};
 		pi.on("session_start", resurface);
 		pi.on("before_agent_start", resurface);
+		if (ariadne) {
+			const settle = (_event, ctx) => {
+				const root = rootFor(ctx);
+				ariadne.settleTurn(hostSessionKey(ctx, root));
+			};
+			pi.on("turn_end", settle);
+			pi.on("agent_end", settle);
+		}
 		pi.on("session_shutdown", () => {
 			state.terminate();
 		});
 		hackContext(pi, (event, ctx) => {
 			const root = rootFor(ctx);
-			const pool = state.pools.get(hostSessionKey(ctx, root));
+			const sessionKey = hostSessionKey(ctx, root);
+			const pool = state.pools.get(sessionKey);
 			const parkedPrograms = pool?.parkedList ?? [];
+			const leap = ariadne ? ariadne.consumePendingLeap(sessionKey) : null;
+			const baseMessages = leap ? applyTimeLeapToMessages(event?.messages, leap) : event?.messages;
+			const ariadneBlock = ariadne ? ariadne.formatAriadneBlock(sessionKey) : null;
 			return {
-				messages: appendOutboundContextTail(event?.messages, { parkedPrograms }),
+				messages: appendOutboundContextTail(baseMessages, { parkedPrograms, ariadneBlock }),
 			};
 		});
 	}

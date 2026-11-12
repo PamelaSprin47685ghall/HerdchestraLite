@@ -2027,6 +2027,7 @@ HerdchestraLite/
     ├── scope/
     │   ├── schema.mjs            # OpenAI/Anthropic/Google/Bedrock 多传输 Scope Schema 注入与剥离
     │   ├── gate.mjs              # Scope 准入、回合结算与剥离挂接（无独立 tool-gate）
+    │   ├── ariadne.mjs           # Ariadne's Thread（O(1) 最小到期栈 + 软门）与 Time Leap
     │   ├── ledger.mjs            # Scope 准入、回合结算、retention、ask_previous_scope/assume
     │   └── projection.mjs        # 出站裁剪、阶段简报钉住/退役、锚点重放、缓存断点前移
     ├── stages/

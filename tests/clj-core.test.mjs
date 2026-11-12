@@ -42,6 +42,7 @@ function fakeHost({ active, baseWaitMs } = {}) {
 	};
 	const state = registerCljTools(pi, {
 		ownerId: "clj-test",
+		ariadne: false,
 		...(baseWaitMs !== undefined ? { baseWaitMs } : {}),
 	});
 	const host = { tools, pi, hooks, state };
@@ -110,7 +111,14 @@ describe("clj-only async dogfood surface", () => {
 
 	it("registers the four sandbox tools and unified join", () => {
 		const { tools } = fakeHost();
-		expect([...tools.keys()].sort()).toEqual(["clj_devops", "clj_plan", "clj_review", "clj_worker", "join"]);
+		expect([...tools.keys()].sort()).toEqual([
+			"clj_devops",
+			"clj_plan",
+			"clj_review",
+			"clj_worker",
+			"join",
+			"time_leap",
+		]);
 	});
 
 	it("removes replaced host tools and keeps the clj surface + join active", async () => {

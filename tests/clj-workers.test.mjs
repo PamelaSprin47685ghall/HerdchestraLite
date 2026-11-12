@@ -24,7 +24,7 @@ describe("Mythical Man-Month worker self-check", () => {
 			},
 			async setActiveTools() {},
 		};
-		const state = registerCljTools(pi, { ownerId: "clj-workers-test" });
+		const state = registerCljTools(pi, { ownerId: "clj-workers-test", ariadne: false });
 		activeHosts.push(state);
 		return tools;
 	}

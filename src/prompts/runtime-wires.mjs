@@ -111,10 +111,13 @@ function hasLanguageSkill(messages) {
 	return messages.some((msg) => messageText(msg).includes(LANGUAGE_SKILL_MARKER));
 }
 
-export function buildOutboundTailReminder({ parkedPrograms = [], includeLanguage = true } = {}) {
+export function buildOutboundTailReminder({ parkedPrograms = [], ariadneBlock = null, includeLanguage = true } = {}) {
 	const content = [];
 	if (includeLanguage) {
 		content.push({ type: "text", text: LANGUAGE_SKILL });
+	}
+	if (typeof ariadneBlock === "string" && ariadneBlock.length > 0) {
+		content.push({ type: "text", text: ariadneBlock });
 	}
 	if (Array.isArray(parkedPrograms) && parkedPrograms.length > 0) {
 		const undecided = parkedPrograms.map((item) =>
@@ -139,20 +142,22 @@ export function buildOutboundTailReminder({ parkedPrograms = [], includeLanguage
 /**
  * Append the outbound tail reminder to a shallow copy of `messages`.
  * The `<skill version="1.0">` language block is persisted once; later
- * turns add only the optional parked-program reminder.
+ * turns add `<ARIADNE-THREAD>` (when active) and optional parked reminders.
  *
  * @param {unknown} messages
- * @param {{ parkedPrograms?: Array<{ toolName?: string, name: string }> }} [options]
+ * @param {{ parkedPrograms?: Array<{ toolName?: string, name: string }>, ariadneBlock?: string | null }} [options]
  * @returns {unknown[]}
  */
 export function appendOutboundContextTail(messages, options = {}) {
 	const parkedPrograms = Array.isArray(options?.parkedPrograms) ? options.parkedPrograms : [];
+	const ariadneBlock = typeof options?.ariadneBlock === "string" ? options.ariadneBlock : null;
 	const alreadyHasLang = hasLanguageSkill(messages);
-	if (alreadyHasLang && parkedPrograms.length === 0) {
+	if (alreadyHasLang && parkedPrograms.length === 0 && !ariadneBlock) {
 		return Array.isArray(messages) ? messages : [];
 	}
 	const reminder = buildOutboundTailReminder({
 		parkedPrograms,
+		ariadneBlock,
 		includeLanguage: !alreadyHasLang,
 	});
 	return Array.isArray(messages) ? [...messages, reminder] : [reminder];
