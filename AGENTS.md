@@ -102,6 +102,16 @@ Lite 版不把模型当傻子。它不把每个动作都拆成一条“爷爷辈
 
 ---
 
+### 0.4 当前装配阶段：clj-only dogfood
+
+当前 `package.json` 的 `omp.extensions` / `pi.extensions` 只声明 `./src/clj-main.mjs`。这是最小可 dogfood 面，不是完整产品：它只注册 `clj_plan`、`clj_devops`、`clj_review`、`clj_worker`、`join` 与 `verse_jump`，并附 `/clj-status`；不加载 `/herd`、S1–S5 门禁、看板、worktree、K 路审计、TUI、tool-gate/Scope 与角色收窄。`src/main.mjs`、`src/bootstrap-main.mjs`、`src/stages/`、`src/swarm/`、`src/scope/`、`src/tui/` 是保留的完整装配代码，当前清单不加载。
+
+dogfood 面用黑名单减法移除宿主 `read`/`write`/`edit`/`apply_patch`/`ast_edit`/`ast_grep`/`bash`/`exec`/`eval`/`glob`/`grep`/`find`，保留其他工具的原有激活状态；它不是 §1.2 要求的白名单收窄。主会话可以直接选择四个 `clj_*` 工具，没有角色 admission。完整版语义（§2–§6 与 §8 的其余部分）仍然有效，但只有接回对应模块后才生效。
+
+当前已验证的事实只覆盖 clj 执行器：`bun test tests/clj-core.test.mjs` 34 pass / 0 fail；真实宿主 18.19.0 的四个工具、`where`/`unpark`、受保护写入与 `call` argv-only 冒烟记录在 `README.md` 与 `HACK.md`。这些是冒烟与内部测试，不是 §9.7 的放行验收。
+
+---
+
 ## 1 定位、宿主边界与十条铁律
 
 ### 1.1 系统定位与四条顶层边界
@@ -125,7 +135,7 @@ Lite 的实现只能依赖以下宿主语义。具体类型签名以 `omp` 当�
 
 | 能力 | Lite 的用法 | 降级要求 |
 |---|---|---|
-| 扩展清单入口 | `package.json` 的 `omp.extensions` / `pi.extensions` 声明单个主入口（当前 dogfood 为 `clj-main.mjs`，完整版为 `bootstrap-main.mjs`）；入口惰性 `import()` 业务模块。 | 加载失败不得阻断宿主会话；失败只让相关能力不可用，并在 `/herd-status health` 中报告。 |
+| 扩展清单入口 | `package.json` 的 `omp.extensions` / `pi.extensions` 声明单个主入口（当前 dogfood 为 `clj-main.mjs`，完整版为 `bootstrap-main.mjs`）；入口惰性 `import()` 业务模块。当前清单只声明 `clj-main.mjs`；其余入口与模块是保留代码。 | 加载失败不得阻断宿主会话；失败只让相关能力不可用，并在 `/herd-status health` 中报告。 |
 | 扩展工厂与钩子 | `pi.on("before_agent_start" \| "context" \| "before_provider_request" \| "tool_call" \| "tool_execution_end" \| "agent_end" \| "session_start", ...)`；`pi.registerTool`、`pi.registerCommand`、`pi.setActiveTools`、`pi.typebox`。`before_agent_start` 返回 `{systemPrompt}`；`context` 返回 `{messages}`；`before_provider_request` 返回替换后的 payload；`tool_call` 返回 `{block, reason}`，18.x 另支持 `{input}` 改写。 | 钩子缺失时禁用对应功能，不抛到宿主主循环；16.x 若不支持 `{input}`，Scope 门禁必须降级为“只注入、不剥离”，并让工具执行器忽略未知字段。 |
 | 子代理执行器 | `runSubprocess({ cwd, agent, task, index, id, signal, sessionFile, artifactsDir, eventBus, outputSchema, modelOverride, modelRegistry, settings, ... })`。`agent` 必须是完整 `AgentDefinition` 对象，不是名字；`artifactsDir` 是子会话 transcript 落盘的唯一开关；`sessionFile` 是父会话链接；`eventBus`/`subagentEventBus` 提供 Agent Hub 实时 progress；`persistArtifacts` 当前不要依赖。 | 子代理启动失败必须留下槽位与责任，不得把任务悄悄丢失；没有 `artifactsDir` 时回执必须明示“仅内存可见”；重启补位。 |
 | 工具面收敛 | 使命激活时只保留当前角色工具与 Scope 辅助；封禁宿主裸 `read` / `write` / `edit` / `bash` 的绕过路径。 | 无法收敛时必须在系统提示词与门禁层双重拒绝，不能只靠模型自觉。 |
@@ -169,6 +179,8 @@ Lite 的实现只能依赖以下宿主语义。具体类型签名以 `omp` 当�
 Lite 在宏观上只有一个任务周期：一次 Mission 从 S1 走到 S5，再由并发审计决定结案或返工。与标准版不同，Lite 没有常驻仓库守望层（`Steward` / `Standing Sphinx`）；人类用 `/herd <seed>` 明确准入，主会话 `Coordinator` 负责推进，使命结束后系统回到空闲。
 
 ### 2.1 角色谱系、工具面与模型归属
+
+> 本节描述完整装配。当前 dogfood 面没有角色 admission，主会话直接使用四个 `clj_*` 工具；见 §0.4。
 
 | 角色身份 | 所在阶段 | 宿主形态 | 可用工具面（硬边界） | 模型 |
 |---|---|---|---|---|
@@ -961,6 +973,7 @@ join({ otherwise_independent_work[, more_workers_without_hitting_mythical_man_mo
 | `(cat {:path ...})` | 读取 UTF-8 文本；采 `stamp` 入 `read-set` | 有（任意可读文件） | 有 | 有 | 有 | 有 | 有（主工作区只读） |
 | `(stat {:path ...})` | 返回 `{:exists :size :mtime-sec :mtime-nsec :is-dir}`；入 `read-set` 与结构检查 | - | 有 | 有 | 有 | 有 | 有 |
 | `(ls {:path ...})` | 非递归列目录；纯探查，不取 $W$、不进 `read-set`、不做结构检查 | - | 有 | 有 | 有 | 有 | 有 |
+| `(glob {...})` | 纯异步探查；需要可调用的 `:exec`/`:fn`；不取 $W$、不进 `read-set` | - | 有 | 有 | 有 | 有 | 有 |
 | `(write {:path ... :content ...})` | 向批内 VFS 写最终 UTF-8 内容 | -（文档走 `advance_s*`） | - | - | 有 | 有 | 有（bwrap 隔离） |
 | `(mkdir {:path ...})` | 向批内 VFS 登记建目录 | - | - | - | 有 | 有 | 有（bwrap 隔离） |
 | `(rm {:path ...})` | 向批内 VFS 登记删除文件或空目录 | - | - | - | 有 | 有 | 有（bwrap 隔离） |
@@ -1157,6 +1170,21 @@ join({ otherwise_independent_work[, more_workers_without_hitting_mythical_man_mo
 
 ---
 
+### 4.7 Ariadne's Thread 与 Verse-Jump（dogfood 已验证）
+
+`src/scope/ariadne.mjs` 为单会话提供表达式级分叉栈与版本切换，当前 dogfood 已接入。
+
+- **状态**：`createAriadneStore()` 持有 `sessions: Map`，按 `hostSessionKey` 分区；每个 session 保存 `active` verse、`activatedVerses`、`usedNames`、`historical`、`anchors` 与 `pendingJump`。verse 的 `stack` 记录每次 `clj_*`/`verse_jump` 的程序帧（`programName`、`toolCallId`、目标与 beacon）。
+- **字段**：`ariadne_budget` 是正整数回合预算；`ariadne_goal` 是非空字符串，只有给出预算时才有效。到期只发 `<ARIADNE-THREAD>` 软提醒，不硬阻塞工具执行。
+- **恢复**：`recoverHistory` 从 `sessionManager.getEntries()`/`getBranch()` 重放历史锚点；不写 `.herd/`，也不跨 `agent_id` 传递。进程重启后内存态丢失，只能从宿主会话历史恢复锚点。
+- **出站注入**：`formatAriadneBlock` 生成 `<ARIADNE-THREAD>` 与 `<OTHER-VERSES>`，由 `appendOutboundContextTail` 每轮附加；`hackContext` 把增量通过 `branch(parentId)` + `appendMessage(...)` 追加到宿主 `.jsonl`，不重写全量历史。
+- **Verse-Jump**：`verse_jump` 写入 `pendingJump` 并切换分支；下一次 `context` 消费该记录，调用 `applyVerseJumpToMessages`，随后由 `hackContext` 持久化新分支。
+- **边界**：Ariadne 是单会话上下文工具，不替代 §5.3 的 Scope，也不跨越上下文屏障；它只服务同一 `agent_id` 的连续回合。
+
+证据：`src/scope/ariadne.mjs`、`tests/ariadne.test.mjs`。
+
+---
+
 ## 5 消息投影、Scope、缓存对齐与 EDN + UFSS
 
 Lite 只在每次向大模型发送请求前，对**出站请求副本**做干净的函数式投影：组装角色提示词、注入当前阶段简报与 Pair Hint、按 Scope 裁剪过期噪音、把所有面向模型的结构化数据渲染为 EDN + UFSS。它绝不修改宿主 `.jsonl` 里持久化的历史；模型看到的与磁盘上留下的可以不同，但磁盘上的历史必须保持原样。
@@ -1191,6 +1219,8 @@ COMMON_RULES
 第 1、2、3 项（Schema 注入、准入/记账与剥离）按功能归属 `Scope`（`src/scope/schema.mjs` + `src/scope/gate.mjs`），不再设立独立 `tool-gate` 清单入口，也不保留重复的第 4 项裸工具/角色令牌守卫（工具面由黑名单减法与 `AgentDefinition.tools` 负责）。
 
 #### 5.2.1 注入字段
+
+> 完整装配要求所有非豁免工具携带 `scope` 与 `intent`。当前 dogfood 的 `clj_*` 工具不接受这两个字段（`FORK_ALLOWED_FIELDS` 会直接拒绝）；`join` 只接受 `otherwise_independent_work`。这是 §0.4 的阶段性豁免，接回 tool-gate 后恢复本节的完整要求。
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -1547,6 +1577,8 @@ Lite 不启动独立服务；控制状态由 `omp` 进程内的主会话与子�
 └── settings.edn                     # 可选；也可用宿主 settings
 ```
 
+> 当前 dogfood 面无 `<slug>`/`<slice_id>`，`call` 日志写到 `.herd/artifacts/clj-core/<action_id>.log`；完整使命路径见上。
+
 **边界**：
 
 - `.herd/` 只存在于主工作区；Slice worktree 内不创建自己的 `.herd/`。控制面集中，数据面分散。
@@ -1673,7 +1705,7 @@ Lite 不启动独立服务；控制状态由 `omp` 进程内的主会话与子�
 ### 8.1 组装与维护纪律
 
 1. 本节的文本是**运行时提示词的规范原文**。实现可以把它们放进 `src/prompts/common.mjs`、`disclosures.mjs`、`roles.mjs`、`runtime-wires.mjs`，但不得改写语义、删减锐度、把禁令软化成建议。
-2. 工具名统一为宿主 snake_case：`clj_plan`、`clj_devops`、`clj_review`、`clj_worker`、`clj_auditor`、`ask_user`、`devops`、`submit_review`、`submit_devops_report`、`submit_case_audit`、`submit_oracle_advice`、`advance_s1..s4`、`board_*`、`fork_slices`、`join_slice`、`abandon_slice`。设计讨论中出现的 `clj-plan` 等连字符写法是角色面名称，不是工具 ID。
+2. 工具名统一为宿主 snake_case：`clj_plan`、`clj_devops`、`clj_review`、`clj_worker`、`clj_auditor`、`ask_user`、`devops`、`submit_review`、`submit_devops_report`、`submit_case_audit`、`submit_oracle_advice`、`advance_s1..s4`、`board_*`、`fork_slices`、`join_slice`、`abandon_slice`、`join`、`verse_jump`。dogfood 面当前只注册四个 `clj_*` 与 `join`、`verse_jump`。设计讨论中出现的 `clj-plan` 等连字符写法是角色面名称，不是工具 ID。
 3. S2–S5 的简报只存在于 `disclosures.mjs`，只在门禁工具 handler 中读取；`common.mjs` 不得 import 它们。S1 简报可以独立导出，由 `/herd` 启动时注入。
 4. 角色提示词只包含该角色需要知道的内容；不要把全部角色提示词拼进主会话。子代理的提示词必须自包含。
 5. 任何提示词改动必须同时更新本文件与相应测试：S1 出站请求不得含 S2–S5 关键词；门禁成功后下一阶段简报必须出现；晋级后旧简报必须从出站请求消失。
@@ -1914,6 +1946,8 @@ export const LANGUAGE_SKILL =
 
 #### 8.5.2 宿主 vibe-mode 文案修正
 
+> 当前 `clj-main.mjs` 只接入 `appendOutboundContextTail`，未调用 `rewriteVibeModeContext`；该修正在完整装配的 `context` 钩子中生效。
+
 ```text
 export function rewriteVibeModeContext(content) {
   const rewritten = content
@@ -1929,6 +1963,8 @@ export function rewriteVibeModeContext(content) {
 它只修改出站副本中的 `vibe-mode-context` 消息；不改变宿主持久化历史。若宿主文案已变，`replace` 不命中时原样返回，不报错。
 
 #### 8.5.3 工具门字段定义
+
+> 除本节的 Scope/intent 字段外，`clj_*` 与 `verse_jump` 还接受 `ariadne_budget`（正整数）与 `ariadne_goal`（非空字符串）；`ariadne_goal` 只在同时给出 `ariadne_budget` 时有效。它们不是 Scope 门字段，而是 Ariadne's Thread 的续体注解。
 
 ```text
 export const TOOL_GATE_DEFINITIONS = Object.freeze({
@@ -2020,6 +2056,7 @@ HerdchestraLite/
 └── src/
     ├── AGENTS.md                 # 全局架构师装配笔记与模块单向依赖图
     ├── bootstrap-main.mjs        # 清单入口 1：惰性 import("./main.mjs")
+    ├── clj-main.mjs              # 当前清单入口：clj_* + join + verse_jump 的 dogfood 面
     ├── main.mjs                  # 主装配器：连接提示词、门禁、沙箱、蜂群、Scope、TUI 与命令
     ├── host/
     │   ├── imports.mjs           # 宿主与 cherry-cljs 的唯一导入集中处
