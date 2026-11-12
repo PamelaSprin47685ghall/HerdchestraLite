@@ -1039,7 +1039,7 @@ const ROLE_DENIALS = Object.freeze({
 
 function toolDescription(role) {
 	const capabilities = CAPABILITY_MATRIX[role].join(", ");
-	return `Run ClojureScript REPL input in the ${ROLE_LABELS[role]} sandbox. Bound capabilities: ${capabilities}. ${ROLE_DENIALS[role]} Submit bare REPL input; other sandbox names from COMMON are not bound. call is argv-only: (call {:argv ["prog" "arg"] :cwd ...}); no shell, pipes, redirects, globbing, or &&. Gate fields must be stripped before execution; deadlines come from the CallMeta port.`;
+	return `Run ClojureScript REPL input in the ${ROLE_LABELS[role]} sandbox. Bound capabilities: ${capabilities}. ${ROLE_DENIALS[role]} Submit bare REPL input; other sandbox names from COMMON are not bound. call is argv-only: (call {:argv ["prog" "arg"] :cwd ...}); no shell, pipes, redirects, globbing, or &&. Every call must include a non-empty :alternative map (1+ pair) naming built-in tools or other approaches and why they were not chosen; the framework ignores it. Gate fields must be stripped before execution; deadlines come from the CallMeta port.`;
 }
 
 const TOOL_DESCRIPTION_BY_NAME = Object.freeze({
