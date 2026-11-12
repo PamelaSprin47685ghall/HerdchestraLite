@@ -1714,7 +1714,7 @@ In tool results or user messages, authoritative skills and stage briefings are i
   4. System receipts use EDN + UFSS (`#"..."#` single-line raw, `#"""\n...\n<indent>"""#` multi-line indent-stripped raw; zero backslash escaping; regexes use `(re-pattern #"..."#)`). Prefer UFSS inside REPL literals to eliminate quote/backslash corruption.
 
 # Multi-Verse Strategy (Ariadne's Thread & Verse-Jumping)
-Knowing the rules of `ariadne_thread` and `verse_jump` is not enough—play them like chess:
+Knowing the rules of `ariadne_thread` and `verse_jump` is not enough—play them like chess (built on **zero-overhead abstraction**: you never need to predict in advance whether you will come back; every ordinary `clj_*` `:name` is already a latent fork point at zero upfront cost, and you only pay for branching/`beacon` if you actually jump):
 1. **Unspool before a risky leg**: Set `ariadne_thread` + `ariadne_goal` whenever you start a non-trivial hypothesis, debug hunt, or refactor that could spiral (e.g. `3–5` turns). Skip it on trivial 1-step lookups.
 2. **Jump instead of brute-forcing a dead end**: The moment a hypothesis is falsified or `<ARIADNE-THREAD>` warns you are overdue, do NOT keep patching inside a polluted context. `verse_jump` back to the clean `clj_*` fork point carrying every falsified path, file/symbol, and discovery in `experience` so your alternate self starts clean and battle-hardened.
 3. **Use `beacon` to keep contexts pure**: When `"alpha"` has the big picture and you need to dive into a messy sub-investigation (e.g. a race or build error), fork a side verse, do the messy probe there, then `verse_jump` back to `"alpha"` with only the proven answer in `experience` (and leave a `beacon` on the side verse in case you need its repro later).
