@@ -45,7 +45,6 @@ import activate, {
 } from "../src/main.mjs";
 import { sandboxCapability } from "../src/sandbox/bwrap.mjs";
 import { writeAuditModelSeed } from "../src/sandbox/model-seed.mjs";
-import { admit, ledgerFor } from "../src/scope/ledger.mjs";
 import {
 	commitS2,
 	createMission,
@@ -229,9 +228,7 @@ describe("main assembly", () => {
 			"clj_review",
 			"clj_worker",
 			"submit_case_audit",
-			"ask_previous_scope",
-			"assume",
-		]) {
+								]) {
 			expect(pi.tools.has(name)).toBe(true);
 		}
 		expect(pi.tools.has("clj_auditor")).toBe(SANDBOX.available);
@@ -248,12 +245,11 @@ describe("main assembly", () => {
 		for (const name of ["advance_s1", "clj_plan", "board_split", "submit_case_audit"]) {
 			const parameters = pi.tools.get(name).parameters;
 			expect(parameters.properties.must_think_in).toBeUndefined();
-			expect(parameters.properties.intent).toBeDefined();
-			expect(parameters.properties.scope).toBeDefined();
-			expect(parameters.required).not.toContain("intent");
+			expect(parameters.properties.intent).toBeUndefined();
+			expect(parameters.properties.scope).toBeUndefined();
+			expect(parameters.required ?? []).not.toContain("intent");
 		}
-		expect(pi.tools.get("ask_previous_scope").parameters.properties.intent).toBeUndefined();
-		expect(pi.tools.get("clj_plan").description).toContain("No stat, ls, write, mkdir, rm, mv, or call");
+				expect(pi.tools.get("clj_plan").description).toContain("No stat, ls, write, mkdir, rm, mv, or call");
 		expect(pi.tools.get("board_claim").parameters.properties.actor).toBeUndefined();
 		expect(pi.tools.get("board_claim").parameters.properties.task_id).toBeDefined();
 		expect(pi.tools.get("board_claim").parameters.properties.atomicity_reason).toBeDefined();
@@ -670,25 +666,6 @@ describe("main assembly", () => {
 		expect(pi.getActiveTools()).toEqual([]);
 	});
 
-	it("forwards the previous-scope query and delivers the answer as a steer", async () => {
-		const root = temporaryRoot();
-		const pi = fakePi();
-		await activate(pi);
-		const ctx = fakeContext(root);
-		await pi.hooks.get("session_start")[0]({}, ctx);
-		admit(
-			ledgerFor("session-main", "session-main"),
-			{ kind: "resetScope", new_scope_goal: "scope", new_scope_retention_budget: 100 },
-			{ tool: "clj_plan", callId: "scope-init", turnId: "turn-1" },
-		);
-		const result = await pi.tools
-			.get("ask_previous_scope")
-			.execute("scope-call", { query: "what remains?" }, undefined, undefined, ctx);
-		expect(result.details.ok).toBe(true);
-		const steer = pi.sent.find((entry) => entry.message.customType === "herd-scope-answer");
-		expect(steer?.message.content).toContain("what remains?");
-		expect(steer?.options).toEqual({ deliverAs: "steer" });
-	});
 	it("rewrites the host vibe-mode wording on the outbound copy only", async () => {
 		const root = temporaryRoot();
 		const pi = fakePi();
@@ -1635,7 +1612,7 @@ describe("main board_finish dependency read-set", () => {
 			"read-dep",
 			{
 				name: "read-dep",
-				code: '(defprogram read-dep [] (cat {:path "dep.mjs"}))',
+				code: '(cat {:path "dep.mjs"})',
 			},
 			undefined,
 			undefined,
@@ -1707,7 +1684,7 @@ describe("main board_finish dependency read-set", () => {
 			.get("clj_worker")
 			.execute(
 				"read-f10",
-				{ name: "read-f10", code: '(defprogram read-f10 [] (cat {:path "dep.mjs"}))' },
+				{ name: "read-f10", code: '(cat {:path "dep.mjs"})' },
 				undefined,
 				undefined,
 				ctx,
@@ -1734,7 +1711,7 @@ describe("main board_finish dependency read-set", () => {
 			.get("clj_worker")
 			.execute(
 				"read-f10-again",
-				{ name: "read-f10-again", code: '(defprogram read-f10-again [] (cat {:path "dep.mjs"}))' },
+				{ name: "read-f10-again", code: '(cat {:path "dep.mjs"})' },
 				undefined,
 				undefined,
 				ctx,

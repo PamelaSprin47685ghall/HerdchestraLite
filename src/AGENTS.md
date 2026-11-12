@@ -15,6 +15,8 @@
 
 `src/clj-main.mjs` 没有角色 admission：主会话可以选任一 `clj_*` 工具。该边界只适用于当前 dogfood 面，阶段层接回时必须恢复角色收窄。
 
+`src/clj-main.mjs` 的系统提示词由 `host/hack-system-prompt.mjs` 托管注入：`before_agent_start` 在宿主提示词后追加 `COMMON_CORE_RULES`（六块 repo-aware 规则，tool-agnostic）与 `prompts/dogfood-surface.mjs`（只描述真实注册的六个工具，并说明运行时机制协同）；`prompts/ufss-note.mjs` 提供任意层 UFSS 围栏说明，两个装配共用同一份文本。托管区段有固定 marker，重复触发原位替换；handler 抛错时 fail-open 并记 health。S1–S5 简报、Scope 字段与角色提示词都不注入，因为本面没有对应工具与阶段。
+
 `src/clj-main.mjs` 同时维护 `HOST_TOOL_BLACKLIST`（`read`/`write`/`edit`/`apply_patch`/`ast_edit`/`ast_grep`/`bash`/`exec`/`eval`/`glob`/`grep`/`find`）。`applyCljToolSurface` 在 `session_start` 与 `before_agent_start` 从 `getActiveTools()` 的当前集合中减法移除这些名字，再确保四个 `clj_*` 激活；它不重建允许列表，未列出的工具保持原有激活状态。禁用 `read`/`write` 会切断宿主 `xd://` 传输设备，这是当前 dogfood 的有意代价。
 
 `src/clj-sandbox/cherry.mjs` 是 Cherry 加载的唯一实现；`host/imports.mjs` 重导出它，`clj-sandbox/evaluator.mjs` 直接依赖它。这样本地面无需导入 `@oh-my-pi/pi-coding-agent` 或 `typebox`。
@@ -58,6 +60,7 @@ swarm/auditors（只依赖 util/errors）
 prompts/common、prompts/runtime-wires（不 import 其他产品模块）；prompts/roles ── clj-sandbox/ufss
 tui/dashboard-widget ── tui/dashboard-model
 
+clj-main ── clj-sandbox/tools、host/hack-context、host/hack-system-prompt、prompts/common、prompts/dogfood-surface、prompts/ufss-note、scope/ariadne、util/errors
 main ── 以上全部（按需注入）
 bootstrap-main ── host/health + main
 scope/gate ───── scope/ledger、scope/schema
@@ -100,6 +103,7 @@ scope/gate ───── scope/ledger、scope/schema
 | `swarm/runner.mjs` | Reviewer ⇄ Swarm、槽位、接力屏障、Nudge、Oracle、恢复 | `errors`、`board` |
 | `swarm/auditors.mjs` | K 路审计隔离、冻结 `cases.edn`/`s1-summary` 字节与活哈希绑定、单 CASE 注入、单提交校验、返工派生 | `errors` |
 | `prompts/common.mjs` | COMMON 规范文本（无 S2–S5 剧透） | — |
+| `prompts/ufss-note.mjs` | EDN + UFSS 任意层围栏说明；`common.mjs` 与 `dogfood-surface.mjs` 共用的唯一文本源 | — |
 | `prompts/roles.mjs` | 固定角色提示词、`buildCaseAuditorPrompt`、CASE 记录 EDN+UFSS 呈现 | `ufss` |
 | `prompts/runtime-wires.mjs` | 语言后缀、gate 字段、Nudge | — |
 | `tui/dashboard-model.mjs` | 纯数据双态/审计矩阵 | — |

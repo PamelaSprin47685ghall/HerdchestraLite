@@ -16,14 +16,18 @@ import { Worker } from "node:worker_threads";
 import { cherryStatus } from "./clj-sandbox/cherry.mjs";
 import { describeSandboxTool } from "./clj-sandbox/tools.mjs";
 import { hackContext } from "./host/hack-context.mjs";
+import { hackSystemPrompt } from "./host/hack-system-prompt.mjs";
 import { recordHealth } from "./host/health.mjs";
+import { COMMON_CORE_TEXT } from "./prompts/common.mjs";
+import { DOGFOOD_SURFACE_TEXT } from "./prompts/dogfood-surface.mjs";
 import { appendOutboundContextTail } from "./prompts/runtime-wires.mjs";
 import {
-	ARIADNE_GOAL_FIELD,
 	ARIADNE_BUDGET_FIELD,
-	applyVerseJumpToMessages,
+	ARIADNE_GOAL_FIELD,
+	applyTimeLeapToMessages,
 	createAriadneStore,
 } from "./scope/ariadne.mjs";
+import { queryBeacon } from "./scope/beacon-query.mjs";
 import { herdError } from "./util/errors.mjs";
 
 const VERSION = "1";
@@ -62,14 +66,8 @@ const WORKERS_FIELD = "more_workers_without_hitting_mythical_man_month";
 const WORKERS_FIELD_DESCRIPTION =
 	"自检：按 Brooks《人月神话》推导此刻还能增派多少工人。只数与既有契约互不相交、跨切片通信成本 O(1) 且现在已就绪的切片；无法证明互不相交的一律计 0。";
 const FORK_ALLOWED_FIELDS = new Set(["name", "code", "i", WORKERS_FIELD, ARIADNE_BUDGET_FIELD, ARIADNE_GOAL_FIELD]);
-const VERSE_JUMP_ALLOWED_FIELDS = new Set([
-	"target",
-	"experience",
-	"beacon",
-	ARIADNE_BUDGET_FIELD,
-	ARIADNE_GOAL_FIELD,
-	"i",
-]);
+const TIME_LEAP_ALLOWED_FIELDS = new Set(["target", "experience", "beacon", "i"]);
+const ASK_BEACON_ALLOWED_FIELDS = new Set(["target", "question", "i"]);
 const WAIT_ALLOWED_FIELDS = new Set(["otherwise_independent_work", "i", WORKERS_FIELD]);
 
 /**
@@ -114,7 +112,7 @@ const SANDBOX_PARAMETERS = Object.freeze({
 			type: "string",
 			minLength: 1,
 			description:
-				"Ariadne's Goal — required: name the exact dragon you are slaying or proof you are hunting within this thread; it becomes your north star if you later Verse-Jump back here.",
+				"Ariadne's Goal — required: name the exact dragon you are slaying or proof you are hunting within this thread; it becomes your north star if you later time_leap back here.",
 		},
 	},
 });
@@ -159,43 +157,56 @@ export const HOST_TOOL_BLACKLIST = Object.freeze([
 	"find",
 ]);
 
-const VERSE_JUMP_PARAMETERS = Object.freeze({
+const TIME_LEAP_PARAMETERS = Object.freeze({
 	type: "object",
 	additionalProperties: false,
-	required: ["target", "experience", ARIADNE_BUDGET_FIELD, ARIADNE_GOAL_FIELD],
+	required: ["target", "experience", "beacon"],
 	properties: {
 		target: {
 			type: "string",
 			minLength: 1,
 			description:
-				'The :name of the parallel universe to jump to (e.g. "alpha", an activated verse from <OTHER-VERSES>, or any historical clj_* program name to fork a new universe). Your leaving universe freezes cleanly on its branch in the same .jsonl so you can jump back later.',
+				"The :name of a clj_* program anchor on the CURRENT timeline AFTER the latest compaction. Pre-compaction or other-branch anchors are unknown. Never resurrects an old universe.",
 		},
 		experience: {
 			type: "string",
 			minLength: 1,
 			description:
-				"Your full subjective lived experience to pour into the target self (write generously—this is full Verse-Jumping, NOT a cramped 36-byte D-Mail!): bring every hard-won intuition, exact file path, line/symbol, falsified dead end, and the decisive next move so your alternate self wakes up already battle-hardened.",
+				"Your full subjective lived experience to pour into the rewritten timeline (proven facts, falsified paths, exact files/symbols, remaining plan, next move).",
 		},
 		beacon: {
 			type: "string",
 			minLength: 1,
 			description:
-				"Leave a luminous Beacon on the universe you are departing from: tell future alternate selves what specialty, partial state, or impasse makes THIS universe worth jumping back to (overwrites any previous beacon on the leaving universe; omit to keep its existing beacon).",
-		},
-		[ARIADNE_BUDGET_FIELD]: {
-			type: "integer",
-			minimum: 1,
-			description: "Required Ariadne's Thread turn budget to unspool upon arriving in the target universe.",
-		},
-		[ARIADNE_GOAL_FIELD]: {
-			type: "string",
-			minLength: 1,
-			description: "Required Ariadne's Goal for the target universe.",
+				"Mandatory read-only Beacon summarizing the sealed branch you are departing from so future turns can query it with ask_beacon (never resurrected).",
 		},
 	},
 });
 
-const CLJ_TOOL_NAMES = Object.freeze([...TOOL_ROLES.map((role) => TOOL_NAMES[role]), "wait", "verse_jump"]);
+const ASK_BEACON_PARAMETERS = Object.freeze({
+	type: "object",
+	additionalProperties: false,
+	required: ["target", "question"],
+	properties: {
+		target: {
+			type: "string",
+			minLength: 1,
+			description: "The Beacon :name from <BEACONS> to query in read-only mode.",
+		},
+		question: {
+			type: "string",
+			minLength: 1,
+			description: "Specific question for the sealed Beacon to answer directly from its cached prefix (no tools).",
+		},
+	},
+});
+
+const CLJ_TOOL_NAMES = Object.freeze([
+	...TOOL_ROLES.map((role) => TOOL_NAMES[role]),
+	"wait",
+	"time_leap",
+	"ask_beacon",
+]);
 
 function isPlainObject(value) {
 	if (value === null || typeof value !== "object") return false;
@@ -241,7 +252,8 @@ function recoverAriadneHistory(ariadne, sessionKey, ctx, currentCallId = null) {
 	if (!manager) return;
 	const all = typeof manager.getEntries === "function" ? manager.getEntries() : manager.getBranch?.();
 	const active = manager.getBranch?.() ?? all;
-	if (Array.isArray(all) && Array.isArray(active)) ariadne.recoverHistory(sessionKey, all, active, (id) => manager.getBranch(id), currentCallId);
+	if (Array.isArray(all) && Array.isArray(active))
+		ariadne.recoverHistory(sessionKey, all, active, (id) => manager.getBranch(id), currentCallId);
 }
 
 function getPool(state, sessionKey) {
@@ -865,7 +877,10 @@ export function registerCljTools(pi, deps = {}) {
 
 					entry.donePromise = runPromise;
 					const result = await Promise.race([runPromise, bgPromise]);
-					return withWorkerNudge({ ...result, details: { ...result.details, programName: validated.programName } }, validated.workers);
+					return withWorkerNudge(
+						{ ...result, details: { ...result.details, programName: validated.programName } },
+						validated.workers,
+					);
 				},
 			});
 		} catch (error) {
@@ -1089,22 +1104,22 @@ export function registerCljTools(pi, deps = {}) {
 
 	try {
 		pi.registerTool({
-			name: "verse_jump",
-			label: "Verse Jump (Everything Everywhere)",
+			name: "time_leap",
+			label: "Time Leap++",
 			description:
-				'Verse-Jumping (Everything Everywhere All at Once · barrier-synchronized): freeze your current universe cleanly on its branch in the same .jsonl and transfer the "who I am" spotlight token + your full subjective lived experience to another universe—either an activated parallel verse from <OTHER-VERSES> (such as "alpha") to resume where it left off, or any historical clj_* program :name to fork a brand-new worldline. Nothing is lost; you can always jump back.',
-			parameters: VERSE_JUMP_PARAMETERS,
+				"Time Leap++: cut the CURRENT post-compaction timeline back to a past clj_* anchor, carrying your full `experience` and leaving a mandatory read-only `beacon` on the departed branch. Never accepts `ariadne_budget`/`ariadne_goal` (re-anchor on your next `clj_*` call) and never resurrects old universes.",
+			parameters: TIME_LEAP_PARAMETERS,
 			async execute(toolCallId, params = {}, _signal, _onUpdate, ctx) {
 				if (!isPlainObject(params)) {
-					return toolFailure(herdError("INVALID_ARGUMENT", "verse_jump parameters must be an object"));
+					return toolFailure(herdError("INVALID_ARGUMENT", "time_leap parameters must be an object"));
 				}
 				for (const key of Object.keys(params)) {
-					if (!VERSE_JUMP_ALLOWED_FIELDS.has(key)) {
-						return toolFailure(herdError("INVALID_ARGUMENT", `unknown verse_jump field: ${key}`, { field: key }));
+					if (!TIME_LEAP_ALLOWED_FIELDS.has(key)) {
+						return toolFailure(herdError("INVALID_ARGUMENT", `unknown time_leap field: ${key}`, { field: key }));
 					}
 				}
 				if (!ariadne) {
-					return toolFailure(herdError("HOST_API_MISMATCH", "Verse-Jumping is disabled in this session"));
+					return toolFailure(herdError("HOST_API_MISMATCH", "Time Leap++ is disabled in this session"));
 				}
 				const root = rootFor(ctx);
 				const sessionKey = hostSessionKey(ctx, root);
@@ -1114,12 +1129,12 @@ export function registerCljTools(pi, deps = {}) {
 				}
 				try {
 					const jumpCallId =
-						typeof toolCallId === "string" && toolCallId.length > 0 ? toolCallId : `vj-${randomUUID().slice(0, 12)}`;
+						typeof toolCallId === "string" && toolCallId.length > 0 ? toolCallId : `tl-${randomUUID().slice(0, 12)}`;
 					const leafId = ctx?.sessionManager?.getLeafId?.() ?? null;
 					const parkedNames = (pool.parkedList ?? []).map((item) => item.name);
 					recoverAriadneHistory(ariadne, sessionKey, ctx);
-					const res = ariadne.verseJump(sessionKey, params, { jumpCallId, leafId, parkedNames });
-					const text = `{:state :verse-jumped :kind ${JSON.stringify(res.kind)} :target ${JSON.stringify(res.target)} :remaining-turns ${res.remaining === null ? "nil" : res.remaining}}`;
+					const res = ariadne.timeLeap(sessionKey, params, { jumpCallId, leafId, parkedNames });
+					const text = `{:state :time-leaped :target ${JSON.stringify(res.target)} :beacon ${JSON.stringify(res.beaconName)} :refunded-turns ${res.refunded} :remaining-turns ${res.remaining === null ? "nil" : res.remaining}}`;
 					return { content: [{ type: "text", text }], details: res };
 				} catch (error) {
 					return toolFailure(error);
@@ -1127,18 +1142,98 @@ export function registerCljTools(pi, deps = {}) {
 			},
 		});
 	} catch (error) {
-		failures.push("verse_jump");
+		failures.push("time_leap");
 		recordHealth({
 			entry: ENTRY,
 			status: "failed",
 			version: VERSION,
-			capabilities: { tool: "verse_jump" },
+			capabilities: { tool: "time_leap" },
 			requiredCapabilities: ["tool"],
 			degraded: true,
 			error: errorText(error),
 		});
 	}
 
+	try {
+		pi.registerTool({
+			name: "ask_beacon",
+			label: "Ask Beacon (Read-Only)",
+			description:
+				"Query a sealed read-only Beacon from <BEACONS>. Runs directly on that Verse's cached prefix with tools strictly forbidden and returns only the text answer—never resurrects or switches to the old branch.",
+			parameters: ASK_BEACON_PARAMETERS,
+			async execute(_toolCallId, params = {}, signal, _onUpdate, ctx) {
+				if (!isPlainObject(params)) {
+					return toolFailure(herdError("INVALID_ARGUMENT", "ask_beacon parameters must be an object"));
+				}
+				for (const key of Object.keys(params)) {
+					if (!ASK_BEACON_ALLOWED_FIELDS.has(key)) {
+						return toolFailure(herdError("INVALID_ARGUMENT", `unknown ask_beacon field: ${key}`, { field: key }));
+					}
+				}
+				if (!ariadne) {
+					return toolFailure(herdError("HOST_API_MISMATCH", "Beacons are disabled in this session"));
+				}
+				const root = rootFor(ctx);
+				const sessionKey = hostSessionKey(ctx, root);
+				const beacon = ariadne.getBeacon(sessionKey, params.target);
+				if (!beacon) {
+					return toolFailure(
+						herdError("PROGRAM_UNKNOWN", `Unknown Beacon: ${params.target}`, {
+							target: params.target,
+							beacons: ariadne.listBeacons(sessionKey).map((b) => b.name),
+						}),
+					);
+				}
+				try {
+					let complete = deps.completeSimple;
+					if (typeof complete !== "function") {
+						const piAi = await import("@oh-my-pi/pi-ai");
+						complete = piAi?.completeSimple;
+					}
+					const model = ctx?.model;
+					const sessionId = ctx?.sessionManager?.getSessionId?.();
+					let apiKey;
+					if (model && ctx?.modelRegistry) {
+						if (typeof ctx.modelRegistry.getApiKey === "function") {
+							apiKey = await ctx.modelRegistry.getApiKey(model);
+						} else if (typeof ctx.modelRegistry.resolver === "function") {
+							apiKey = ctx.modelRegistry.resolver(model, sessionId);
+						}
+					}
+					const systemPrompt =
+						typeof ctx?.getSystemPrompt === "function"
+							? ctx.getSystemPrompt()
+							: `${COMMON_CORE_TEXT}\n\n${DOGFOOD_SURFACE_TEXT}`;
+					const res = await queryBeacon({
+						beacon,
+						question: params.question,
+						model,
+						apiKey,
+						systemPrompt,
+						complete,
+						signal,
+					});
+					return {
+						content: [{ type: "text", text: res.answer }],
+						details: { target: res.target, retried: res.retried },
+					};
+				} catch (error) {
+					return toolFailure(error);
+				}
+			},
+		});
+	} catch (error) {
+		failures.push("ask_beacon");
+		recordHealth({
+			entry: ENTRY,
+			status: "failed",
+			version: VERSION,
+			capabilities: { tool: "ask_beacon" },
+			requiredCapabilities: ["tool"],
+			degraded: true,
+			error: errorText(error),
+		});
+	}
 	pi.registerCommand?.("clj-status", {
 		description: "Show the ClojureScript sandbox health.",
 		async handler(_args, ctx) {
@@ -1169,7 +1264,10 @@ export function registerCljTools(pi, deps = {}) {
 			return undefined;
 		};
 		pi.on("session_start", resurface);
-		pi.on("before_agent_start", resurface);
+		hackSystemPrompt(pi, async () => resurface(), {
+			block: `${COMMON_CORE_TEXT}\n\n${DOGFOOD_SURFACE_TEXT}`,
+			entry: `${ENTRY}.systemPrompt`,
+		});
 		if (ariadne) {
 			const settle = (_event, ctx) => {
 				const root = rootFor(ctx);
@@ -1186,33 +1284,21 @@ export function registerCljTools(pi, deps = {}) {
 			const sessionKey = hostSessionKey(ctx, root);
 			const pool = state.pools.get(sessionKey);
 			const parkedPrograms = pool?.parkedList ?? [];
-			const jump = ariadne ? ariadne.consumePendingJump(sessionKey) : null;
+			const leap = ariadne ? ariadne.consumePendingLeap(sessionKey) : null;
 			let baseMessages = event?.messages;
-			let branchBaseMessages;
-			if (jump) {
-				ariadne.attachLeavingSnapshot(
+			if (leap) {
+				ariadne.attachBeaconSnapshot(
 					sessionKey,
-					jump.leavingName,
+					leap.leavingBeaconName,
 					event?.messages,
 					ctx?.sessionManager?.getLeafId?.(),
 				);
-				const applied = applyVerseJumpToMessages(event?.messages, jump, ctx?.sessionManager);
+				const applied = applyTimeLeapToMessages(event?.messages, leap);
 				baseMessages = applied.messages;
-				if (applied.branchSwitched && ctx?.sessionManager) {
-					if (typeof ctx.sessionManager.buildSessionContext === "function") {
-						const built = ctx.sessionManager.buildSessionContext();
-						if (Array.isArray(built?.messages)) branchBaseMessages = built.messages;
-					} else if (typeof ctx.sessionManager.getBranch === "function") {
-						branchBaseMessages = ctx.sessionManager
-							.getBranch()
-							.filter((e) => e && e.type === "message" && e.message)
-							.map((e) => e.message);
-					}
-				}
 			}
 			const ariadneBlock = ariadne ? ariadne.formatAriadneBlock(sessionKey) : null;
 			const messages = appendOutboundContextTail(baseMessages, { parkedPrograms, ariadneBlock });
-			return branchBaseMessages !== undefined ? { messages, branchBaseMessages } : { messages };
+			return { messages };
 		});
 	}
 

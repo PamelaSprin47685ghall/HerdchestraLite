@@ -2082,7 +2082,7 @@ export async function startAuditBatch({ root, slug, caseSpecs, caseEdn, s1Summar
 	const tools =
 		Array.isArray(depsSet.tools) && depsSet.tools.length > 0
 			? depsSet.tools.map(String)
-			: ["clj_auditor", "submit_case_audit", "ask_previous_scope", "assume", "yield"];
+			: ["clj_auditor", "submit_case_audit", "yield"];
 	const submissionPort =
 		typeof depsSet.collectSubmission === "function"
 			? depsSet.collectSubmission

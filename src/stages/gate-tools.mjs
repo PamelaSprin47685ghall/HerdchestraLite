@@ -80,7 +80,9 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { gatedObject } from "../scope/schema.mjs";
+function gatedObject(Type, properties, options = { additionalProperties: false }) {
+	return Type.Object(properties, options);
+}
 import { herdError, isHerdError, printEdn, renderError } from "../util/errors.mjs";
 import { currentBriefing } from "./disclosures.mjs";
 import { validateModuleCoverage, validateS1, validateS2, validateS3, validateS4 } from "./parsers.mjs";

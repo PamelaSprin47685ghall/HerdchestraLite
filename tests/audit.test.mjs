@@ -706,7 +706,7 @@ describe("startAuditBatch", () => {
 		expect(first.task).not.toContain("CASE-02");
 		expect(first.task).not.toContain("case two marker");
 		expect(first.task).toContain("herd-demo-CASE-01");
-		expect(first.tools).toEqual(["clj_auditor", "submit_case_audit", "ask_previous_scope", "assume", "yield"]);
+		expect(first.tools).toEqual(["clj_auditor", "submit_case_audit", "yield"]);
 		expect(first.restrictToolNames).toBe(false);
 		expect(first.enableMCP).toBe(false);
 		expect(first.enableLsp).toBe(false);
@@ -772,7 +772,7 @@ describe("startAuditBatch", () => {
 		expect(plans.length).toBe(2);
 		expect(plans.every((plan) => plan.ok === true)).toBe(true);
 		const request = plans[0].request;
-		expect(request.agent.tools).toEqual(["clj_auditor", "submit_case_audit", "ask_previous_scope", "assume", "yield"]);
+		expect(request.agent.tools).toEqual(["clj_auditor", "submit_case_audit", "yield"]);
 		expect(request.restrictToolNames).toBe(false);
 		expect(request.preloadedExtensionPaths).toEqual([join(fixture.root, "plugin-extension.mjs")]);
 		expect(request.modelOverride).toEqual(["test/model"]);

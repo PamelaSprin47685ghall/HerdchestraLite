@@ -22,9 +22,6 @@ import { buildCaseAuditorPrompt, ROLE_PROMPTS_EARLY, ROLE_PROMPTS_LATE } from ".
 import { buildUnattendedNudge, LANGUAGE_SKILL, rewriteVibeModeContext } from "./prompts/runtime-wires.mjs";
 import { createSandboxedRunCommand, sandboxCapability } from "./sandbox/bwrap.mjs";
 import { createAuditorSandbox } from "./sandbox/session.mjs";
-import { askPreviousScope, assume, ledgerFor } from "./scope/ledger.mjs";
-import { projectMessages, relocateCacheBreakpoints } from "./scope/projection.mjs";
-import { gatedObject as sharedGatedObject, gatedPlainSchema as sharedGatedPlainSchema } from "./scope/schema.mjs";
 import {
 	commitS2,
 	createMission,
@@ -122,24 +119,22 @@ const FORBIDDEN_BARE_TOOLS = Object.freeze([
 const AUDITOR_SANDBOX = sandboxCapability();
 
 const ROLE_SURFACES = Object.freeze({
-	"Plan DevOps": Object.freeze(["clj_devops", "submit_devops_report", "ask_previous_scope", "assume", "yield"]),
-	Reviewer: Object.freeze(["clj_review", "submit_review", "ask_previous_scope", "assume", "yield"]),
-	"Swarm Worker": Object.freeze(["clj_worker", ...WORKER_BOARD_TOOLS, "ask_previous_scope", "assume", "yield"]),
+	"Plan DevOps": Object.freeze(["clj_devops", "submit_devops_report", "yield"]),
+	Reviewer: Object.freeze(["clj_review", "submit_review", "yield"]),
+	"Swarm Worker": Object.freeze(["clj_worker", ...WORKER_BOARD_TOOLS, "yield"]),
 	"Swarm Holder": Object.freeze([
 		"clj_worker",
 		...WORKER_BOARD_TOOLS,
 		"board_take_or_die",
 		"abandon_slice",
-		"ask_previous_scope",
-		"assume",
-		"yield",
+						"yield",
 	]),
 	"Manual Auditor": Object.freeze(
 		AUDITOR_SANDBOX.available
-			? ["clj_auditor", "submit_case_audit", "ask_previous_scope", "assume", "yield"]
-			: ["submit_case_audit", "ask_previous_scope", "assume", "yield"],
+			? ["clj_auditor", "submit_case_audit", "yield"]
+			: ["submit_case_audit", "yield"],
 	),
-	"Blocker Oracle": Object.freeze(["clj_review", "submit_oracle_advice", "ask_previous_scope", "assume", "yield"]),
+	"Blocker Oracle": Object.freeze(["clj_review", "submit_oracle_advice", "yield"]),
 });
 
 export async function boardRoleExitReady(state, ctx) {
@@ -176,19 +171,17 @@ const ROLE_PROMPTS = Object.freeze({
 });
 
 const STAGE_SURFACES = Object.freeze({
-	s1: Object.freeze(["clj_plan", "advance_s1", "ask_user", "devops", "ask_previous_scope", "assume"]),
-	s2: Object.freeze(["clj_plan", "advance_s2", "realign_frozen", "devops", "ask_previous_scope", "assume"]),
-	s3: Object.freeze(["clj_plan", "advance_s3", "realign_frozen", "devops", "ask_previous_scope", "assume"]),
-	s4: Object.freeze(["clj_plan", "advance_s4", "realign_frozen", "devops", "ask_previous_scope", "assume"]),
+	s1: Object.freeze(["clj_plan", "advance_s1", "ask_user", "devops"]),
+	s2: Object.freeze(["clj_plan", "advance_s2", "realign_frozen", "devops"]),
+	s3: Object.freeze(["clj_plan", "advance_s3", "realign_frozen", "devops"]),
+	s4: Object.freeze(["clj_plan", "advance_s4", "realign_frozen", "devops"]),
 	s5: Object.freeze([
 		"ask_user",
 		"realign_frozen",
 		"fork_slices",
 		"join_slice",
 		"gc_worktrees",
-		"ask_previous_scope",
-		"assume",
-	]),
+					]),
 });
 
 const ROLE_TOKEN = /^\[HERD_ROLE: ([A-Za-z][A-Za-z0-9 _-]*) nonce=([A-Za-z0-9_-]{8,128})\]$/;
@@ -1313,11 +1306,11 @@ function trustedDevopsSlug(state, ctx, fallback) {
 }
 
 function gatedObject(properties, options = { additionalProperties: false }) {
-	return sharedGatedObject(Type, properties, options);
+	return Type.Object(properties, options);
 }
 
 function gatedPlainSchema(schema) {
-	return sharedGatedPlainSchema(schema);
+	return schema;
 }
 
 function registerSandboxTool(pi, toolName, role) {
@@ -1329,8 +1322,7 @@ function registerSandboxTool(pi, toolName, role) {
 			{
 				name: Type.String({ minLength: 1 }),
 				code: Type.String({ minLength: 1 }),
-				intent: Type.String({ minLength: 1 }),
-			},
+							},
 			{ additionalProperties: false },
 		),
 		async execute(toolCallId, params, signal, _onUpdate, ctx) {
@@ -1790,50 +1782,6 @@ function registerRealignTool(pi) {
 }
 
 function registerScopeAndAuditTools(pi) {
-	pi.registerTool({
-		name: "ask_previous_scope",
-		label: "Ask Previous Scope",
-		description: "Read the previous Scope conclusion from the session ledger.",
-		parameters: Type.Object({ query: Type.Optional(Type.String()) }, { additionalProperties: false }),
-		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-			const state = stateFor(ctx);
-			try {
-				const ledger = ledgerFor(state.id, state.id);
-				return toolOk(
-					askPreviousScope(ledger, {
-						questions: typeof params?.query === "string" ? params.query : "",
-						callId: toolCallId,
-						deliver: (steer) => {
-							if (typeof state.pi?.sendMessage !== "function") {
-								throw new Error("host steer port is unavailable");
-							}
-							const content = steer.answer_edn ?? printEdn(steer.answer);
-							return state.pi.sendMessage(
-								{ customType: "herd-scope-answer", content, display: false },
-								{ deliverAs: "steer" },
-							);
-						},
-					}),
-				);
-			} catch (error) {
-				return toolFail(error);
-			}
-		},
-	});
-	pi.registerTool({
-		name: "assume",
-		label: "Assume",
-		description: "Record one explicit lemma in the Scope ledger.",
-		parameters: Type.Object({ lemma: Type.String({ minLength: 1 }) }, { additionalProperties: false }),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const state = stateFor(ctx);
-			try {
-				return toolOk(assume(ledgerFor(state.id, state.id), params.lemma));
-			} catch (error) {
-				return toolFail(error);
-			}
-		},
-	});
 	pi.registerTool({
 		name: "submit_case_audit",
 		label: "Submit Case Audit",
@@ -3704,32 +3652,13 @@ export default async function activate(pi) {
 		};
 	});
 
-	pi.on("context", (event, ctx) => {
-		const state = stateFor(ctx);
-		if (!state.slug || state.role) return undefined;
-		try {
-			const messages = projectMessages({
-				messages: event.messages,
-				ledger: ledgerFor(state.id, state.id),
-				currentBriefing: missionBriefing(state.mission?.stage),
-			});
-			return { messages };
-		} catch (error) {
-			recordHealth({
-				entry: "main.context",
-				status: "degraded",
-				version: "1",
-				degraded: true,
-				error: String(error?.message ?? error),
-			});
-			return undefined;
-		}
+	pi.on("context", (_event, _ctx) => {
+		return undefined;
 	});
 
 	pi.on("before_provider_request", (event) => {
 		try {
 			rewriteOutboundPayload(event.payload);
-			relocateCacheBreakpoints(event.payload);
 		} catch {
 			// Projection failure must not drop the request.
 		}

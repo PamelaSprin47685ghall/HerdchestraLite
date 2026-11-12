@@ -51,13 +51,9 @@ function fakeHost({ active, baseWaitMs } = {}) {
 }
 
 function forkTool(tools, name, id, params, cwd) {
-	return tools.get(name).execute(
-		id,
-		{ ariadne_budget: 5, ariadne_goal: "dogfood test", ...params },
-		undefined,
-		undefined,
-		{ cwd },
-	);
+	return tools
+		.get(name)
+		.execute(id, { ariadne_budget: 5, ariadne_goal: "dogfood test", ...params }, undefined, undefined, { cwd });
 }
 
 function waitTool(tools, id, nextIndependentWork, cwd) {
@@ -118,11 +114,12 @@ describe("clj-only async dogfood surface", () => {
 	it("registers the four sandbox tools and unified wait", () => {
 		const { tools } = fakeHost();
 		expect([...tools.keys()].sort()).toEqual([
+			"ask_beacon",
 			"clj_devops",
 			"clj_plan",
 			"clj_review",
 			"clj_worker",
-			"verse_jump",
+			"time_leap",
 			"wait",
 		]);
 	});
@@ -235,16 +232,12 @@ describe("clj-only async dogfood surface", () => {
 
 	it("delegates to the native wait when no sandbox task is running", async () => {
 		const { tools } = fakeHost();
-		const res = await tools.get("wait").execute(
-			"w-host",
-			{ otherwise_independent_work: "no sandbox task is running" },
-			undefined,
-			undefined,
-			{
+		const res = await tools
+			.get("wait")
+			.execute("w-host", { otherwise_independent_work: "no sandbox task is running" }, undefined, undefined, {
 				cwd: root,
 				invokeTool: async () => ({ content: [{ type: "text", text: "host-ok" }], details: { op: "wait", jobs: [] } }),
-			},
-		);
+			});
 		expect(res.isError).not.toBe(true);
 		expect(res.content[0].text).toContain("host-ok");
 	});
@@ -258,20 +251,22 @@ describe("clj-only async dogfood surface", () => {
 			{ name: "idle-host", code: `(call {:argv ["sh" "-c" "sleep 1.1; printf sandbox-ok"]})` },
 			root,
 		);
-		const res = await tools.get("wait").execute(
-			"w-idle-host",
-			{ otherwise_independent_work: "host has nothing; keep waiting for the sandbox" },
-			undefined,
-			undefined,
-			{
-				cwd: root,
-				invokeTool: async () => ({
-					content: [{ type: "text", text: "Nothing to wait for: no background job." }],
-					details: { op: "wait", jobs: [] },
-					useless: true,
-				}),
-			},
-		);
+		const res = await tools
+			.get("wait")
+			.execute(
+				"w-idle-host",
+				{ otherwise_independent_work: "host has nothing; keep waiting for the sandbox" },
+				undefined,
+				undefined,
+				{
+					cwd: root,
+					invokeTool: async () => ({
+						content: [{ type: "text", text: "Nothing to wait for: no background job." }],
+						details: { op: "wait", jobs: [] },
+						useless: true,
+					}),
+				},
+			);
 		expect(res.isError).not.toBe(true);
 		expect(res.content[0].text).toContain("sandbox-ok");
 		expect(res.details.source).toBe("sandbox");

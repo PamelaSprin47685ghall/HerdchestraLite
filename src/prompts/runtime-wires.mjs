@@ -39,26 +39,7 @@ export const TOOL_GATE_DEFINITIONS = Object.freeze({
 		description:
 			"Maintain aggressive causal parallelism (Brooks check: disjoint contracts/slices ready to run concurrently; target total workload in turns / 100). Never skimp on dispatching independent work.",
 	},
-	intent: {
-		type: "string",
-		minLength: 1,
-		description:
-			"Concise zh-cn action intent after passing the 3 introspection gates; allocates execution deadline (UTF-8 byteLength * 50ms).",
-	},
-	scope: {
-		type: "object",
-		additionalProperties: false,
-		required: ["kind"],
-		properties: {
-			kind: { type: "string", enum: ["resetScope", "keepLast", "removeLast", "meToo"] },
-			new_scope_goal: { type: "string", minLength: 1 },
-			new_scope_retention_budget: { type: "integer", minimum: 1 },
-			replacement: { type: "string", minLength: 1 },
-		},
-		description: "Mandatory Scope annotation (`COMMON # Scope`). Stripped before tool execution.",
-	},
 });
-
 /**
  * Build the unattended nudge that names the current legal exit tool.
  * Empty obligation/park sections are omitted.
