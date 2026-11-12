@@ -8,7 +8,7 @@ import {
 	gateTypeProperties,
 	injectGateFields,
 	stripGateFields,
-} from "../src/tool-gate/schema.mjs";
+} from "../src/scope/schema.mjs";
 
 const WORKERS = "more_workers_without_hitting_mythical_man_month";
 const INTENT = "intent";

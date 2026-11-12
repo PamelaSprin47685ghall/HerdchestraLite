@@ -267,11 +267,11 @@ describe("host imports", () => {
 
 describe("host health", () => {
 	it("records an ok entry and reads a sorted frozen snapshot", () => {
-		expect(recordHealth({ entry: "tool-gate", status: "ok", version: "1.0.0" }).ok).toBe(true);
+		expect(recordHealth({ entry: "scope", status: "ok", version: "1.0.0" }).ok).toBe(true);
 		expect(recordHealth({ entry: "main", status: "ok", version: "1.0.0" }).ok).toBe(true);
 
 		const snapshot = readHealth();
-		expect(snapshot.entries.map((entry) => entry.entry)).toEqual(["main", "tool-gate"]);
+		expect(snapshot.entries.map((entry) => entry.entry)).toEqual(["main", "scope"]);
 		expect(Object.isFrozen(snapshot)).toBe(true);
 		expect(Object.isFrozen(snapshot.entries)).toBe(true);
 		expect(() => snapshot.entries.push({})).toThrow();

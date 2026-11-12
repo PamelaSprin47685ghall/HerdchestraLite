@@ -80,7 +80,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { gatedObject } from "../tool-gate/schema.mjs";
+import { gatedObject } from "../scope/schema.mjs";
 import { herdError, isHerdError, printEdn, renderError } from "../util/errors.mjs";
 import { currentBriefing } from "./disclosures.mjs";
 import { validateModuleCoverage, validateS1, validateS2, validateS3, validateS4 } from "./parsers.mjs";

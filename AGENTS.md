@@ -1,5 +1,4 @@
-    │   ├── subprocess.mjs        # runSubprocess 封装（超时、递归 AbortSignal、Agent Hub 产物）
-    │   └── hack-context.mjs      # O(1) branch+append 最小 delta 持久化 context 包装器|`tool-gate` 只注入两个字段，无 Scope/intent|注入 `scope`/`intent`/并发自检；执行前剥离（语言约束由 `context` 尾注统一承担）。||**上下文与界面**|Wire Schema 级 `scope` / `intent` 注入与剥离、`context` 请求尾注总是注入语言要求（可选附带残余 `:parked` 提醒）；# 万象术轻量版 Herdchestra Lite 用户指南与系统总规格书
+# 万象术轻量版 Herdchestra Lite 用户指南与系统总规格书
 
 > 本说明书阐明万象术轻量版（Herdchestra Lite）的完整用户侧行为、五阶段研发协议、ClojureScript 沙箱工具面、蜂群协作原语、并发实操验收机制与 `omp` 宿主边界，是本仓库产品与代码的最高依据（SSOT）。
 > 本文件只能由人类操作员批准修改；S1 门禁的“手工批准”及其隔离测试例外不适用于本文件的修改。AI 有权利和义务让各子目录局部规格说明（`AGENTS.md`）、源码与 `DEBT.md` 追上本文件的最新状态，无需请示，直接实施。
@@ -126,8 +125,8 @@ Lite 的实现只能依赖以下宿主语义。具体类型签名以 `omp` 当�
 
 | 能力 | Lite 的用法 | 降级要求 |
 |---|---|---|
-| 扩展清单入口 | `package.json` 的 `omp.extensions` / `pi.extensions` 声明 `bootstrap-main.mjs` 与 `tool-gate/index.mjs`；入口惰性 `import()` 业务模块。 | 任一入口加载失败不得阻断另一个入口或宿主会话；失败只让相关能力不可用，并在 `/herd-status health` 中报告。 |
-| 扩展工厂与钩子 | `pi.on("before_agent_start" \| "context" \| "before_provider_request" \| "tool_call" \| "tool_execution_end" \| "agent_end" \| "session_start", ...)`；`pi.registerTool`、`pi.registerCommand`、`pi.setActiveTools`、`pi.typebox`。`before_agent_start` 返回 `{systemPrompt}`；`context` 返回 `{messages}`；`before_provider_request` 返回替换后的 payload；`tool_call` 返回 `{block, reason}`，18.x 另支持 `{input}` 改写。 | 钩子缺失时禁用对应功能，不抛到宿主主循环；16.x 若不支持 `{input}`，tool-gate 必须降级为“只注入、不剥离”，并让工具执行器忽略未知字段。 |
+| 扩展清单入口 | `package.json` 的 `omp.extensions` / `pi.extensions` 声明单个主入口（当前 dogfood 为 `clj-main.mjs`，完整版为 `bootstrap-main.mjs`）；入口惰性 `import()` 业务模块。 | 加载失败不得阻断宿主会话；失败只让相关能力不可用，并在 `/herd-status health` 中报告。 |
+| 扩展工厂与钩子 | `pi.on("before_agent_start" \| "context" \| "before_provider_request" \| "tool_call" \| "tool_execution_end" \| "agent_end" \| "session_start", ...)`；`pi.registerTool`、`pi.registerCommand`、`pi.setActiveTools`、`pi.typebox`。`before_agent_start` 返回 `{systemPrompt}`；`context` 返回 `{messages}`；`before_provider_request` 返回替换后的 payload；`tool_call` 返回 `{block, reason}`，18.x 另支持 `{input}` 改写。 | 钩子缺失时禁用对应功能，不抛到宿主主循环；16.x 若不支持 `{input}`，Scope 门禁必须降级为“只注入、不剥离”，并让工具执行器忽略未知字段。 |
 | 子代理执行器 | `runSubprocess({ cwd, agent, task, index, id, signal, sessionFile, artifactsDir, eventBus, outputSchema, modelOverride, modelRegistry, settings, ... })`。`agent` 必须是完整 `AgentDefinition` 对象，不是名字；`artifactsDir` 是子会话 transcript 落盘的唯一开关；`sessionFile` 是父会话链接；`eventBus`/`subagentEventBus` 提供 Agent Hub 实时 progress；`persistArtifacts` 当前不要依赖。 | 子代理启动失败必须留下槽位与责任，不得把任务悄悄丢失；没有 `artifactsDir` 时回执必须明示“仅内存可见”；重启补位。 |
 | 工具面收敛 | 使命激活时只保留当前角色工具与 Scope 辅助；封禁宿主裸 `read` / `write` / `edit` / `bash` 的绕过路径。 | 无法收敛时必须在系统提示词与门禁层双重拒绝，不能只靠模型自觉。 |
 | TUI | `ctx.ui.setWidget(key, content, { placement: "aboveEditor" })` 挂载组件；字符串数组形式最多 10 行，组件工厂形式由 `render(width)` 返回的行数决定高度；全局键盘用 `pi.registerShortcut` 或 `ctx.ui.onTerminalInput`（widget 不自动获得焦点）。 | 宿主不提供组件挂载时，`/herd-status` 仍输出同源文本状态；核心协议不依赖 TUI。 |
@@ -1187,9 +1186,9 @@ COMMON_RULES
 
 **子代理提示词**：每个 `runSubprocess` 子代理的提示词必须自包含：角色、阶段/Slice、冻结契约路径、当前看板摘要、当前任务/责任、可用工具、验收条件、退出工具。子代理不继承主会话对话；不要写“如上所述”或“按我们刚才说的”。
 
-### 5.2 Wire Schema 协议门
+### 5.2 Scope Wire Schema 协议门
 
-`tool-gate` 是独立清单入口，负责在 `before_provider_request` 给请求体中的工具 Schema 注入必需字段，并在 `tool_call` 执行前核验、记账、剥离。底层工具收不到这些字段。
+第 1、2、3 项（Schema 注入、准入/记账与剥离）按功能归属 `Scope`（`src/scope/schema.mjs` + `src/scope/gate.mjs`），不再设立独立 `tool-gate` 清单入口，也不保留重复的第 4 项裸工具/角色令牌守卫（工具面由黑名单减法与 `AgentDefinition.tools` 负责）。
 
 #### 5.2.1 注入字段
 
@@ -1984,7 +1983,7 @@ export function buildUnattendedNudge({ stage, expectedTool, openItems = [], park
 
 1. **不得静默改写**：修改 `COMMON`、S1–S5 简报或角色提示词，必须先改本文件，再改实现；同一次变更内更新测试。删掉的旧文案若仍有历史价值，写入 `HISTORY.md`。
 2. **零剧透测试**：用字符串断言 S1 出站请求不含 `James Bach`、`case_id`、`rubric`、`cases.edn`、`mapped_cases`、`submit_case_audit`；`advance_s1` 成功后 S2 简报出现；`advance_s2` 成功后 S3 简报出现，且 S2 专属字段名（`case_id`、`rubric`、`cases.edn`）不再出现。
-3. **工具名一致性测试**：提示词中出现的工具名必须在 `tool-gate` 的注册表中存在；不存在的工具名视为提示词 bug。
+3. **工具名一致性测试**：提示词中出现的工具名必须在扩展注册表中存在；不存在的工具名视为提示词 bug。
 4. **长度纪律**：`COMMON` 已很长，不要继续堆叠通用工程建议。新规则只在它能改变一个具体决策或检查项时加入；否则放进本文件，不放进系统提示词。
 5. **语言纪律**：英文提示词保留原文，中文纪律保留原文；不要为了“统一语言”把两者互相翻译，翻译会丢失语气与判准。
 6. **反懦夫条款不可软化**：不得把 `Override grandpa rules` 改成 `follow best practices`，不得把“禁止半途而废”改成“尽量完成”，不得把“禁止等待用户授权”改成“必要时可以询问”。
@@ -2025,10 +2024,9 @@ HerdchestraLite/
     │   ├── glob-pool.mjs         # 多核 Worker 池（glob :exec 并发求值）
     │   ├── vfs.mjs               # 批内内存 VFS、stamp 采集、W 提交流水线
     │   └── tools.mjs             # clj_plan / clj_devops / clj_review / clj_worker / clj_auditor
-    ├── tool-gate/
-    │   ├── index.mjs             # 清单入口 2：注入/剥离 scope、intent
-    │   └── schema.mjs            # OpenAI/Anthropic/Google/Bedrock 多传输 Schema 注入
     ├── scope/
+    │   ├── schema.mjs            # OpenAI/Anthropic/Google/Bedrock 多传输 Scope Schema 注入与剥离
+    │   ├── gate.mjs              # Scope 准入、回合结算与剥离挂接（无独立 tool-gate）
     │   ├── ledger.mjs            # Scope 准入、回合结算、retention、ask_previous_scope/assume
     │   └── projection.mjs        # 出站裁剪、阶段简报钉住/退役、锚点重放、缓存断点前移
     ├── stages/
@@ -2045,7 +2043,7 @@ HerdchestraLite/
     ├── prompts/
     │   ├── common.mjs            # COMMON（无 S2–S5 剧透）
     │   ├── roles.mjs             # 角色提示词与 buildCaseAuditorPrompt
-    │   └── runtime-wires.mjs     # LANGUAGE_SKILL、tool-gate 定义、Nudge
+    │   └── runtime-wires.mjs     # LANGUAGE_SKILL、Scope/Wire 定义、Nudge
     └── tui/
         ├── dashboard-model.mjs   # 纯数据看板与审计矩阵模型
         └── dashboard-widget.mjs  # pi-tui 双态渲染与 applyStableHeightBound
@@ -2056,7 +2054,7 @@ HerdchestraLite/
 
 ```text
 host/util → clj-sandbox → stages/swarm → prompts/tui → main
-tool-gate/scope → main
+scope → main
 ```
 
 底层模块不得 import 上层；`main.mjs` 只装配，不实现看板/门禁逻辑。任何循环依赖视为设计缺陷。
@@ -2155,7 +2153,7 @@ tool-gate/scope → main
 
 1. `util/atomic-write`、`util/file-lock`、`clj-sandbox/ufss`：先把原子写、锁、UFSS 双射打牢。
 2. `clj-sandbox/evaluator`、`where`、`vfs`、`tools`：沙箱隔离、VFS、续体、能力矩阵。
-3. `tool-gate`、`scope`：Schema 注入/剥离、Scope 准入/裁剪、阶段简报钉住。
+3. `scope`：Schema 注入/剥离、Scope 准入/裁剪、阶段简报钉住。
 4. `stages`：disclosures、parsers（CASE Schema 校验与序列化）、contract、gate-tools、scores；先用假文档与严格 `cases` 数据跑通 S1–S4 门禁。
 5. `swarm`：board、worktree、runner、auditors；先单 Slice 双个体，再多 Slice。
 6. `prompts`、`tui`、命令：最后接上人机界面；核心协议不依赖 TUI。
@@ -2167,7 +2165,7 @@ tool-gate/scope → main
 2. 删除所有猴子补丁：`AgentSession.prototype.getContextUsage`、`TUI.prototype` 主题 getter、`_goalCore` 私有属性、`xd://context_compact` 历史改写、`goalService.apply` 替换、Proxy UI 垫片。
 3. 删除旧 CASE Markdown 解析路径：`parseS2Cases`、`extractCaseBlocks`、`extractCaseBlock`、`loadS2Markdown`、`rubric_summary`、`rawBlock` 及任何 Markdown 回退分支；把旧 `s2-manual-tests.md` 中的可执行 CASE 一次性迁移到 `.herd/missions/<slug>/cases.edn`，Markdown 只保留方法论。迁移只由离线迁移工具执行一次，**不进入运行时**；迁移后不得双写、不得从 Markdown 提取或对照 CASE，也不得保留运行时 Markdown 解析回退。旧产物保留只读。
 4. 把 `docs/manual-acceptance/<slug>/requirements.md` 等旧流程迁移为 `plans/<slug>/s1..s5`；旧产物保留只读，不静默删除。
-5. 更新 `package.json`：运行时依赖只保留 `cherry-cljs`；`omp.extensions` / `pi.extensions` 只声明 `bootstrap-main.mjs` 与 `tool-gate/index.mjs`；`engines.bun` 保留。
+5. 更新 `package.json`：运行时依赖只保留 `cherry-cljs`；`omp.extensions` / `pi.extensions` 只声明单主入口（`clj-main.mjs` 或 `bootstrap-main.mjs`）；`engines.bun` 保留。
 6. 重新 `omp plugin link`；用 `/herd` 跑一个小型真实使命，验证 S1 门禁、S2–S4 自动、S5 单 Slice、K=1 审计、结案。
 7. 迁移后删除旧路径别名、旧工具名与兼容 shim；不留“先走旧路”的隐藏分支。
 
@@ -2240,7 +2238,7 @@ tool-gate/scope → main
 | 旧实现 | 新 Lite 规格 |
 |---|---|
 | `dependencies: { pi-context, pi-goal-x }` | 运行时只保留 `cherry-cljs`；删除两个旧依赖。 |
-| 三个清单入口，含 `bootstrap-editor-theme` | 两个入口：`bootstrap-main` + `tool-gate/index`；主题垫片删除。 |
+| 三个清单入口，含 `bootstrap-editor-theme` | 单一主入口（Scope 归属 `src/scope/`）；主题垫片与 `tool-gate` 删除。 |
 | `installLiveSessionCapture` 改写 `AgentSession.prototype.getContextUsage` | 禁止任何原型猴子补丁；上下文用量只读宿主公开 API。 |
 | `TUI.prototype` 主题 getter、`goalUi` Proxy | 删除；TUI 只使用公开组件接口。 |
 | `_goalCore` 私有属性、`goalService.apply` 替换 | 删除；完成闸门由 Lite 自己的审计/批准状态机实现。 |
@@ -2249,7 +2247,7 @@ tool-gate/scope → main
 | 从 `s2-manual-tests.md` 解析 `### CASE-*`、阈值与 `rubric_summary`，再与结构化数组逐项对账 | CASE 作为严格 Schema 的 `cases` 参数提交，独立持久化为 `.herd/missions/<slug>/cases.edn`；Markdown 只写方法论；不解析、不双写、不对照。 |
 | 单一 auditor 串行跑全部 CASE，60 分钟 | K 名 auditor 并发，一 CASE 一名，30 分钟；框架汇总。 |
 | 无 Nudge 实现 | Nudge + 空转退避 + 上游退避是核心协议。 |
-| `tool-gate` 只注入两个字段，无 Scope/intent | 注入 `scope`/`intent`/中文锚点/并发自检；执行前剥离。 |
+| `tool-gate` 只注入两个字段，无 Scope/intent | 归属 `Scope`（`src/scope/`）统一注入与剥离 `scope`（语言约束由 `context` 尾注统一承担）。 |
 | 无多 Worktree 编排 | `fork_slices`/`join_slice` + FIFO + 集成锁 + 7 天 GC。 |
 | 无 `cherry-cljs` 沙箱 | REPL、VFS、`where`/`park`/`unpark`。 |
 | 同目录多子代理无写锁 | 单 Worktree 写锁 $W$ + 批内 VFS + `stamp` 复核。 |
@@ -2371,7 +2369,7 @@ tool-gate/scope → main
 | 看板依赖 | `board_finish.dependency_paths` 是 `string[]` 工作区路径；`wait_for` 是任务 ID 或带 `condition:` 前缀的条件键 | 明确文件依赖与任务等待是两种对象；条件键仍由既有看板事件满足 | 把任务 ID 放进 `dependency_paths`；用无法判别的裸字符串表示条件 |
 | 沙箱语言 | 保留 ClojureScript/EDN/UFSS/VFS/park | 与标准版同构；模型可写真正的数据变换，而非拼 shell | 退回零散 read/write/bash 工具；纯 JSON 工具 |
 | 运行时依赖 | 只保留 `cherry-cljs` | 无 JVM、无构建、无猴子补丁；EDN 玩法保留 | 继续依赖 `pi-goal-x`/`pi-context`；引入重型 JS 框架 |
-| 清单入口 | 两个：`bootstrap-main` + `tool-gate` | 故障隔离足够；减少入口复杂度 | 三个入口（含独立 `workspace-gate`）；单入口 |
+| 清单入口 | 单一主入口；Scope（1–3 项）归属 `src/scope/` | 去除冗余的 `tool-gate` 第 4 项角色守卫与双入口开销 | 三个入口（含独立 `workspace-gate`）；独立 `tool-gate` 双入口 |
 | 工作区保护 | 并入 `clj-sandbox/vfs` 与 `swarm/board` | 写入必须经沙箱能力；独立入口无法拦截所有子代理 | 独立 `workspace-gate` 插件入口；只靠提示词自觉 |
 | 规划文档 | 阶段文档 `plans/<slug>/s1..s5-*.md` + S1 摘要副本 + CASE 数据集 `.herd/missions/<slug>/cases.edn` + `mission.edn` 的 `:s3-modules` | 阶段文档、摘要、CASE 数据与 S3 modules 分别冻结；文档用户可见，控制态数据可哈希、可按 ID 分发 | 单文件 `plans/<name>.md`；把 CASE 定义写进 Markdown；丢弃 `modules` 后从文档重建 |
 | 规划换任 | S1–S4 同一个 `Plan`，不换任 | 保留需求上下文与人类澄清；换任无包袱验收放在 S5 | 每阶段换干净 `Plan Reviewer` 互审 |

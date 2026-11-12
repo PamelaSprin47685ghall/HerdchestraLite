@@ -1,5 +1,5 @@
 /**
- * G0: the wire-schema side of the tool gate.
+ * Scope wire-schema injector and stripper (moved from tool-gate).
  *
  * Every non-exempt tool schema in a provider request gains three required
  * arguments. The model sees the fields. The tools never receive them because
@@ -102,6 +102,10 @@ const STRICT_SCOPE_DEFINITION = deepFreeze({
 /** The same contract without the optional scheduling self-check. */
 const GATE_DEFINITIONS_WITHOUT_WORKERS = deepFreeze({
 	[INTENT]: GATE_DEFINITIONS[INTENT],
+	[SCOPE]: GATE_DEFINITIONS[SCOPE],
+});
+
+const SCOPE_ONLY_DEFINITIONS = deepFreeze({
 	[SCOPE]: GATE_DEFINITIONS[SCOPE],
 });
 
@@ -319,11 +323,13 @@ function injectWithDefinitions(payload, definitions, exempt) {
  */
 export function injectGateFields(payload, options) {
 	const includeWorkers = !isObject(options) || options.includeWorkers !== false;
-	return injectWithDefinitions(
-		payload,
-		includeWorkers ? GATE_DEFINITIONS : GATE_DEFINITIONS_WITHOUT_WORKERS,
-		EXEMPT_TOOLS,
-	);
+	const includeIntent = !isObject(options) || options.includeIntent !== false;
+	const definitions = !includeIntent
+		? SCOPE_ONLY_DEFINITIONS
+		: includeWorkers
+			? GATE_DEFINITIONS
+			: GATE_DEFINITIONS_WITHOUT_WORKERS;
+	return injectWithDefinitions(payload, definitions, EXEMPT_TOOLS);
 }
 
 const gateTypeCache = new WeakMap();

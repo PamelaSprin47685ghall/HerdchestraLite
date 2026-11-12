@@ -24,6 +24,7 @@ import { createSandboxedRunCommand, sandboxCapability } from "./sandbox/bwrap.mj
 import { createAuditorSandbox } from "./sandbox/session.mjs";
 import { askPreviousScope, assume, ledgerFor } from "./scope/ledger.mjs";
 import { projectMessages, relocateCacheBreakpoints } from "./scope/projection.mjs";
+import { gatedObject as sharedGatedObject, gatedPlainSchema as sharedGatedPlainSchema } from "./scope/schema.mjs";
 import {
 	commitS2,
 	createMission,
@@ -73,7 +74,6 @@ import {
 	readWorktreeState,
 	worktreePaths,
 } from "./swarm/worktree.mjs";
-import { gatedObject as sharedGatedObject, gatedPlainSchema as sharedGatedPlainSchema } from "./tool-gate/schema.mjs";
 import { deriveDashboard } from "./tui/dashboard-model.mjs";
 import { DASHBOARD_TOGGLE_SHORTCUT, mountDashboard } from "./tui/dashboard-widget.mjs";
 import { writeFileAtomic } from "./util/atomic-write.mjs";
@@ -194,10 +194,7 @@ const STAGE_SURFACES = Object.freeze({
 const ROLE_TOKEN = /^\[HERD_ROLE: ([A-Za-z][A-Za-z0-9 _-]*) nonce=([A-Za-z0-9_-]{8,128})\]$/;
 
 const sessions = new Map();
-const extensionPaths = Object.freeze([
-	fileURLToPath(new URL("./bootstrap-main.mjs", import.meta.url)),
-	fileURLToPath(new URL("./tool-gate/index.mjs", import.meta.url)),
-]);
+const extensionPaths = Object.freeze([fileURLToPath(new URL("./bootstrap-main.mjs", import.meta.url))]);
 
 function isObject(value) {
 	return value !== null && typeof value === "object" && !Array.isArray(value);

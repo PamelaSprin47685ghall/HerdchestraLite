@@ -6,12 +6,11 @@
 
 当前清单（`package.json` 的 `omp.extensions` / `pi.extensions`）只有一个入口：
 
-1. `src/clj-main.mjs`：最小 dogfood 面。只注册 `clj_plan`、`clj_devops`、`clj_review`、`clj_worker` 与 `/clj-status`；不加载阶段、看板、worktree、审计、TUI 或 tool-gate。它只依赖 `clj-sandbox/*`、`host/health.mjs`、`util/file-lock.mjs`，因此不需要 omp 宿主包即可在本地测试。
+1. `src/clj-main.mjs`：最小 dogfood 面。只注册 `clj_plan`、`clj_devops`、`clj_review`、`clj_worker`、`join` 与 `/clj-status`；不加载阶段、看板、worktree、审计或 TUI。它只依赖 `clj-sandbox/*`、`host/health.mjs`、`util/file-lock.mjs`，因此不需要 omp 宿主包即可在本地测试。
 
 以下入口与模块保留给后续扩张，当前清单不加载：
 
 - `src/bootstrap-main.mjs`：惰性 `import("./main.mjs")`，调用默认工厂，并把成功/失败写入 `host/health.mjs`。
-- `src/tool-gate/index.mjs`：独立入口，负责 Scope/intent 注入、准入与剥离，并维护角色收窄；不依赖 `main.mjs`。
 - `src/main.mjs`：完整装配的保留主装配器。它注册命令、工具与 hook，连接 stage gate、board、runner、sandbox、Scope、TUI 与 subagent 适配器；不实现看板、门禁或沙箱的内部语义。
 
 `src/clj-main.mjs` 没有角色 admission：主会话可以选任一 `clj_*` 工具。该边界只适用于当前 dogfood 面，阶段层接回时必须恢复角色收窄。
@@ -61,7 +60,7 @@ tui/dashboard-widget ── tui/dashboard-model
 
 main ── 以上全部（按需注入）
 bootstrap-main ── host/health + main
-tool-gate/index ── host/health、scope/ledger、util/errors、tool-gate/schema
+scope/gate ───── scope/ledger、scope/schema
 ```
 
 规则：
@@ -87,8 +86,8 @@ tool-gate/index ── host/health、scope/ledger、util/errors、tool-gate/sche
 | `clj-sandbox/evaluator.mjs` | Promise-CPS 解释器、符号表、续体、期限 | `imports`、`errors`、`ufss`、`where` |
 | `clj-sandbox/vfs.mjs` | 批内 VFS、stamp、结构冲突、W 提交 | `atomic-write`、`errors` |
 | `clj-sandbox/tools.mjs` | 角色能力矩阵与 `clj_*` 工具面；Plan 可读冻结 `cases.edn`，Auditor 拒绝读取并只消费注入 CASE | `errors`、`evaluator`、`ufss`、`vfs` |
-| `tool-gate/schema.mjs` | 五种传输形状的注入/剥离 | — |
-| `tool-gate/index.mjs` | 入口 2 的准入与剥离、宿主子会话身份下的角色收窄 | `health`、`ledger`、`errors`、`schema` |
+| `scope/schema.mjs` | 五种传输形状的 Scope 注入/剥离 | — |
+| `scope/gate.mjs` | Scope 准入、回合结算与剥离（无独立 tool-gate） | `ledger`、`schema` |
 | `scope/ledger.mjs` | Scope 四型、预算、归档、`assume` | `errors` |
 | `scope/projection.mjs` | 出站裁剪、简报钉住、双块锚点、缓存断点 | `errors` |
 | `stages/disclosures.mjs` | S1–S5 简报文本 | — |

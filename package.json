@@ -18,7 +18,6 @@
   "exports": {
     ".": "./src/main.mjs",
     "./bootstrap-main": "./src/bootstrap-main.mjs",
-    "./tool-gate": "./src/tool-gate/index.mjs",
     "./package.json": "./package.json",
     "./clj-main": "./src/clj-main.mjs"
   },
