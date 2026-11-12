@@ -12,7 +12,7 @@
  * no lookup against `globalThis`, no `eval`, and no `Function` constructor.
  *
  * Persistence: programs live in one in-memory table per session, keyed by
- * `program_name`. A parked program keeps its continuation, lexical frames,
+ * `name`. A parked program keeps its continuation, lexical frames,
  * pending VFS state, read-set, and capability snapshot. Nothing is written to
  * disk by this module; a caller-supplied commit port performs protected writes.
  *
@@ -213,7 +213,7 @@ const FAILED = "failed";
 const ACTIVE_STATES = new Set([RUNNING, WAITING, PARKED]);
 
 /** Capabilities implemented by the evaluator itself, not by a caller port. */
-const INTERNAL_CAPABILITIES = new Set(["park", "unpark", "where", "whereAll"]);
+const INTERNAL_CAPABILITIES = new Set(["park", "unpark", "abandon", "where", "whereAll"]);
 
 /** Capability names that read the filesystem and therefore join the read-set. */
 const READ_CAPABILITIES = new Set(["cat", "stat"]);
@@ -2295,7 +2295,7 @@ function parseProgram(code, expectedName) {
 		fail("INVALID_ARGUMENT", "defprogram needs a symbol name");
 	}
 	if (name.name !== expectedName) {
-		fail("INVALID_ARGUMENT", "defprogram name does not match program_name", {
+		fail("INVALID_ARGUMENT", "defprogram name does not match name", {
 			expected: expectedName,
 			got: name.name,
 		});
@@ -2450,7 +2450,14 @@ async function waitPending(pending, state, program) {
 		if (signal.kind === "deadline") {
 			program.pending = pending;
 			state.kont.push({ type: "pendingCall", pending });
-			throw new ParkSignal("deadline", null);
+			const delta = program.activeCallHandle?.drainDelta?.();
+			const payload = delta
+				? data().mapFromEntries([
+						[V("stdout"), delta.stdout],
+						[V("stderr"), delta.stderr],
+					])
+				: null;
+			throw new ParkSignal("deadline", payload);
 		}
 		const settled = await settleWithin(pending.promise, 100);
 		if (settled?.ok) {
@@ -3214,8 +3221,19 @@ async function returnStep(session, program, state) {
 			await stringReplaceResume(frame, value, state, session, program);
 			return;
 		case "pendingCall": {
-			const result = await waitPending(frame.pending, state, program);
-			ret(state, result);
+			const pending = frame.pending;
+			const notifyCall = pending?.capability === "call" && !pending.settled;
+			if (notifyCall) {
+				session.ports?.onCallActivity?.({ active: true, program: program.name });
+			}
+			try {
+				const result = await waitPending(pending, state, program);
+				ret(state, result);
+			} finally {
+				if (notifyCall) {
+					session.ports?.onCallActivity?.({ active: false, program: program.name });
+				}
+			}
 			return;
 		}
 		case "regexCall":
@@ -6894,6 +6912,18 @@ async function invokeCapability(name, args, state, session, program) {
 		});
 		return normalizeResult(receipt);
 	}
+	if (name === "abandon") {
+		const target = mapGet(argument, V("name"), MISSING);
+		if (typeof target !== "string" || target.length === 0) {
+			fail("INVALID_ARGUMENT", "abandon needs a non-empty string :name", { function: "abandon" });
+		}
+		state.awaited = true;
+		const receipt = await abandonProgram(session, {
+			name: target,
+			callerName: program.name,
+		});
+		return normalizeResult(receipt);
+	}
 	const capability = program.capabilities.get(name);
 	if (typeof capability !== "function") {
 		fail("CAPABILITY_DENIED", `Capability ${name} is not available`, { capability: name });
@@ -7218,6 +7248,9 @@ async function executeProgram(session, program, initialState) {
 		program.discardUncertain = false;
 		program.state = COMPLETED;
 		program.kont = null;
+		program.rootEnv = null;
+		program.parkCheckpoint = null;
+		program.activeCallHandle = null;
 		return completedReceipt(program, finalValue, commit);
 	} catch (error) {
 		if (error instanceof ParkSignal) {
@@ -7419,7 +7452,7 @@ async function runProgramWork(session, request) {
 	const name = request.name;
 	const code = request.code;
 	if (typeof name !== "string" || name.length === 0) {
-		fail("INVALID_ARGUMENT", "program_name must be a non-empty string");
+		fail("INVALID_ARGUMENT", "name must be a non-empty string");
 	}
 	if (typeof code !== "string" || code.length === 0) {
 		fail("INVALID_ARGUMENT", "code must be a non-empty string");
@@ -7555,6 +7588,36 @@ export async function unpark(session, request = {}) {
 	);
 }
 
+async function abandonProgram(session, { name, callerName }) {
+	const program = session.programs.get(name);
+	if (program === undefined) {
+		fail("PROGRAM_UNKNOWN", `Program ${name} does not exist`, { program: name });
+	}
+	if (callerName !== null && callerName === name) {
+		fail("INVALID_ARGUMENT", "A program cannot abandon itself", { program: name });
+	}
+	if (program.state !== PARKED) {
+		fail("STALE_CONTROL", `Program ${name} is not parked`, { program: name, state: program.state });
+	}
+	await discardProgram(session, program);
+	program.activeCallHandle?.writeStdin?.({ eof: true });
+	program.activeCallHandle?.abort?.();
+	program.activeCallHandle = null;
+	program.pending = null;
+	program.pendingDiscard = null;
+	program.parkCheckpoint = null;
+	program.parkReason = null;
+	program.kont = null;
+	program.rootEnv = null;
+	program.state = FAILED;
+	program.aborted = { reason: "abandoned", at: sessionNow(session) };
+	return data().mapFromEntries([
+		[V("name"), name],
+		[V("state"), V("failed")],
+		[V("abandoned"), true],
+	]);
+}
+
 async function unparkProgram(session, { name, value, callerName, intentInfo }) {
 	const program = session.programs.get(name);
 	if (program === undefined) {
@@ -7597,6 +7660,19 @@ async function unparkProgram(session, { name, value, callerName, intentInfo }) {
 		return executeProgram(session, program, state);
 	}
 	const injected = normalizeResult(value);
+	const topKont = Array.isArray(program.kont) && program.kont.length > 0 ? program.kont[program.kont.length - 1] : null;
+	if (topKont?.type === "pendingCall" && injected !== null && injected !== undefined) {
+		if (typeof injected === "string") {
+			program.activeCallHandle?.writeStdin?.(injected);
+		} else if (data().isMap(injected)) {
+			const stdinVal = mapGet(injected, V("stdin"), null);
+			const eofVal = mapGet(injected, V("eof"), false);
+			program.activeCallHandle?.writeStdin?.({
+				...(typeof stdinVal === "string" ? { stdin: stdinVal } : {}),
+				...(eofVal === true ? { eof: true } : {}),
+			});
+		}
+	}
 	const state = {
 		mode: "return",
 		control: null,
@@ -7636,6 +7712,19 @@ export function parkedNames(session) {
  * Abort one program. Cancellation belongs to the current tool invocation, not
  * to the session: a later `runProgram` starts with a fresh program.
  */
+export function parkProgramOnDeadline(session, name) {
+	requireSession(session);
+	const program = session.programs.get(name);
+	if (program === undefined) {
+		return { ok: false, code: "PROGRAM_UNKNOWN", name };
+	}
+	if (program.state !== RUNNING && program.state !== WAITING) {
+		return { ok: false, code: "STALE_CONTROL", name, state: program.state };
+	}
+	program.deadlineAt = sessionNow(session);
+	program.control?.fire(new WaitSignal("deadline"));
+	return { ok: true, name, state: program.state };
+}
 export function abortProgram(session, name, reason = "operator") {
 	requireSession(session);
 	const program = session.programs.get(name);

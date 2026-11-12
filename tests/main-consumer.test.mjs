@@ -116,7 +116,7 @@ describe("main consumer path", () => {
 		const result = await bundle.tool.execute(
 			"consumer-call",
 			{
-				program_name: "p",
+				name: "p",
 				code: `(do (write {:path "note.txt" :content "from-holder"})
 				            (call {:argv ["cat", "note.txt"]}))`,
 			},
@@ -159,7 +159,7 @@ describe("main consumer path", () => {
 		});
 		const result = await bundle.tool.execute(
 			"devops-read",
-			{ program_name: "p", code: '(cat {:path "package.json"})' },
+			{ name: "p", code: '(cat {:path "package.json"})' },
 			undefined,
 			undefined,
 			{},

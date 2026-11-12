@@ -154,9 +154,19 @@ afterEach(() => {
 describe("capability matrix", () => {
 	it("matches AGENTS.md §4.2 for all six roles", () => {
 		expect(Object.keys(CAPABILITY_MATRIX)).toEqual(["plan", "devops", "review", "worker", "holder", "auditor"]);
-		expect([...CAPABILITY_MATRIX.plan]).toEqual(["cat", "where", "whereAll", "park", "unpark"]);
-		expect([...CAPABILITY_MATRIX.devops]).toEqual(["cat", "stat", "ls", "where", "whereAll", "park", "unpark", "call"]);
-		expect([...CAPABILITY_MATRIX.review]).toEqual(["cat", "stat", "ls", "where", "whereAll", "unpark"]);
+		expect([...CAPABILITY_MATRIX.plan]).toEqual(["cat", "where", "whereAll", "park", "unpark", "abandon"]);
+		expect([...CAPABILITY_MATRIX.devops]).toEqual([
+			"cat",
+			"stat",
+			"ls",
+			"where",
+			"whereAll",
+			"park",
+			"unpark",
+			"abandon",
+			"call",
+		]);
+		expect([...CAPABILITY_MATRIX.review]).toEqual(["cat", "stat", "ls", "where", "whereAll", "unpark", "abandon"]);
 		expect([...CAPABILITY_MATRIX.worker]).toEqual([
 			"cat",
 			"stat",
@@ -169,6 +179,7 @@ describe("capability matrix", () => {
 			"whereAll",
 			"park",
 			"unpark",
+			"abandon",
 		]);
 		expect(CAPABILITY_MATRIX.worker).not.toContain("call");
 		expect([...CAPABILITY_MATRIX.holder]).toEqual([...CAPABILITY_MATRIX.worker, "call"]);
@@ -240,7 +251,7 @@ describe("capability matrix", () => {
 			expect(bundle.tools).toEqual([bundle.tool]);
 			expect(typeof bundle.execute).toBe("function");
 			expect(bundle.tool.parameters.required).toEqual(["code", "intent"]);
-			expect(Object.keys(bundle.tool.parameters.properties)).toEqual(["program_name", "code", "intent"]);
+			expect(Object.keys(bundle.tool.parameters.properties)).toEqual(["name", "code", "intent"]);
 		}
 	});
 
@@ -255,7 +266,7 @@ describe("capability matrix", () => {
 		});
 		expect(bundle.session).toBe(session);
 		const { receipt } = await runTool(bundle, {
-			program_name: "p",
+			name: "p",
 			code: "1",
 		});
 		expect(keywordName(field(receipt, "state"))).toBe("completed");
@@ -291,7 +302,7 @@ describe("capability matrix", () => {
 			ports: makePorts(),
 		});
 		const { receipt } = await runTool(bundle, {
-			program_name: "p",
+			name: "p",
 			code: "1",
 		});
 		expect(keywordName(field(receipt, "state"))).toBe("completed");
@@ -338,7 +349,7 @@ describe("CallMeta and parameters", () => {
 			ports: { callMeta: { read: () => undefined } },
 		});
 		const { result, receipt } = await runTool(bundle, {
-			program_name: "p",
+			name: "p",
 			code: "1",
 		});
 
@@ -354,7 +365,7 @@ describe("CallMeta and parameters", () => {
 			ports: { callMeta: () => meta() },
 		});
 		const { receipt } = await runTool(bundle, {
-			program_name: "p",
+			name: "p",
 			code: "7",
 		});
 
@@ -370,8 +381,8 @@ describe("CallMeta and parameters", () => {
 			ports: makePorts(),
 		});
 		const [first, second] = await Promise.all([
-			runTool(bundle, { program_name: "p1", code: "1" }),
-			runTool(bundle, { program_name: "p2", code: "2" }),
+			runTool(bundle, { name: "p1", code: "1" }),
+			runTool(bundle, { name: "p2", code: "2" }),
 		]);
 		expect(first.result.isError).not.toBe(true);
 		expect(second.result.isError).not.toBe(true);
@@ -392,8 +403,8 @@ describe("CallMeta and parameters", () => {
 			ports: makePorts(),
 		});
 		const [bad, good] = await Promise.all([
-			runTool(bundle, { program_name: "bad", code: "(where)" }),
-			runTool(bundle, { program_name: "good", code: "2" }),
+			runTool(bundle, { name: "bad", code: "(where)" }),
+			runTool(bundle, { name: "good", code: "2" }),
 		]);
 		expect(keywordName(field(bad.receipt, "state"))).toBe("failed");
 		expect(bad.result.isError).toBe(true);
@@ -409,7 +420,7 @@ describe("CallMeta and parameters", () => {
 			ports: makePorts(),
 		});
 		const { result, receipt } = await runTool(bundle, {
-			program_name: "p",
+			name: "p",
 			code: "(where)",
 		});
 
@@ -429,7 +440,7 @@ describe("CallMeta and parameters", () => {
 			ports: makePorts(),
 		});
 		const { result, receipt } = await runTool(bundle, {
-			program_name: "p",
+			name: "p",
 			code: "1",
 			intent: "leaked",
 		});
@@ -445,12 +456,7 @@ describe("CallMeta and parameters", () => {
 			roots: { writeRoot: root },
 			ports: makePorts(),
 		});
-		for (const params of [
-			null,
-			{ program_name: "p" },
-			{ program_name: "p", code: "1", extra: true },
-			{ program_name: "", code: "1" },
-		]) {
+		for (const params of [null, { name: "p" }, { name: "p", code: "1", extra: true }, { name: "", code: "1" }]) {
 			const { result } = await runTool(bundle, params);
 			expect(result.isError).toBe(true);
 		}
@@ -465,7 +471,7 @@ describe("CallMeta and parameters", () => {
 			ports: makePorts({ meta: { deadlineAt: Date.now() - 1 } }),
 		});
 		const { receipt } = await runTool(bundle, {
-			program_name: "p",
+			name: "p",
 			code: '(write {:path "a.txt" :content "new"})',
 		});
 
@@ -486,7 +492,7 @@ describe("role capability boundaries", () => {
 		});
 
 		const cat = await runTool(bundle, {
-			program_name: "catp",
+			name: "catp",
 			code: '(cat {:path "s1.md"})',
 		});
 		expect(keywordName(field(cat.receipt, "state"))).toBe("completed");
@@ -498,7 +504,7 @@ describe("role capability boundaries", () => {
 			["l", '(ls {:path "."})'],
 			["c", '(call {:argv ["true"]})'],
 		]) {
-			const { receipt } = await runTool(bundle, { program_name: name, code });
+			const { receipt } = await runTool(bundle, { name: name, code });
 			expect(keywordName(field(field(receipt, "error"), "code"))).toBe("CAPABILITY_DENIED");
 		}
 	});
@@ -512,7 +518,7 @@ describe("role capability boundaries", () => {
 			ports: { callMeta: { read: () => meta() } },
 		});
 		const { receipt } = await runTool(bundle, {
-			program_name: "p",
+			name: "p",
 			code: '(cat {:path "s1.md"})',
 		});
 
@@ -531,7 +537,7 @@ describe("role capability boundaries", () => {
 			ports: makePorts(),
 		});
 		const { receipt } = await runTool(bundle, {
-			program_name: "cases",
+			name: "cases",
 			code: '(cat {:path ".herd/missions/demo/cases.edn"})',
 		});
 		expect(keywordName(field(receipt, "state"))).toBe("completed");
@@ -548,7 +554,7 @@ describe("role capability boundaries", () => {
 		});
 
 		const stat = await runTool(bundle, {
-			program_name: "s",
+			name: "s",
 			code: '(stat {:path "a.txt"})',
 		});
 		expect(keywordName(field(stat.receipt, "state"))).toBe("completed");
@@ -560,7 +566,7 @@ describe("role capability boundaries", () => {
 			["c", '(call {:argv ["true"]})', "call"],
 			["p", "(park {:payload 1})", "park"],
 		]) {
-			const { receipt } = await runTool(bundle, { program_name: name, code });
+			const { receipt } = await runTool(bundle, { name: name, code });
 			expect(keywordName(field(field(receipt, "error"), "code"))).toBe("CAPABILITY_DENIED");
 			expect(field(field(receipt, "error"), "message")).toContain(capability);
 		}
@@ -575,7 +581,7 @@ describe("role capability boundaries", () => {
 			ports: makePorts(),
 		});
 		const { receipt } = await runTool(bundle, {
-			program_name: "p",
+			name: "p",
 			code: `(call {:argv ["touch" ${JSON.stringify(marker)}]})`,
 		});
 
@@ -595,25 +601,25 @@ describe("role capability boundaries", () => {
 		});
 
 		const cat = await runTool(bundle, {
-			program_name: "c",
+			name: "c",
 			code: '(cat {:path "a.txt"})',
 		});
 		expect(field(cat.receipt, "value")).toBe("alpha");
 
 		const ls = await runTool(bundle, {
-			program_name: "l",
+			name: "l",
 			code: '(ls {:path "."})',
 		});
 		expect(field(field(ls.receipt, "value"), "exists")).toBe(true);
 
 		const call = await runTool(bundle, {
-			program_name: "x",
+			name: "x",
 			code: '(call {:argv ["printf", "devops"]})',
 		});
 		expect(field(field(call.receipt, "value"), "stdout")).toBe("devops");
 
 		const write = await runTool(bundle, {
-			program_name: "w",
+			name: "w",
 			code: '(write {:path "a.txt" :content "x"})',
 		});
 		expect(keywordName(field(field(write.receipt, "error"), "code"))).toBe("CAPABILITY_DENIED");
@@ -637,7 +643,7 @@ describe("role capability boundaries", () => {
 			},
 		});
 		const { receipt } = await runTool(bundle, {
-			program_name: "p",
+			name: "p",
 			code: '(call {:argv ["true"]})',
 		});
 
@@ -658,7 +664,7 @@ describe("VFS and protected commit assembly", () => {
 			ports: makePorts({ events }),
 		});
 		const { receipt } = await runTool(bundle, {
-			program_name: "p",
+			name: "p",
 			code: '(write {:path "a.txt" :content "hello"})',
 		});
 
@@ -681,7 +687,7 @@ describe("VFS and protected commit assembly", () => {
 			},
 		});
 		const { receipt } = await runTool(bundle, {
-			program_name: "p",
+			name: "p",
 			code: '(write {:path "a.txt" :content "hello"})',
 		});
 
@@ -712,7 +718,7 @@ describe("VFS and protected commit assembly", () => {
 			ports,
 		});
 		const { receipt } = await runTool(bundle, {
-			program_name: "readonly",
+			name: "readonly",
 			code: '(cat {:path "a.txt"})',
 		});
 
@@ -740,7 +746,7 @@ describe("VFS and protected commit assembly", () => {
 		const { receipt } = await runTool(
 			bundle,
 			{
-				program_name: "p",
+				name: "p",
 				code: '(write {:path "a.txt" :content "x"})',
 			},
 			{ signal: controller.signal },
@@ -760,7 +766,7 @@ describe("VFS and protected commit assembly", () => {
 			ports: makePorts(),
 		});
 		const first = await runTool(bundle, {
-			program_name: "patch",
+			name: "patch",
 			code: `(do (write {:path "pending.txt" :content "later"})
 			            (where {:content "aa" :needle "a"}))`,
 		});
@@ -769,7 +775,7 @@ describe("VFS and protected commit assembly", () => {
 		expect(existsSync(target)).toBe(false);
 
 		const second = await runTool(bundle, {
-			program_name: "resume",
+			name: "resume",
 			code: '(unpark {:name "patch" :value [0 1]})',
 		});
 		const resumed = field(second.receipt, "value");
@@ -786,7 +792,7 @@ describe("VFS and protected commit assembly", () => {
 			ports: makePorts(),
 		});
 		const first = await runTool(bundle, {
-			program_name: "patch",
+			name: "patch",
 			code: `(let [src (cat {:path "a.txt"})]
 			          (do (write {:path "a.txt" :content (str src "-staged")})
 			              (where {:content "aa" :needle "a"})))`,
@@ -795,7 +801,7 @@ describe("VFS and protected commit assembly", () => {
 
 		writeFileSync(target, "external!", "utf8");
 		const second = await runTool(bundle, {
-			program_name: "resume",
+			name: "resume",
 			code: '(unpark {:name "patch" :value [0 1]})',
 		});
 		const resumed = field(second.receipt, "value");
@@ -817,7 +823,7 @@ describe("call: drain, output, and cancellation", () => {
 			ports: makePorts({ events }),
 		});
 		const { receipt } = await runTool(bundle, {
-			program_name: "p",
+			name: "p",
 			code: `(let [old (cat {:path "a.txt"})]
 			          (do (write {:path "a.txt" :content "new"})
 			              (call {:argv ["cat", "a.txt"]})))`,
@@ -848,7 +854,7 @@ describe("call: drain, output, and cancellation", () => {
 			ports: makePorts(),
 		});
 		const { receipt } = await runTool(bundle, {
-			program_name: "p",
+			name: "p",
 			code: '(call {:argv ["printf", "123456789"]})',
 		});
 		const call = field(receipt, "value");
@@ -873,7 +879,7 @@ describe("call: drain, output, and cancellation", () => {
 			ports: makePorts({ events }),
 		});
 		const { receipt } = await runTool(bundle, {
-			program_name: "p",
+			name: "p",
 			code: '(call {:argv ["sh", "-c", "setsid sleep 0.5 &"]})',
 		});
 		const call = field(receipt, "value");
@@ -899,7 +905,7 @@ describe("call: drain, output, and cancellation", () => {
 			ports: makePorts(),
 		});
 		const { receipt } = await runTool(bundle, {
-			program_name: "p",
+			name: "p",
 			code: '(call {:argv ["true"]})',
 		});
 		expect(keywordName(field(field(receipt, "error"), "code"))).toBe("INVALID_ARGUMENT");
@@ -914,7 +920,7 @@ describe("call: drain, output, and cancellation", () => {
 			ports: makePorts(),
 		});
 		const { receipt } = await runTool(bundle, {
-			program_name: "p",
+			name: "p",
 			code: `(do (write {:path "pending.txt" :content "later"})
 			            (call {:argv ["true"]}))`,
 		});
@@ -932,7 +938,7 @@ describe("call: drain, output, and cancellation", () => {
 			ports: makePorts(),
 		});
 		const { receipt } = await runTool(bundle, {
-			program_name: "p",
+			name: "p",
 			code: '(call {:argv ["printf", "prod"]})',
 		});
 		const call = field(receipt, "value");
@@ -953,7 +959,7 @@ describe("call: drain, output, and cancellation", () => {
 			ports: makePorts(),
 		});
 		const { receipt } = await runTool(bundle, {
-			program_name: "p",
+			name: "p",
 			code: '(call {:argv ["pwd"]})',
 		});
 		const call = field(receipt, "value");
@@ -975,7 +981,7 @@ describe("call: drain, output, and cancellation", () => {
 		const { result, receipt } = await runTool(
 			bundle,
 			{
-				program_name: "p",
+				name: "p",
 				code: '(write {:path "never.txt" :content "x"})',
 			},
 			{ signal: controller.signal },
@@ -999,7 +1005,7 @@ describe("call: drain, output, and cancellation", () => {
 		const { receipt } = await runTool(
 			bundle,
 			{
-				program_name: "p",
+				name: "p",
 				code: '(call {:argv ["sleep", "5"]})',
 			},
 			{ signal: controller.signal },
@@ -1025,7 +1031,7 @@ describe("call: drain, output, and cancellation", () => {
 		const { receipt } = await runTool(
 			bundle,
 			{
-				program_name: "p",
+				name: "p",
 				code: `(let [src (cat {:path "a.txt"})]
 				          (do (write {:path "a.txt" :content "new"})
 				              (call {:argv ["sleep", "5"]})))`,
@@ -1052,14 +1058,14 @@ describe("call: drain, output, and cancellation", () => {
 		await runTool(
 			bundle,
 			{
-				program_name: "cancelled",
+				name: "cancelled",
 				code: '(call {:argv ["sleep", "5"]})',
 			},
 			{ signal: controller.signal },
 		);
 
 		const next = await runTool(bundle, {
-			program_name: "next",
+			name: "next",
 			code: "42",
 		});
 		expect(keywordName(field(next.receipt, "state"))).toBe("completed");
@@ -1076,7 +1082,7 @@ describe("call-id replay", () => {
 			roots: { writeRoot: root },
 			ports,
 		});
-		const params = { program_name: "p", code: "1" };
+		const params = { name: "p", code: "1" };
 		const first = await runTool(bundle, params, { callId: "replay-1" });
 		expect(keywordName(field(first.receipt, "state"))).toBe("completed");
 
@@ -1092,8 +1098,8 @@ describe("call-id replay", () => {
 			roots: { writeRoot: root },
 			ports: makePorts(),
 		});
-		await runTool(bundle, { program_name: "p", code: "1" }, { callId: "replay-2" });
-		const second = await runTool(bundle, { program_name: "p", code: "2" }, { callId: "replay-2" });
+		await runTool(bundle, { name: "p", code: "1" }, { callId: "replay-2" });
+		const second = await runTool(bundle, { name: "p", code: "2" }, { callId: "replay-2" });
 
 		expect(second.result.isError).toBe(true);
 		expect(keywordName(field(field(second.receipt, "error"), "code"))).toBe("CALL_REPLAY_MISMATCH");
@@ -1109,7 +1115,7 @@ describe("call-id replay", () => {
 			ports: makePorts({ events }),
 		});
 		const params = {
-			program_name: "p",
+			name: "p",
 			code: '(call {:argv ["sleep", "0.3"]})',
 		};
 		const [first, second] = await Promise.all([bundle.execute("replay-3", params), bundle.execute("replay-3", params)]);
@@ -1152,7 +1158,7 @@ describe("auditor roots", () => {
 		const { bundle, root, evidenceRoot, auditTmp } = auditorBundle();
 		const tmpTarget = join(auditTmp, "scratch.txt");
 		const { receipt } = await runTool(bundle, {
-			program_name: "audit",
+			name: "audit",
 			code: `(do (write {:path "plans/slug/evidence/CASE-1/note.md" :content "evidence"})
 			            (write {:path ${JSON.stringify(tmpTarget)} :content "scratch"})
 			            [(cat {:path "product.mjs"}) (cat {:path ${JSON.stringify(tmpTarget)}})])`,
@@ -1195,7 +1201,7 @@ describe("auditor roots", () => {
 
 		const tmpFile = join(auditTmp, "probe.txt");
 		const { receipt } = await runTool(bundle, {
-			program_name: "prod",
+			name: "prod",
 			code: `(do (write {:path "plans/slug/evidence/CASE-1/prod.md" :content "evidence"})
 			            (write {:path ${JSON.stringify(tmpFile)} :content "tmp"})
 			            (cat {:path "product.mjs"}))`,
@@ -1219,7 +1225,7 @@ describe("auditor roots", () => {
 		};
 
 		const { receipt } = await runTool(bundle, {
-			program_name: "uncertain",
+			name: "uncertain",
 			code: `(do (write {:path "plans/slug/evidence/CASE-1/a/one.txt" :content "one"})
 			            (write {:path "plans/slug/evidence/CASE-1/b/two.txt" :content "two"}))`,
 		});
@@ -1250,7 +1256,7 @@ describe("auditor roots", () => {
 		};
 
 		const { receipt } = await runTool(bundle, {
-			program_name: "facts",
+			name: "facts",
 			code: `(let [src (cat {:path "product.mjs"})]
 			          (write {:path ${JSON.stringify(written)} :content "t"}))`,
 		});
@@ -1270,7 +1276,7 @@ describe("auditor roots", () => {
 		});
 		const marker = join(auditTmp, "auditor-shell-ran.txt");
 		const { receipt } = await runTool(bundle, {
-			program_name: "p",
+			name: "p",
 			code: `(call {:argv ["printf" "shell-ran"]})`,
 		});
 		expect(keywordName(field(receipt, "state"))).toBe("failed");
@@ -1305,7 +1311,7 @@ describe("auditor roots", () => {
 			},
 		});
 		const { receipt } = await runTool(bundle, {
-			program_name: "p",
+			name: "p",
 			code: '(call {:argv ["printf", "hi"]})',
 		});
 		const call = field(receipt, "value");
@@ -1328,11 +1334,11 @@ describe("observed read facts", () => {
 		const productPath = join(root, "product.mjs");
 		const docsPath = join(root, "docs/readme.md");
 		await runTool(bundle, {
-			program_name: "read-product",
+			name: "read-product",
 			code: `(cat {:path "product.mjs"})`,
 		});
 		await runTool(bundle, {
-			program_name: "read-docs",
+			name: "read-docs",
 			code: `(cat {:path "docs/readme.md"})`,
 		});
 		const snapshot = bundle.readSetForActor();
@@ -1362,7 +1368,7 @@ describe("observed read facts", () => {
 			ports: makePorts(),
 		});
 		await runTool(first, {
-			program_name: "read-a",
+			name: "read-a",
 			code: `(cat {:path "a.mjs"})`,
 		});
 		const second = buildSandboxTools({
@@ -1375,7 +1381,7 @@ describe("observed read facts", () => {
 			},
 		});
 		await runTool(second, {
-			program_name: "read-b",
+			name: "read-b",
 			code: `(cat {:path "b.mjs"})`,
 		});
 		const credential = second.readSetForActor();
@@ -1405,7 +1411,7 @@ describe("observed read facts", () => {
 			ports,
 		});
 		await runTool(bundle, {
-			program_name: "read-a",
+			name: "read-a",
 			code: `(cat {:path "a.mjs"})`,
 		});
 		expect(bundle.observations).toBeNull();

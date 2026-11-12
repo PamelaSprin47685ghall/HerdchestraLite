@@ -11,22 +11,8 @@ import { herdError } from "../util/errors.mjs";
 
 const MAX_CANDIDATES = 8;
 const CONTEXT_RADIUS = 80;
-const NEAREST_LINE_LIMIT = 2000;
 const NEAREST_DISTANCE_BAND = 64;
 const DP_CELL_BUDGET = 10_000_000;
-const NEAREST_TEXT_LIMIT = 200;
-
-function truncateText(line) {
-	if (line.length <= NEAREST_TEXT_LIMIT) {
-		return line;
-	}
-	let text = line.slice(0, NEAREST_TEXT_LIMIT);
-	const last = text.charCodeAt(text.length - 1);
-	if (last >= 0xd800 && last <= 0xdbff) {
-		text = text.slice(0, -1);
-	}
-	return text;
-}
 
 function invalidArgument(message, data = {}) {
 	return herdError("INVALID_ARGUMENT", message, data);
@@ -110,10 +96,9 @@ function findNearestLine(content, needle) {
 	let nearest = null;
 	let remaining = DP_CELL_BUDGET;
 	let budgetExhausted = false;
-	let scanned = 0;
 	let lineStart = 0;
 
-	while (scanned < NEAREST_LINE_LIMIT && lineStart <= content.length) {
+	while (lineStart <= content.length) {
 		let lineEnd = content.indexOf("\n", lineStart);
 		if (lineEnd === -1) {
 			lineEnd = content.length;
@@ -129,18 +114,13 @@ function findNearestLine(content, needle) {
 			}
 			if (measure.distance <= NEAREST_DISTANCE_BAND) {
 				if (nearest === null || measure.distance < nearest.distance) {
-					const truncated = line.length > NEAREST_TEXT_LIMIT;
 					nearest = {
 						span: [lineStart, lineEnd],
-						text: truncateText(line),
+						text: line,
 						distance: measure.distance,
 					};
-					if (truncated) {
-						nearest.truncated = true;
-					}
 				}
 			}
-			scanned += 1;
 		}
 
 		if (lineEnd === content.length) {

@@ -1330,7 +1330,7 @@ function registerSandboxTool(pi, toolName, role) {
 		description: describeSandboxTool(toolName),
 		parameters: gatedObject(
 			{
-				program_name: Type.String({ minLength: 1 }),
+				name: Type.String({ minLength: 1 }),
 				code: Type.String({ minLength: 1 }),
 				intent: Type.String({ minLength: 1 }),
 			},

@@ -67,6 +67,7 @@ const WORKER_CAPABILITIES = Object.freeze([
 	"whereAll",
 	"park",
 	"unpark",
+	"abandon",
 ]);
 
 /**
@@ -77,9 +78,9 @@ const WORKER_CAPABILITIES = Object.freeze([
  * instead of an unbound-symbol error.
  */
 export const CAPABILITY_MATRIX = Object.freeze({
-	plan: Object.freeze(["cat", "where", "whereAll", "park", "unpark"]),
-	devops: Object.freeze(["cat", "stat", "ls", "where", "whereAll", "park", "unpark", "call"]),
-	review: Object.freeze(["cat", "stat", "ls", "where", "whereAll", "unpark"]),
+	plan: Object.freeze(["cat", "where", "whereAll", "park", "unpark", "abandon"]),
+	devops: Object.freeze(["cat", "stat", "ls", "where", "whereAll", "park", "unpark", "abandon", "call"]),
+	review: Object.freeze(["cat", "stat", "ls", "where", "whereAll", "unpark", "abandon"]),
 	worker: WORKER_CAPABILITIES,
 	holder: Object.freeze([...WORKER_CAPABILITIES, "call"]),
 	auditor: Object.freeze([...WORKER_CAPABILITIES, "call"]),
@@ -97,6 +98,7 @@ const CAPABILITY_NAMES = new Set([
 	"whereAll",
 	"park",
 	"unpark",
+	"abandon",
 	"call",
 ]);
 
@@ -145,7 +147,7 @@ const GATE_FIELDS = new Set([
 	"how_many_more_workers_are_allowed_without_hitting_mythical_man_month",
 ]);
 
-const TOOL_FIELDS = new Set(["program_name", "code", "i"]);
+const TOOL_FIELDS = new Set(["name", "code", "i"]);
 const CONFIGURED_SESSIONS = new WeakSet();
 
 function invalidArgument(message, data = {}) {
@@ -831,7 +833,7 @@ function makeCapabilityTable(context, ports, execution) {
 			throw tokenRequired(context.role);
 		};
 	} else if (capabilities.has("call")) {
-		table.call = async (args) => {
+		table.call = async (args, callCtx) => {
 			if (!auditorSandboxReady(context)) {
 				throw herdError("CAPABILITY_DENIED", "auditor call requires an active bwrap sandbox", {
 					role: context.role,
@@ -903,6 +905,7 @@ function makeCapabilityTable(context, ports, execution) {
 				limits.logPath = join(context.roots.callLogDir, `${actionId}.log`);
 			}
 			let drainedFacts = null;
+			ports.onCallActivity?.({ active: true, program: context.programName });
 			try {
 				if (execution.signal?.aborted === true) {
 					throw herdError("UPSTREAM_ABORTED", "call was cancelled before drain", {
@@ -920,6 +923,11 @@ function makeCapabilityTable(context, ports, execution) {
 					claim,
 					limits,
 					signal: execution.signal ?? undefined,
+					onCallHandle: (handle) => {
+						if (callCtx?.program) {
+							callCtx.program.activeCallHandle = handle;
+						}
+					},
 				});
 				if (result.stdioClosed === false && (result.status === ":completed" || result.status === ":failed")) {
 					result.reportedStatus = result.status;
@@ -942,6 +950,8 @@ function makeCapabilityTable(context, ports, execution) {
 					error.data = { ...(error.data ?? {}), drained: toEdn(drainedFacts) };
 				}
 				throw error;
+			} finally {
+				ports.onCallActivity?.({ active: false, program: context.programName });
 			}
 		};
 	}
@@ -978,7 +988,7 @@ function observationScopeFor(ports, roots) {
 	};
 }
 
-function createContext(role, roots, observations = null, observationScope = null) {
+function createContext(role, roots, observations = null, observationScope = null, programName = null) {
 	const primary = createBatch({
 		writeRoot: roots.writeRoot,
 		limits: roots.limits,
@@ -992,6 +1002,7 @@ function createContext(role, roots, observations = null, observationScope = null
 		primary,
 		tmp: null,
 		sandbox: roots.sandbox,
+		programName,
 	};
 }
 
@@ -1007,7 +1018,7 @@ function parameters() {
 		additionalProperties: false,
 		required: ["code", "intent"],
 		properties: {
-			program_name: {
+			name: {
 				type: "string",
 				minLength: 1,
 				description: PARAMETER_TEXT.programName,
@@ -1039,7 +1050,7 @@ const ROLE_DENIALS = Object.freeze({
 
 function toolDescription(role) {
 	const capabilities = CAPABILITY_MATRIX[role].join(", ");
-	return `Run ClojureScript REPL input in the ${ROLE_LABELS[role]} sandbox. Bound capabilities: ${capabilities}. ${ROLE_DENIALS[role]} Submit bare REPL input; other sandbox names from COMMON are not bound. call is argv-only: (call {:argv ["prog" "arg"] :cwd ...}); no shell, pipes, redirects, globbing, or &&. Every call must include a non-empty :alternative map (1+ pair) naming built-in tools or other approaches and why they were not chosen; the framework ignores it. Gate fields must be stripped before execution; deadlines come from the CallMeta port.`;
+	return `Run ClojureScript REPL input in the ${ROLE_LABELS[role]} sandbox. Bound capabilities: ${capabilities}. ${ROLE_DENIALS[role]} Submit bare REPL input; other sandbox names from COMMON are not bound. call is argv-only: (call {:argv ["prog" "arg"] :cwd ...}); no shell, pipes, redirects, globbing, or &&. Every call must include a non-empty :alternative map (1+ pair) naming built-in tools or other approaches and why they were not chosen; the framework ignores it. Programs without call return synchronously; hitting call backgrounds immediately (:state :forked). If you want synchronous return, do not use call—otherwise bear the async hassle of join.`;
 }
 
 const TOOL_DESCRIPTION_BY_NAME = Object.freeze({
@@ -1180,10 +1191,10 @@ function validateParams(params) {
 			throw invalidArgument(`unknown sandbox tool field: ${key}`, { field: key });
 		}
 	}
-	const providedName = params.program_name;
+	const providedName = params.name;
 	if (providedName !== undefined && (typeof providedName !== "string" || providedName.length === 0)) {
-		throw invalidArgument("program_name must be a non-empty string when provided", {
-			field: "program_name",
+		throw invalidArgument("name must be a non-empty string when provided", {
+			field: "name",
 			value: providedName,
 		});
 	}
@@ -1248,8 +1259,8 @@ export function buildSandboxTools({ role, session, roots, ports = {} } = {}) {
 	}
 
 	const contexts = new WeakMap();
-	const execution = { active: false, signal: null, toolCallId: null, lastCall: null };
-	let executionTail = Promise.resolve();
+	const pendingExecutions = new Map();
+	const executionsByProgram = new WeakMap();
 	const replay = { receipts: new Map(), inFlight: new Map() };
 	const REPLAY_LIMIT = 1024;
 
@@ -1288,7 +1299,15 @@ export function buildSandboxTools({ role, session, roots, ports = {} } = {}) {
 			normalizedRoots,
 			observationEnabled ? observationLedger : null,
 			observationEnabled ? observationScope : null,
+			program.name,
 		);
+		const execution = pendingExecutions.get(program.name) ?? {
+			active: true,
+			signal: null,
+			toolCallId: null,
+			lastCall: null,
+		};
+		executionsByProgram.set(program, execution);
 		contexts.set(program, context);
 		return makeCapabilityTable(context, ports, execution);
 	};
@@ -1311,6 +1330,7 @@ export function buildSandboxTools({ role, session, roots, ports = {} } = {}) {
 				if (!hasOverlay && !WRITE_ROLES.has(context.role)) {
 					return null;
 				}
+				const execution = executionsByProgram.get(program) ?? { signal: null };
 				const result = await commitContext(context, ports, execution.signal ?? undefined);
 				return result;
 			} finally {
@@ -1320,6 +1340,7 @@ export function buildSandboxTools({ role, session, roots, ports = {} } = {}) {
 		discard: async ({ program }) => {
 			contexts.delete(program);
 		},
+		...(ports.onCallActivity ? { onCallActivity: ports.onCallActivity } : {}),
 	};
 
 	let sandboxSession = session;
@@ -1359,10 +1380,13 @@ export function buildSandboxTools({ role, session, roots, ports = {} } = {}) {
 
 	const toolName = TOOL_NAMES[key];
 	const runExecution = async (request, signal, toolCallId) => {
-		execution.active = true;
-		execution.signal = signal ?? null;
-		execution.toolCallId = toolCallId ?? null;
-		execution.lastCall = null;
+		const execution = {
+			active: true,
+			signal: signal ?? null,
+			toolCallId: toolCallId ?? null,
+			lastCall: null,
+		};
+		pendingExecutions.set(request.name, execution);
 		let abortListener = null;
 		try {
 			const callMeta = await readCallMeta(ports, toolCallId);
@@ -1418,6 +1442,7 @@ export function buildSandboxTools({ role, session, roots, ports = {} } = {}) {
 			if (abortListener !== null && typeof signal?.removeEventListener === "function") {
 				signal.removeEventListener("abort", abortListener);
 			}
+			pendingExecutions.delete(request.name);
 			execution.active = false;
 			execution.signal = null;
 			execution.toolCallId = null;
@@ -1461,11 +1486,7 @@ export function buildSandboxTools({ role, session, roots, ports = {} } = {}) {
 			// protected commit path are per tool bundle. Serialize the bundles
 			// instead of rejecting the later call: no same-agent parallel channel
 			// is introduced, and both tool results remain observable.
-			const promise = executionTail.then(() => runExecution(request, signal, id));
-			executionTail = promise.then(
-				() => undefined,
-				() => undefined,
-			);
+			const promise = runExecution(request, signal, id);
 			if (id !== null) {
 				replay.inFlight.set(id, { key, promise });
 			}

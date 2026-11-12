@@ -279,13 +279,13 @@ describe("findUnique", () => {
 		expect(result.nearest.span).toEqual([6, 6 + result.nearest.text.length]);
 	});
 
-	it("marks a long nearest line as truncated", () => {
+	it("returns the full long nearest line without truncation", () => {
 		const line = `${"a".repeat(200)}c`;
 		const result = findUnique(line, `${"a".repeat(200)}b`);
 
 		expect(result.kind).toBe("none");
-		expect(result.nearest.truncated).toBe(true);
-		expect(result.nearest.text).toBe("a".repeat(200));
+		expect(result.nearest.truncated).toBeUndefined();
+		expect(result.nearest.text).toBe(line);
 		expect(result.nearest.span).toEqual([0, line.length]);
 	});
 
@@ -296,13 +296,14 @@ describe("findUnique", () => {
 		expect(result.budgetExhausted).toBe(false);
 	});
 
-	it("scans only the first 2000 non-empty lines", () => {
-		const content = `${Array.from({ length: 2000 }, () => "zzzzz").join("\n")}\nz`;
+	it("scans past 2000 non-empty lines to find the nearest line", () => {
+		const prefix = Array.from({ length: 2000 }, () => "zzzzz").join("\n");
+		const content = `${prefix}\nz`;
 		const result = findUnique(content, "q");
 
 		expect(result.kind).toBe("none");
-		expect(result.nearest.text).toBe("zzzzz");
-		expect(result.nearest.span).toEqual([0, 5]);
+		expect(result.nearest.text).toBe("z");
+		expect(result.nearest.span).toEqual([prefix.length + 1, content.length]);
 	});
 
 	it("stops at the DP cell budget", () => {

@@ -2004,7 +2004,7 @@ export function callEnvironment(env = process.env) {
 	return next;
 }
 
-export function defaultRunCommand(argv, { cwd, signal, maxBytes } = {}) {
+export function defaultRunCommand(argv, { cwd, signal, maxBytes, onHandle } = {}) {
 	return new Promise((settle) => {
 		if (signal?.aborted) {
 			settle({
@@ -2050,7 +2050,7 @@ export function defaultRunCommand(argv, { cwd, signal, maxBytes } = {}) {
 				shell: false,
 				env: callEnvironment(),
 				detached: process.platform !== "win32",
-				stdio: ["ignore", "pipe", "pipe"],
+				stdio: ["pipe", "pipe", "pipe"],
 			});
 		} catch (error) {
 			settle({
@@ -2070,6 +2070,7 @@ export function defaultRunCommand(argv, { cwd, signal, maxBytes } = {}) {
 		}
 		const pid = child.pid;
 		const chunks = { stdout: [], stderr: [] };
+		const cursors = { stdout: 0, stderr: 0 };
 		let totalBytes = 0;
 		let truncated = false;
 		let aborted = signal?.aborted === true;
@@ -2080,6 +2081,7 @@ export function defaultRunCommand(argv, { cwd, signal, maxBytes } = {}) {
 		let closeSeen = false;
 		let killTimer = null;
 		let closeTimer = null;
+		child.stdin?.on("error", () => {});
 		const collect = (name) => (chunk) => {
 			const room = maxBytes - totalBytes;
 			if (room > 0) {
@@ -2091,6 +2093,37 @@ export function defaultRunCommand(argv, { cwd, signal, maxBytes } = {}) {
 		};
 		child.stdout?.on("data", collect("stdout"));
 		child.stderr?.on("data", collect("stderr"));
+		onHandle?.({
+			abort() {
+				onAbort();
+			},
+			writeStdin(input) {
+				if (!child.stdin || child.stdin.destroyed || child.stdin.writableEnded) return false;
+				try {
+					if (typeof input === "string") {
+						child.stdin.write(input);
+						return true;
+					}
+					if (input && typeof input === "object") {
+						if (typeof input.stdin === "string") child.stdin.write(input.stdin);
+						if (input.eof === true) child.stdin.end();
+						return true;
+					}
+				} catch {
+					return false;
+				}
+				return false;
+			},
+			drainDelta() {
+				const fullOut = utf8Text(Buffer.concat(chunks.stdout));
+				const fullErr = utf8Text(Buffer.concat(chunks.stderr));
+				const stdout = fullOut.slice(cursors.stdout);
+				const stderr = fullErr.slice(cursors.stderr);
+				cursors.stdout = fullOut.length;
+				cursors.stderr = fullErr.length;
+				return { stdout, stderr };
+			},
+		});
 		const signalGroup = (name) => {
 			if (pid && process.platform !== "win32") {
 				try {
@@ -2118,20 +2151,24 @@ export function defaultRunCommand(argv, { cwd, signal, maxBytes } = {}) {
 		const waitGroup = async () => {
 			while (groupAlive()) await new Promise((resolveWait) => setTimeout(resolveWait, 25));
 		};
-		const snapshot = (extra = {}) => ({
-			stdout: utf8Text(Buffer.concat(chunks.stdout)),
-			stderr: utf8Text(Buffer.concat(chunks.stderr)),
-			exitCode: exitInfo?.code ?? null,
-			signal: exitInfo?.signal ?? null,
-			error: null,
-			aborted,
-			started: true,
-			truncated,
-			managedChildren,
-			stdioClosed: true,
-			externalBestEffort: true,
-			...extra,
-		});
+		const snapshot = (extra = {}) => {
+			const fullOut = utf8Text(Buffer.concat(chunks.stdout));
+			const fullErr = utf8Text(Buffer.concat(chunks.stderr));
+			return {
+				stdout: fullOut.slice(cursors.stdout),
+				stderr: fullErr.slice(cursors.stderr),
+				exitCode: exitInfo?.code ?? null,
+				signal: exitInfo?.signal ?? null,
+				error: null,
+				aborted,
+				started: true,
+				truncated,
+				managedChildren,
+				stdioClosed: true,
+				externalBestEffort: true,
+				...extra,
+			};
+		};
 		const finish = (value) => {
 			if (settled) return;
 			settled = true;
@@ -2263,7 +2300,18 @@ function defaultIo() {
  * dedicated artifacts directory, pass that directory as `limits.logRoot`.
  * The result never pretends that a truncated stream is whole.
  */
-export async function runCall({ batch, argv, cwd, writeGate, control, identity, claim, limits, signal } = {}) {
+export async function runCall({
+	batch,
+	argv,
+	cwd,
+	writeGate,
+	control,
+	identity,
+	claim,
+	limits,
+	signal,
+	onCallHandle,
+} = {}) {
 	assertBatch(batch);
 	requireProductionPorts({ control, identity, claim });
 	requireCallPort(control);
@@ -2416,6 +2464,7 @@ export async function runCall({ batch, argv, cwd, writeGate, control, identity, 
 					cwd: workdir,
 					signal,
 					maxBytes: callLimits.logBytes,
+					...(onCallHandle ? { onHandle: onCallHandle } : {}),
 				})) ?? {};
 		} catch (error) {
 			const result = {

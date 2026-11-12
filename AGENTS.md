@@ -948,10 +948,11 @@ Lite 保留标准版的 REPL 程序化工具面（内部仍用命名程序承载
 每次调用沙箱工具，模型提交：
 
 ```text
-clj_<role>({ code, intent[, program_name] })
+clj_<role>({ code[, name] })
+join({ otherwise_independent_work })
 ```
 
-`code` 是 REPL 输入：任意数量的顶层表达式，最后一个值作为回执返回；`program_name` 可选；省略时框架生成 `repl-<id>`，内部命名只服务 `park`/`unpark`。**单一写法铁律**：同一个能力只有一种调用写法——**裸函数名 + 单个 EDN map 参数**。不存在接收者写法或位置参数；`this` 不绑定。顶层结构化原语是**独立工具**，不在 REPL 内调用；也不要在聊天正文里“调用”沙箱函数。
+`code` 是 REPL 输入：任意数量的顶层表达式，最后一个值作为回执返回；`name` 可选；省略时框架生成 `repl-<id>`，内部命名只服务 `park`/`unpark`。**单一写法铁律**：同一个能力只有一种调用写法——**裸函数名 + 单个 EDN map 参数**。不存在接收者写法或位置参数；`this` 不绑定。顶层结构化原语是**独立工具**，不在 REPL 内调用；也不要在聊天正文里“调用”沙箱函数。
 
 | 沙箱函数 | 语义 | `clj_plan` | `clj_devops` | `clj_review` | `clj_worker`（Worker） | `clj_worker`（Holder） | `clj_auditor` |
 |---|---|:---:|:---:|:---:|:---:|:---:|:---:|
@@ -965,7 +966,7 @@ clj_<role>({ code, intent[, program_name] })
 | `(where {:content ... :needle ...})` | UTF-16 精确唯一切片 `[b e]`；0/多匹配自动 `park` | 有 | 有 | 有 | 有 | 有 | 有 |
 | `(whereAll {:content ... :needle ...})` | 返回全部匹配区间；0 匹配 `[]`，不挂起 | 有 | 有 | 有 | 有 | 有 | 有 |
 | `(park {:payload ...})` | 显式挂起当前程序续体 | 有 | 有 | - | 有 | 有 | 有 |
-| `(unpark {:name ... :value ...})` | 恢复已挂起程序并注入值 | 有 | 有 | 有 | 有 | 有 | 有 |
+| `(unpark {:name ... :value ...})`, `(abandon {:name ...})` | 恢复已挂起程序并注入值 | 有 | 有 | 有 | 有 | 有 | 有 |
 | `(call {:argv [...]})` | 直接执行 argv（无 shell/管道/重定向/通配/`&&`）；先 drain 再运行；运行期持 $W$ | - | 只读 best-effort | - | -（`:TOKEN_REQUIRED`） | 有 | 有（tmux/`/tmp`） |
 
 **边界说明**：
@@ -1061,19 +1062,19 @@ clj_<role>({ code, intent[, program_name] })
   ```
 
 - 零匹配：转入 `:parked`，用 Ukkonen 带状 DP 诊断：
-  - 扫描 `content` 的前 2000 个非空行；
+  - 扫描 `content` 的全部非空行；
   - 带宽 $K = 64$；`|len(needle) - len(line)| > K` 直接跳过；
   - 先裁剪公共前后缀再算中段；
   - 只保留编辑距离 $\le K$ 的行，取最小者；
   - 返回 `:nearest {:span [b e] :text "..." :distance d}`；没有行在 $K$ 内则为 `nil`；
   - 总 DP 单元预算 10M；超出停止扫描，返回已找到的最近行并标 `:budget-exhausted true`；
-  - `:text` 最多 200 字符，超出标 `:truncated true`；`:span` 仍给完整范围。
+  - `:text` 返回完整行文本，不截断；`:span` 给完整范围。
 - `whereAll` 返回所有匹配区间 `[[b1 e1] ...]`；0 匹配返回 `[]`，**不挂起**。
 
 #### 4.4.2 挂起与恢复
 
 1. **挂起原因**：`:explicit`（显式 `park`）、`:where-ambiguous`（0/多匹配）、`:ask`（S1 提问）、`:deadline`（期限到期）。
-2. **保存内容**：当前 REPL 程序的整个 JS 异步调用帧，包括所有外层 `let` 局部变量、`loop` 状态、尚未提交的批内 VFS 叠加层与未决能力 Promise。保存在本 `agent_id` 的内存 `ParkedPrograms` 表，以内部 `program_name`（缺省自动生成）为键。
+2. **保存内容**：当前 REPL 程序的整个 JS 异步调用帧，包括所有外层 `let` 局部变量、`loop` 状态、尚未提交的批内 VFS 叠加层与未决能力 Promise。保存在本 `agent_id` 的内存 `ParkedPrograms` 表，以内部 `name`（缺省自动生成）为键。
 3. **不落盘、不进看板**：挂起是 agent 私有状态，不是公共任务；进程重启自动清空，未恢复的续体丢失，但真实磁盘未被修改。
 4. **挂起回执**（EDN + UFSS）：
 
@@ -1090,11 +1091,11 @@ clj_<role>({ code, intent[, program_name] })
 5. **`unpark`**：在新程序中调用 `(unpark {:name "fix-timeout" :value [812 842]})`。内核依次核验：
    - **观察核验**：目标仍在该挂起点；同一挂起点只能恢复一次；重复恢复返回 `:STALE_CONTROL`。
    - **非自指核验**：不能在目标程序自身尚未挂起时恢复自己；非法参数返回 `:INVALID_ARGUMENT`。
-   - **存在性核验**：`program_name` 不存在返回 `:PROGRAM_UNKNOWN`。
+   - **存在性核验**：`name` 不存在返回 `:PROGRAM_UNKNOWN`。
    - **能力集核验**：当前角色没有恢复该程序所需能力集，返回 `:CAPABILITY_DENIED`。
 
    通过后，`value` 原样成为原挂起表达式的返回值（内核不做二次校验；切片有效性由程序自己保证）；原程序继续执行，恢复时按新请求的 `intent` 重新计时。恢复后的提交仍会复核 `read-set` 的 `stamp`，确保挂起期间底层文件未被他人篡改。
-6. **期限**：每次工具调用按 $1000\text{ms} + intent 的 UTF-8 字节数 \times 50\text{ms}$ 核定运行期限；固定白送 1 秒，不按角色加码；更长的 `intent` 仍可延长。到期自动转入 `:parked`（`:reason :deadline`），取消旧期限。`intent` 是单次工具调用的期限计量参数；任务描述使用 `verbose_intent`，二者不混用。
+6. **按 `call` 自动后台化与 `join` 期限**：`clj_*` 工具无需携带 `intent`；不含 `call` 的程序同步返回结果，一旦实际执行到 `call`（含 `unpark` 恢复未完成的 `call`）立即后台化并返回 `:state :forked`。LLM 通过统一的 `join({ otherwise_independent_work })` 工具收集结果：`otherwise_independent_work` 必须反事实地说明本可以立即派发什么无依赖工作而不是调用 `join` 死等结果；其 UTF-8 字节长度决定 `join` 的等待期限（$1000\text{ms} + 字节数 \times 50\text{ms}$，固定白送 1 秒，不按角色加码），且**只对 `call` 计时，沙盒引擎自身耗时不计**。无任务时 `join` 立刻返回 `:idle`；有积压结果时 `join` 一次性全部返回且不阻塞；否则 `join` 阻塞等待最先返回的一个结果（不可指定）并返回，其余任务继续在后台执行，可再次调用 `join` 收集。`join` 超期采用 `park-all` 语义，将所有运行中程序挂起（`:state :parked :reason :deadline`）并返回其回执，随后仍可通过指名 `(unpark {:name ... :value ...})`, `(abandon {:name ...})` 恢复。
 7. **名字占用**：同名程序仍处于 `:running` / `:waiting` / `:parked` 时，新程序占用同名启动被拒 `:NAME_TAKEN`；进入 `:completed` / `:failed` 后名字可复用。同一物理工具调用（同一 `call-id`）带相同载荷再次到达，直接重放原回执；不同载荷返回 `:CALL_REPLAY_MISMATCH`。
 8. **`ask_user` 与挂起的关系**：`ask_user` 属于 S1，语义等价于“挂起 + 中断回合 + 交还人类”。人类回答后，模型在新程序中 `unpark` 原程序；回答只作为新需求进入上下文，不重开任期、不制造评审。S5 仅保留一个例外：初任 `Reviewer` 首次空账、主工作区已满足契约且无 Slice 可做时，允许一次性询问；问完即恢复无人值守，不得把 `ask_user` 当作常规评审出口。
 
@@ -1699,9 +1700,10 @@ In tool results or user messages, authoritative skills and stage briefings are i
 ```text
 # Tool-First Output & ClojureScript/UFSS Sandbox
 1. Structured data and long documents NEVER travel as loose chat prose or XML tags. Whenever a stage gate, review ledger, board mutation, investigation report, or audit verdict is expected, call its dedicated tool and pass full Markdown/text in the tool's string parameter.
-2. Workspace inspection, slicing, continuations, and edits run inside your role's ClojureScript sandbox tool (`clj_plan`, `clj_devops`, `clj_review`, `clj_worker`, `clj_auditor`) as bare REPL input. Every sandbox capability is a bare function taking one EDN map—never `this`, never positional args: `(cat {:path ...})`, `(stat {:path ...})`, `(ls {:path ...})` (pure probe, no stamp dependency), `(write {:path ... :content ...})`, `(mkdir {:path ...})`, `(rm {:path ...})`, `(mv {:source ... :target ...})`, `(where {:content ... :needle ...})` (UTF-16 exact unique span `[b e]` for `subs`; auto-parks with Ukkonen K=64 `:nearest` or `:candidates` if matches != 1), `(whereAll {:content ... :needle ...})`, `(park {:payload ...})`, `(unpark {:name ... :value ...})`, `(call {:argv ["<program>" "<arg>" ...] :cwd ...})`.
+2. Workspace inspection, slicing, continuations, and edits run inside your role's ClojureScript sandbox tool (`clj_plan`, `clj_devops`, `clj_review`, `clj_worker`, `clj_auditor`) as bare REPL input. Every sandbox capability is a bare function taking one EDN map—never `this`, never positional args: `(cat {:path ...})`, `(stat {:path ...})`, `(ls {:path ...})` (pure probe, no stamp dependency), `(write {:path ... :content ...})`, `(mkdir {:path ...})`, `(rm {:path ...})`, `(mv {:source ... :target ...})`, `(where {:content ... :needle ...})` (UTF-16 exact unique span `[b e]` for `subs`; auto-parks with Ukkonen K=64 `:nearest` or `:candidates` if matches != 1), `(whereAll {:content ... :needle ...})`, `(park {:payload ...})`, `(unpark {:name ... :value ...})`, `(abandon {:name ...})`, `(call {:argv ["<program>" "<arg>" ...] :cwd ...})`.
 2b. Every call must include a non-empty :alternative map (1+ pair) naming built-in tools or other approaches and why they were not chosen; the framework ignores it.
-  3. System receipts use EDN + UFSS (`#"..."#` single-line raw, `#"""\n...\n<indent>"""#` multi-line indent-stripped raw; zero backslash escaping; regexes use `(re-pattern #"..."#)`). Prefer UFSS inside REPL literals to eliminate quote/backslash corruption. Each call's deadline is `1000ms + UTF-8 bytes(intent) * 50ms`; expiry parks cleanly without touching disk.
+  3. `clj_*` tools take no `intent` and run synchronously unless/until the program actually executes `call` (including `unpark` resuming an unsettled `call`), at which point it backgrounds immediately and returns `:state :forked`. Life is hard and reality is unforgiving: if you want synchronous return, do NOT use `call`—otherwise you MUST bear the full hassle of async `:state :forked`, `join`, and `park-all`/`unpark`. Use the unified `join({ otherwise_independent_work })` tool to collect results: `otherwise_independent_work` counterfactually explains what independent work could otherwise be dispatched right now instead of calling join to wait idly (if you decide not to join after thinking about this, GREAT!), and its UTF-8 byte length sets the wait deadline (`1000ms + UTF-8 bytes * 50ms`), counting ONLY time spent inside `call` (sandbox engine evaluation time is excluded). `join` returns immediately if idle or with all backlogged results if any exist; otherwise it waits for the first returning task (not selectable) and returns that single result. On `join` timeout, all running tasks park (`park-all`) and their `:parked` receipts are returned; resume any of them by name via `(unpark {:name ... :value ...})`, `(abandon {:name ...})`.
+  4. System receipts use EDN + UFSS (`#"..."#` single-line raw, `#"""\n...\n<indent>"""#` multi-line indent-stripped raw; zero backslash escaping; regexes use `(re-pattern #"..."#)`). Prefer UFSS inside REPL literals to eliminate quote/backslash corruption.
 
 # Scope
 You own the context window through one `scope` annotation on every non-exempt tool call. `resetScope` requires `new_scope_goal` (non-empty string) and `new_scope_retention_budget` (positive integer, unbounded); `keepLast` takes no extra fields and spends 1 retention; `removeLast` requires `replacement` (non-empty string), erases the previous beat's dead end, and spends 0; `meToo` accompanies sibling calls in the same turn (an all-`meToo` turn settles as `keepLast` and spends 1). At budget 0, only `resetScope` and exempt tools are admitted (`:SCOPE_BUDGET_SPENT`). After cold start/restart, initialize with `resetScope` (`:SCOPE_UNINITIALIZED`). `ask_previous_scope` is budget-exempt and survives resets (ask first, then `resetScope` on subsequent loops; answer arrives asynchronously as a steer). `assume` pins a decisive lemma across resets (still spends 1 if paired with `keepLast`). Outbound projection keeps operator messages, active-stage gate briefings, `resetScope` pairs, `assume`, `ask_previous_scope`, and assistant conclusions, pruning obsolete tool noise before the newest `resetScope` boundary.

@@ -1635,7 +1635,7 @@ describe("main board_finish dependency read-set", () => {
 		const read = await pi.tools.get("clj_worker").execute(
 			"read-dep",
 			{
-				program_name: "read-dep",
+				name: "read-dep",
 				code: '(defprogram read-dep [] (cat {:path "dep.mjs"}))',
 			},
 			undefined,
@@ -1708,7 +1708,7 @@ describe("main board_finish dependency read-set", () => {
 			.get("clj_worker")
 			.execute(
 				"read-f10",
-				{ program_name: "read-f10", code: '(defprogram read-f10 [] (cat {:path "dep.mjs"}))' },
+				{ name: "read-f10", code: '(defprogram read-f10 [] (cat {:path "dep.mjs"}))' },
 				undefined,
 				undefined,
 				ctx,
@@ -1735,7 +1735,7 @@ describe("main board_finish dependency read-set", () => {
 			.get("clj_worker")
 			.execute(
 				"read-f10-again",
-				{ program_name: "read-f10-again", code: '(defprogram read-f10-again [] (cat {:path "dep.mjs"}))' },
+				{ name: "read-f10-again", code: '(defprogram read-f10-again [] (cat {:path "dep.mjs"}))' },
 				undefined,
 				undefined,
 				ctx,

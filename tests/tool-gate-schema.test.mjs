@@ -565,12 +565,12 @@ describe("stripGateFields", () => {
 	it("keeps business fields and nested values", () => {
 		const input = {
 			[INTENT]: "推进",
-			program_name: "main",
+			name: "main",
 			options: { deep: { value: 1 } },
 		};
 
 		expect(stripGateFields(input)).toEqual({
-			program_name: "main",
+			name: "main",
 			options: { deep: { value: 1 } },
 		});
 	});
