@@ -1,13 +1,13 @@
 /**
  * Minimal dogfood surface: asynchronous Worker-hosted ClojureScript sandbox +
- * unified join.
+ * unified wait.
  *
  * All Cherry/CEK evaluation, `where` diagnostics, and VFS operations run inside
  * a dedicated `node:worker_threads` Worker (`src/clj-sandbox/sandbox-worker.mjs`)
  * so heavy sandbox CPU work never blocks the `omp` main thread. Programs that
  * finish without hitting `call` or a held `$W$` lock return synchronously;
  * hitting `call` or waiting on `$W$` immediately backgrounds the call (`:state
- * :forked`) for collection via unified `join`.
+ * :forked`) for collection via unified `wait`.
  */
 
 import { randomUUID } from "node:crypto";
@@ -70,7 +70,7 @@ const VERSE_JUMP_ALLOWED_FIELDS = new Set([
 	ARIADNE_GOAL_FIELD,
 	"i",
 ]);
-const JOIN_ALLOWED_FIELDS = new Set(["otherwise_independent_work", "i", WORKERS_FIELD]);
+const WAIT_ALLOWED_FIELDS = new Set(["otherwise_independent_work", "i", WORKERS_FIELD]);
 
 /**
  * Join wait budget: 50ms per UTF-8 byte (the free 1s grace is spent at fork time).
@@ -87,7 +87,7 @@ export function deadlineFor(text, now = Date.now(), baseMs = 1_000) {
 const SANDBOX_PARAMETERS = Object.freeze({
 	type: "object",
 	additionalProperties: false,
-	required: ["code"],
+	required: ["code", ARIADNE_BUDGET_FIELD, ARIADNE_GOAL_FIELD],
 	properties: {
 		name: {
 			type: "string",
@@ -108,18 +108,18 @@ const SANDBOX_PARAMETERS = Object.freeze({
 			type: "integer",
 			minimum: 1,
 			description:
-				"Ariadne's Thread — unspool a golden thread into the labyrinth before stepping deeper: how many turns (1 turn = 1 point) may you wander from this checkpoint before your past self taps you on the shoulder? Multiple active threads compose automatically by taking the tightest deadline (never a hard block—just an unmistakable conscience nudge if you drift past 0). Optional: omit to walk free or ride your current thread.",
+				"Ariadne's Thread — required turn budget: unspool a golden thread into the labyrinth before stepping deeper. Multiple active threads compose automatically by taking the tightest deadline (never a hard block—just an unmistakable conscience nudge if you drift past 0).",
 		},
 		[ARIADNE_GOAL_FIELD]: {
 			type: "string",
 			minLength: 1,
 			description:
-				"Ariadne's Goal — name the exact dragon you are slaying or proof you are hunting within this thread (required whenever ariadne_budget is set; becomes your north star if you later Verse-Jump back here).",
+				"Ariadne's Goal — required: name the exact dragon you are slaying or proof you are hunting within this thread; it becomes your north star if you later Verse-Jump back here.",
 		},
 	},
 });
 
-const JOIN_PARAMETERS = Object.freeze({
+const WAIT_PARAMETERS = Object.freeze({
 	type: "object",
 	additionalProperties: false,
 	required: ["otherwise_independent_work"],
@@ -128,7 +128,7 @@ const JOIN_PARAMETERS = Object.freeze({
 			type: "string",
 			minLength: 1,
 			description:
-				"Counterfactually explain what independent work could otherwise be dispatched right now instead of calling join to wait idly. If you decide not to join after thinking about this, GREAT! You MUST also derive `more_workers_without_hitting_mythical_man_month` from Brooks' Mythical Man-Month here and prove it: each extra worker needs a slice with a disjoint contract and O(1) cross-slice communication; count only slices ready right now, and any slice you cannot prove disjoint counts as 0. Wait deadline = 1000ms + UTF-8 bytes * 50ms (plus 1000ms free grace at clj_* fork time).",
+				"Counterfactually explain what independent work could otherwise be dispatched right now instead of calling wait while idle. If you decide not to wait after thinking about this, GREAT! You MUST also derive `more_workers_without_hitting_mythical_man_month` from Brooks' Mythical Man-Month here and prove it: each extra worker needs a slice with a disjoint contract and O(1) cross-slice communication; count only slices ready right now, and any slice you cannot prove disjoint counts as 0. Wait deadline = 1000ms + UTF-8 bytes * 50ms (plus 1000ms free grace at clj_* fork time).",
 		},
 		[WORKERS_FIELD]: {
 			type: "integer",
@@ -162,7 +162,7 @@ export const HOST_TOOL_BLACKLIST = Object.freeze([
 const VERSE_JUMP_PARAMETERS = Object.freeze({
 	type: "object",
 	additionalProperties: false,
-	required: ["target", "experience"],
+	required: ["target", "experience", ARIADNE_BUDGET_FIELD, ARIADNE_GOAL_FIELD],
 	properties: {
 		target: {
 			type: "string",
@@ -185,17 +185,17 @@ const VERSE_JUMP_PARAMETERS = Object.freeze({
 		[ARIADNE_BUDGET_FIELD]: {
 			type: "integer",
 			minimum: 1,
-			description: "Optional Ariadne's Thread turn budget to unspool upon arriving in the target universe.",
+			description: "Required Ariadne's Thread turn budget to unspool upon arriving in the target universe.",
 		},
 		[ARIADNE_GOAL_FIELD]: {
 			type: "string",
 			minLength: 1,
-			description: "Optional Ariadne's Goal for the target universe (required when ariadne_budget is set).",
+			description: "Required Ariadne's Goal for the target universe.",
 		},
 	},
 });
 
-const CLJ_TOOL_NAMES = Object.freeze([...TOOL_ROLES.map((role) => TOOL_NAMES[role]), "join", "verse_jump"]);
+const CLJ_TOOL_NAMES = Object.freeze([...TOOL_ROLES.map((role) => TOOL_NAMES[role]), "wait", "verse_jump"]);
 
 function isPlainObject(value) {
 	if (value === null || typeof value !== "object") return false;
@@ -309,6 +309,17 @@ function validateForkParams(params) {
 			field: "code",
 		});
 	}
+	if (!Number.isInteger(params[ARIADNE_BUDGET_FIELD]) || params[ARIADNE_BUDGET_FIELD] < 1) {
+		throw herdError("INVALID_ARGUMENT", `${ARIADNE_BUDGET_FIELD} must be an integer >= 1`, {
+			field: ARIADNE_BUDGET_FIELD,
+			received: params[ARIADNE_BUDGET_FIELD],
+		});
+	}
+	if (typeof params[ARIADNE_GOAL_FIELD] !== "string" || params[ARIADNE_GOAL_FIELD].trim().length === 0) {
+		throw herdError("INVALID_ARGUMENT", `${ARIADNE_GOAL_FIELD} must be a non-empty string`, {
+			field: ARIADNE_GOAL_FIELD,
+		});
+	}
 	return {
 		programName: params.name ?? `repl-${randomUUID().slice(0, 12)}`,
 		code: params.code,
@@ -316,19 +327,19 @@ function validateForkParams(params) {
 	};
 }
 
-function validateJoinParams(params) {
+function validateWaitParams(params) {
 	if (!isPlainObject(params)) {
-		throw herdError("INVALID_ARGUMENT", "join parameters must be an object", {
+		throw herdError("INVALID_ARGUMENT", "wait parameters must be an object", {
 			received: typeof params,
 		});
 	}
 	for (const key of Object.keys(params)) {
-		if (!JOIN_ALLOWED_FIELDS.has(key)) {
-			throw herdError("INVALID_ARGUMENT", `unknown join field: ${key}`, { field: key });
+		if (!WAIT_ALLOWED_FIELDS.has(key)) {
+			throw herdError("INVALID_ARGUMENT", `unknown wait field: ${key}`, { field: key });
 		}
 	}
 	if (typeof params.otherwise_independent_work !== "string" || params.otherwise_independent_work.trim().length === 0) {
-		throw herdError("INVALID_ARGUMENT", "join requires a non-empty otherwise_independent_work string", {
+		throw herdError("INVALID_ARGUMENT", "wait requires a non-empty otherwise_independent_work string", {
 			field: "otherwise_independent_work",
 		});
 	}
@@ -350,13 +361,14 @@ function formatIdleReceipt() {
 	const text = `{:state :idle :in-flight 0 :backlog 0 :message "No sandbox tasks are running or queued."}`;
 	return {
 		content: [{ type: "text", text }],
-		details: { state: "idle", inFlight: 0, backlog: 0 },
+		details: { op: "wait", source: "sandbox", state: "idle", inFlight: 0, backlog: 0 },
+		useless: true,
 	};
 }
 
 function formatWaitingDeadlineReceipt(waitMs, pool) {
 	const running = [...pool.inFlight.values()].map((entry) => JSON.stringify(entry.programName)).join(" ");
-	const text = `{:state :waiting :reason :deadline :wait-ms ${waitMs} :in-flight ${pool.inFlight.size} :backlog ${pool.backlog.length} :running [${running}] :message "Wait deadline elapsed before any running sandbox finished; tasks continue in background. Dispatch more independent work or call join again."}`;
+	const text = `{:state :waiting :reason :deadline :wait-ms ${waitMs} :in-flight ${pool.inFlight.size} :backlog ${pool.backlog.length} :running [${running}] :message "Wait deadline elapsed before any running sandbox finished; tasks continue in background. Dispatch more independent work or call wait again."}`;
 	return {
 		content: [{ type: "text", text }],
 		details: {
@@ -380,6 +392,8 @@ function formatJoinedResult(item, pool) {
 		content,
 		details: {
 			...(result.details ?? {}),
+			op: "wait",
+			source: "sandbox",
 			joinedTool: item.toolName,
 			programName: item.programName,
 			inFlight: pool.inFlight.size,
@@ -406,6 +420,8 @@ function formatJoinedResults(items, pool) {
 	return {
 		content: [{ type: "text", text: parts.join("\n\n") }],
 		details: {
+			op: "wait",
+			source: "sandbox",
 			joinedCount: items.length,
 			joined: items.map((item) => ({
 				tool: item.toolName,
@@ -424,7 +440,7 @@ function formatJoinedResults(items, pool) {
  *
  * The operation is subtractive: `getActiveTools()` is filtered and passed
  * back, so unrelated tools keep their prior activation state. The four clj
- * tools and `join` are then ensured active because `registerTool` alone does
+ * tools and `wait` are then ensured active because `registerTool` alone does
  * not activate an extension tool; that is self-registration, not a blanket
  * allowlist.
  *
@@ -474,7 +490,7 @@ export async function applyCljToolSurface(pi) {
 }
 
 /**
- * Register the four Worker-hosted sandbox tools and unified `join`. Kept as an
+ * Register the four Worker-hosted sandbox tools and unified `wait`. Kept as an
  * exported function so a test or a future assembly can compose the same surface
  * without the omp default entry.
  */
@@ -868,15 +884,15 @@ export function registerCljTools(pi, deps = {}) {
 
 	try {
 		pi.registerTool({
-			name: "join",
-			label: "Join Async Sandbox",
+			name: "wait",
+			label: "Wait",
 			description:
-				"Collect async clj_* sandbox results. Returns immediately with all backlogged results if any exist, or with :idle if no tasks are running; otherwise blocks until the first running task finishes (up to 1000ms + UTF-8 bytes(otherwise_independent_work) * 50ms, cannot target a specific task) and returns that single result. Call join again to collect remaining tasks.",
-			parameters: JOIN_PARAMETERS,
-			async execute(_toolCallId, params = {}, signal, _onUpdate, ctx) {
+				"Wait for the first result from your async clj_* sandbox programs or from background subagents/jobs you started. Returns immediately with all backlogged sandbox results; otherwise blocks until the earliest clj program or host job settles. The required otherwise_independent_work string sizes the sandbox wait as 1000ms + UTF-8 bytes * 50ms; the host side uses the native wait. Call wait again to collect remaining results.",
+			parameters: WAIT_PARAMETERS,
+			async execute(_toolCallId, params = {}, signal, onUpdate, ctx) {
 				let plan;
 				try {
-					plan = validateJoinParams(params);
+					plan = validateWaitParams(params);
 				} catch (error) {
 					return toolFailure(error);
 				}
@@ -892,15 +908,26 @@ export function registerCljTools(pi, deps = {}) {
 					const items = pool.backlog.splice(0, pool.backlog.length);
 					return finish(formatJoinedResults(items, pool));
 				}
+				const invokeNative = typeof ctx?.invokeTool === "function" ? ctx.invokeTool.bind(ctx) : null;
 				if (pool.inFlight.size === 0) {
-					return finish(formatIdleReceipt());
+					if (invokeNative === null) return finish(formatIdleReceipt());
+					try {
+						return finish(await invokeNative({}, { signal, onUpdate }));
+					} catch (error) {
+						if (signal?.aborted === true) {
+							return finish(toolFailure(herdError("UPSTREAM_ABORTED", "wait was cancelled while waiting")));
+						}
+						return finish(toolFailure(error));
+					}
 				}
 				if (signal?.aborted === true) {
-					return finish(toolFailure(herdError("UPSTREAM_ABORTED", "join was cancelled before waiting")));
+					return finish(toolFailure(herdError("UPSTREAM_ABORTED", "wait was cancelled before waiting")));
 				}
 
 				const waitMs = waitMsFor(plan.counterfactual, baseWaitMs);
 				const joined = await new Promise((resolvePromise) => {
+					let hostAbort = null;
+					let hostPromise = null;
 					let settled = false;
 					let remainingMs = waitMs;
 					let tickingSince = null;
@@ -934,6 +961,7 @@ export function registerCljTools(pi, deps = {}) {
 					const onDeadline = async () => {
 						if (settled) return;
 						settled = true;
+						hostAbort?.abort();
 						cleanup();
 						const targets = [...pool.inFlight.values()].filter((item) => !item.claimed);
 						if (targets.length === 0) {
@@ -975,15 +1003,32 @@ export function registerCljTools(pi, deps = {}) {
 						}
 					};
 
+					const isIdleWaitResult = (result) =>
+						result?.details?.useless === true ||
+						(result?.content ?? []).some(
+							(block) => typeof block?.text === "string" && block.text.startsWith("Nothing to wait for"),
+						);
+
 					const waiter = {
 						deliver(item) {
 							if (settled) return;
+							hostAbort?.abort();
 							settled = true;
 							cleanup();
 							resolvePromise(formatJoinedResult(item, pool));
 						},
 						deliverIdle() {
 							if (settled) return;
+							if (hostPromise !== null) {
+								hostPromise.then(({ result, error }) => {
+									if (settled) return;
+									settled = true;
+									cleanup();
+									if (error && signal?.aborted !== true) resolvePromise(toolFailure(error));
+									else resolvePromise(result ?? formatIdleReceipt());
+								});
+								return;
+							}
 							settled = true;
 							cleanup();
 							resolvePromise(formatIdleReceipt());
@@ -992,14 +1037,36 @@ export function registerCljTools(pi, deps = {}) {
 
 					pool.waiters.push(waiter);
 					pool.callListeners.add(syncTimer);
+					if (invokeNative !== null) {
+						hostAbort = new AbortController();
+						hostPromise = invokeNative({}, { signal: hostAbort.signal, onUpdate })
+							.then((result) => ({ result }))
+							.catch((error) => ({ error }));
+						hostPromise.then(({ result, error }) => {
+							if (settled) return;
+							if (error) {
+								if (signal?.aborted === true) {
+									settled = true;
+									cleanup();
+									resolvePromise(toolFailure(herdError("UPSTREAM_ABORTED", "wait was cancelled while waiting")));
+								}
+								return;
+							}
+							if (isIdleWaitResult(result) && pool.inFlight.size > 0) return;
+							settled = true;
+							cleanup();
+							resolvePromise(result);
+						});
+					}
 					syncTimer();
 
 					if (signal && typeof signal.addEventListener === "function") {
 						abortListener = () => {
 							if (settled) return;
+							hostAbort?.abort();
 							settled = true;
 							cleanup();
-							resolvePromise(toolFailure(herdError("UPSTREAM_ABORTED", "join was cancelled while waiting")));
+							resolvePromise(toolFailure(herdError("UPSTREAM_ABORTED", "wait was cancelled while waiting")));
 						};
 						signal.addEventListener("abort", abortListener, { once: true });
 					}
@@ -1008,12 +1075,12 @@ export function registerCljTools(pi, deps = {}) {
 			},
 		});
 	} catch (error) {
-		failures.push("join");
+		failures.push("wait");
 		recordHealth({
 			entry: ENTRY,
 			status: "failed",
 			version: VERSION,
-			capabilities: { tool: "join" },
+			capabilities: { tool: "wait" },
 			requiredCapabilities: ["tool"],
 			degraded: true,
 			error: errorText(error),
@@ -1080,7 +1147,7 @@ export function registerCljTools(pi, deps = {}) {
 				`clj-core: ${cherry.loaded ? "ready" : "not-loaded"}${cherry.version ? ` (cherry-cljs ${cherry.version})` : ""}`,
 				`tools: ${CLJ_TOOL_NAMES.join(", ")}`,
 				`host tool blacklist: ${HOST_TOOL_BLACKLIST.join(", ")}`,
-				"surface: Worker-hosted clj_* + unified join; /herd, board, worktrees, and audit are not enabled",
+				"surface: Worker-hosted clj_* + unified wait; /herd, board, worktrees, and audit are not enabled",
 			];
 			ctx?.ui?.notify?.(lines.join("\n"), cherry.loaded ? "info" : "warning");
 		},

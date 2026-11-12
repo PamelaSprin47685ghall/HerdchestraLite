@@ -38,14 +38,14 @@ describe("Mythical Man-Month worker self-check", () => {
 		rmSync(root, { recursive: true, force: true });
 	});
 
-	it("declares the worker field on all clj tools and requires proof in join counterfactual description", () => {
+	it("declares the worker field on all clj tools and requires proof in wait counterfactual description", () => {
 		const tools = fakeHost();
-		for (const name of ["clj_plan", "clj_devops", "clj_review", "clj_worker", "join"]) {
+		for (const name of ["clj_plan", "clj_devops", "clj_review", "clj_worker", "wait"]) {
 			const definition = tools.get(name).parameters.properties[WORKERS];
 			expect(definition.type).toBe("integer");
 			expect(definition.minimum).toBe(0);
 		}
-		const joinDesc = tools.get("join").parameters.properties.otherwise_independent_work.description;
+		const joinDesc = tools.get("wait").parameters.properties.otherwise_independent_work.description;
 		expect(joinDesc).toContain(WORKERS);
 		expect(joinDesc).toContain("Mythical Man-Month");
 	});
@@ -54,13 +54,13 @@ describe("Mythical Man-Month worker self-check", () => {
 		const tools = fakeHost();
 		const cljPlan = tools.get("clj_plan");
 
-		const withThree = await cljPlan.execute("w-3", { code: "1", [WORKERS]: 3 }, undefined, undefined, { cwd: root });
+		const withThree = await cljPlan.execute("w-3", { code: "1", ariadne_budget: 5, ariadne_goal: "test", [WORKERS]: 3 }, undefined, undefined, { cwd: root });
 		expect(withThree.content.at(-1).text).toBe(nudgeFor(3));
 
-		const zero = await cljPlan.execute("w-0", { code: "1", [WORKERS]: 0 }, undefined, undefined, { cwd: root });
+		const zero = await cljPlan.execute("w-0", { code: "1", ariadne_budget: 5, ariadne_goal: "test", [WORKERS]: 0 }, undefined, undefined, { cwd: root });
 		expect(zero.content.some((block) => typeof block.text === "string" && block.text.includes("立刻兑现"))).toBe(false);
 
-		const absent = await cljPlan.execute("w-none", { code: "1" }, undefined, undefined, { cwd: root });
+		const absent = await cljPlan.execute("w-none", { code: "1", ariadne_budget: 5, ariadne_goal: "test" }, undefined, undefined, { cwd: root });
 		expect(absent.content.some((block) => typeof block.text === "string" && block.text.includes("立刻兑现"))).toBe(
 			false,
 		);
@@ -72,7 +72,7 @@ describe("Mythical Man-Month worker self-check", () => {
 		for (const [index, value] of [-1, 1.5, "3"].entries()) {
 			const result = await cljPlan.execute(
 				`w-bad-${String(index)}`,
-				{ code: "1", [WORKERS]: value },
+				{ code: "1", ariadne_budget: 5, ariadne_goal: "test", [WORKERS]: value },
 				undefined,
 				undefined,
 				{ cwd: root },
@@ -82,11 +82,11 @@ describe("Mythical Man-Month worker self-check", () => {
 		}
 	});
 
-	it("appends the nudge from join when positive and omits it when zero", async () => {
+	it("appends the nudge from wait when positive and omits it when zero", async () => {
 		const tools = fakeHost();
-		const joinTool = tools.get("join");
+		const waitTool = tools.get("wait");
 
-		const nudged = await joinTool.execute(
+		const nudged = await waitTool.execute(
 			"j-w",
 			{ otherwise_independent_work: "可并行派发两个互不相交的切片。", [WORKERS]: 2 },
 			undefined,
@@ -95,7 +95,7 @@ describe("Mythical Man-Month worker self-check", () => {
 		);
 		expect(nudged.content.at(-1).text).toBe(nudgeFor(2));
 
-		const zero = await joinTool.execute(
+		const zero = await waitTool.execute(
 			"j-0",
 			{ otherwise_independent_work: "无更多可证互不相交的切片。", [WORKERS]: 0 },
 			undefined,

@@ -104,7 +104,7 @@ Lite 版不把模型当傻子。它不把每个动作都拆成一条“爷爷辈
 
 ### 0.4 当前装配阶段：clj-only dogfood
 
-当前 `package.json` 的 `omp.extensions` / `pi.extensions` 只声明 `./src/clj-main.mjs`。这是最小可 dogfood 面，不是完整产品：它只注册 `clj_plan`、`clj_devops`、`clj_review`、`clj_worker`、`join` 与 `verse_jump`，并附 `/clj-status`；不加载 `/herd`、S1–S5 门禁、看板、worktree、K 路审计、TUI、tool-gate/Scope 与角色收窄。`src/main.mjs`、`src/bootstrap-main.mjs`、`src/stages/`、`src/swarm/`、`src/scope/`、`src/tui/` 是保留的完整装配代码，当前清单不加载。
+当前 `package.json` 的 `omp.extensions` / `pi.extensions` 只声明 `./src/clj-main.mjs`。这是最小可 dogfood 面，不是完整产品：它只注册 `clj_plan`、`clj_devops`、`clj_review`、`clj_worker`、`wait` 与 `verse_jump`，并附 `/clj-status`；不加载 `/herd`、S1–S5 门禁、看板、worktree、K 路审计、TUI、tool-gate/Scope 与角色收窄。`src/main.mjs`、`src/bootstrap-main.mjs`、`src/stages/`、`src/swarm/`、`src/scope/`、`src/tui/` 是保留的完整装配代码，当前清单不加载。
 
 dogfood 面用黑名单减法移除宿主 `read`/`write`/`edit`/`apply_patch`/`ast_edit`/`ast_grep`/`bash`/`exec`/`eval`/`glob`/`grep`/`find`，保留其他工具的原有激活状态；它不是 §1.2 要求的白名单收窄。主会话可以直接选择四个 `clj_*` 工具，没有角色 admission。完整版语义（§2–§6 与 §8 的其余部分）仍然有效，但只有接回对应模块后才生效。
 
@@ -961,10 +961,10 @@ Lite 保留标准版的 REPL 程序化工具面（内部仍用命名程序承载
 
 ```text
 clj_<role>({ code[, name][, more_workers_without_hitting_mythical_man_month] })
-join({ otherwise_independent_work[, more_workers_without_hitting_mythical_man_month] })
+wait({ otherwise_independent_work[, more_workers_without_hitting_mythical_man_month] })
 ```
 
-`more_workers_without_hitting_mythical_man_month` 是 Brooks《人月神话》自检：只数与既有契约互不相交、跨切片通信成本 $O(1)$ 且现在已就绪的切片，无法证明互不相交的一律计 0。`join` 的反事实参数 `otherwise_independent_work` 的描述要求从人月神话推导出该量并给出证明。该量为正时，工具回执末尾追加“你刚刚在工具参数中说还可以增派 X 个工人，现在请你立刻兑现。”；为 0 时该句不出现。
+`more_workers_without_hitting_mythical_man_month` 是 Brooks《人月神话》自检：只数与既有契约互不相交、跨切片通信成本 $O(1)$ 且现在已就绪的切片，无法证明互不相交的一律计 0。`wait` 的反事实参数 `otherwise_independent_work` 的描述要求从人月神话推导出该量并给出证明。该量为正时，工具回执末尾追加“你刚刚在工具参数中说还可以增派 X 个工人，现在请你立刻兑现。”；为 0 时该句不出现。
 
 `code` 是 REPL 输入：任意数量的顶层表达式，最后一个值作为回执返回；`name` 可选；省略时框架生成 `repl-<id>`，内部命名只服务 `park`/`unpark`。**单一写法铁律**：同一个能力只有一种调用写法——**裸函数名 + 单个 EDN map 参数**。不存在接收者写法或位置参数；`this` 不绑定。顶层结构化原语是**独立工具**，不在 REPL 内调用；也不要在聊天正文里“调用”沙箱函数。
 
@@ -1110,9 +1110,9 @@ join({ otherwise_independent_work[, more_workers_without_hitting_mythical_man_mo
    - **能力集核验**：当前角色没有恢复该程序所需能力集，返回 `:CAPABILITY_DENIED`。
 
    通过后，`value` 原样成为原挂起表达式的返回值（内核不做二次校验；切片有效性由程序自己保证）；原程序继续执行，恢复时按新请求的 `intent` 重新计时。恢复后的提交仍会复核 `read-set` 的 `stamp`，确保挂起期间底层文件未被他人篡改。
-6. **按 `call` 自动后台化与 `join` 期限**：`clj_*` 工具无需携带 `intent`，在 fork 时提前赠送共计 `1000ms` 的免费 `call` 等待额度（同一调用内多次 `call` 累计共用这 `1000ms`）：若在 `1000ms` 内完成则同步返回，一旦累计超过 `1000ms` 立即后台化并返回 `:state :forked`。LLM 通过统一的 `join({ otherwise_independent_work })` 工具收集结果：`otherwise_independent_work` 必须反事实地说明本可以立即派发什么无依赖工作而不是调用 `join` 死等结果；每次 `join` 同样继续赠送 `1000ms`，等待期限为 `1000ms + UTF-8 字节数 × 50ms`，且**只对 `call` 计时，沙盒引擎自身耗时不计**。无任务时 `join` 立刻返回 `:idle`；有积压结果时 `join` 一次性全部返回且不阻塞；否则 `join` 阻塞等待最先返回的一个结果（不可指定）并返回，其余任务继续在后台执行，可再次调用 `join` 收集。`join` 超期采用 `park-all` 语义，将所有运行中程序挂起（`:state :parked :reason :deadline`）并返回其回执，随后仍可通过指名 `(unpark {:name ... :value ...})`, `(abandon {:name ...})` 恢复。
+6. **按 `call` 自动后台化与 `wait` 期限**：`clj_*` 工具无需携带 `intent`，在 fork 时提前赠送共计 `1000ms` 的免费 `call` 等待额度（同一调用内多次 `call` 累计共用这 `1000ms`）：若在 `1000ms` 内完成则同步返回，一旦累计超过 `1000ms` 立即后台化并返回 `:state :forked`。LLM 通过统一的 `wait({ otherwise_independent_work })` 工具收集结果：`otherwise_independent_work` 必须反事实地说明本可以立即派发什么无依赖工作而不是调用 `wait` 死等结果；每次 `wait` 同样继续赠送 `1000ms`，等待期限为 `1000ms + UTF-8 字节数 × 50ms`，且**只对 `call` 计时，沙盒引擎自身耗时不计**。无任务时 `wait` 立刻返回 `:idle`；有积压结果时 `wait` 一次性全部返回且不阻塞；否则 `wait` 阻塞等待最先返回的一个结果（不可指定）并返回，其余任务继续在后台执行，可再次调用 `wait` 收集。`wait` 超期采用 `park-all` 语义，将所有运行中程序挂起（`:state :parked :reason :deadline`）并返回其回执，随后仍可通过指名 `(unpark {:name ... :value ...})`, `(abandon {:name ...})` 恢复。
 7. **增量输出、`stdin` 灌入、未裁决提醒与 `$W$` 排队**：
-   - 慢 `call` 因 `join` 超时 `park` 时，将自上次展示以来的增量 `{:stdout ... :stderr ...}` 放入 `:payload`，满足 `sum(各次 park) + final === all`。
+   - 慢 `call` 因 `wait` 超时 `park` 时，将自上次展示以来的增量 `{:stdout ... :stderr ...}` 放入 `:payload`，满足 `sum(各次 park) + final === all`。
    - `(unpark {:name ... :value ...})` 恢复 `pendingCall` 时，字符串或 `{:stdin ... :eof ...}` 作为键盘输入灌入子进程 `stdin`。
    - `(abandon {:name ...})` 抛弃挂起程序、丢弃未提交 VFS、中止遗留 `call` 子进程释放 `$W$` 并释放内存。
    - `context` 钩子在每次 LLM 请求末尾总是注入 `<skill version="1.0">…</skill>` 语言纪律块强制简体中文思考与输出，并在存在未裁决 `:parked` 程序时同消息另附 `<UNDECIDED-PARKED-PROGRAMS>` 文本块提醒模型裁决。
@@ -1175,7 +1175,7 @@ join({ otherwise_independent_work[, more_workers_without_hitting_mythical_man_mo
 `src/scope/ariadne.mjs` 为单会话提供表达式级分叉栈与版本切换，当前 dogfood 已接入。
 
 - **状态**：`createAriadneStore()` 持有 `sessions: Map`，按 `hostSessionKey` 分区；每个 session 保存 `active` verse、`activatedVerses`、`usedNames`、`historical`、`anchors` 与 `pendingJump`。verse 的 `stack` 记录每次 `clj_*`/`verse_jump` 的程序帧（`programName`、`toolCallId`、目标与 beacon）。
-- **字段**：`ariadne_budget` 是正整数回合预算；`ariadne_goal` 是非空字符串，只有给出预算时才有效。到期只发 `<ARIADNE-THREAD>` 软提醒，不硬阻塞工具执行。
+- **字段**：`ariadne_budget` 与 `ariadne_goal` 均为必填：前者是正整数回合预算，后者是非空字符串。到期只发 `<ARIADNE-THREAD>` 软提醒，不硬阻塞工具执行。
 - **恢复**：`recoverHistory` 从 `sessionManager.getEntries()`/`getBranch()` 重放历史锚点；不写 `.herd/`，也不跨 `agent_id` 传递。进程重启后内存态丢失，只能从宿主会话历史恢复锚点。
 - **出站注入**：`formatAriadneBlock` 生成 `<ARIADNE-THREAD>` 与 `<OTHER-VERSES>`，由 `appendOutboundContextTail` 每轮附加；`hackContext` 把增量通过 `branch(parentId)` + `appendMessage(...)` 追加到宿主 `.jsonl`，不重写全量历史。
 - **Verse-Jump**：`verse_jump` 写入 `pendingJump` 并切换分支；下一次 `context` 消费该记录，调用 `applyVerseJumpToMessages`，随后由 `hackContext` 持久化新分支。
@@ -1220,13 +1220,13 @@ COMMON_RULES
 
 #### 5.2.1 注入字段
 
-> 完整装配要求所有非豁免工具携带 `scope` 与 `intent`。当前 dogfood 的 `clj_*` 工具不接受这两个字段（`FORK_ALLOWED_FIELDS` 会直接拒绝）；`join` 只接受 `otherwise_independent_work`。这是 §0.4 的阶段性豁免，接回 tool-gate 后恢复本节的完整要求。
+> 完整装配要求所有非豁免工具携带 `scope` 与 `intent`。当前 dogfood 的 `clj_*` 工具不接受这两个字段（`FORK_ALLOWED_FIELDS` 会直接拒绝）；`wait` 只接受 `otherwise_independent_work`。这是 §0.4 的阶段性豁免，接回 tool-gate 后恢复本节的完整要求。
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `intent` | `string`，非空 | 本步动作的简明中文意图；用于期限核定（1000ms + UTF-8 字节数 × 50ms）。必须在通过三闸门后写。 |
 | `scope` | `object` | 上下文所有权注解；字段形状见 §5.3。 |
-| `more_workers_without_hitting_mythical_man_month` | `integer` | 人月神话自检：只数与既有契约互不相交、通信成本 $O(1)$ 且已就绪的切片，无法证明的计 0。当前在线 `clj_*` / `join` 面把它声明为真实工具参数，`join` 的反事实参数须从人月神话推导该量并给出证明；该量为正时回执追加“你刚刚在工具参数中说还可以增派 X 个工人，现在请你立刻兑现。”，为 0 时不出现。设计讨论中的连字符写法是同一字段的别名。 |
+| `more_workers_without_hitting_mythical_man_month` | `integer` | 人月神话自检：只数与既有契约互不相交、通信成本 $O(1)$ 且已就绪的切片，无法证明的计 0。当前在线 `clj_*` / `wait` 面把它声明为真实工具参数，`wait` 的反事实参数须从人月神话推导该量并给出证明；该量为正时回执追加“你刚刚在工具参数中说还可以增派 X 个工人，现在请你立刻兑现。”，为 0 时不出现。设计讨论中的连字符写法是同一字段的别名。 |
 
 **注入范围**：所有非豁免工具。豁免工具仅 `ask_previous_scope` 与 `assume`（它们本身是 Scope 机制的一部分，不能再要求 Scope）。`ask_user`、`submit_*`、`advance_*`、`board_*`、`clj_*` 都需要 `scope` 与 `intent`。
 
@@ -1705,7 +1705,7 @@ Lite 不启动独立服务；控制状态由 `omp` 进程内的主会话与子�
 ### 8.1 组装与维护纪律
 
 1. 本节的文本是**运行时提示词的规范原文**。实现可以把它们放进 `src/prompts/common.mjs`、`disclosures.mjs`、`roles.mjs`、`runtime-wires.mjs`，但不得改写语义、删减锐度、把禁令软化成建议。
-2. 工具名统一为宿主 snake_case：`clj_plan`、`clj_devops`、`clj_review`、`clj_worker`、`clj_auditor`、`ask_user`、`devops`、`submit_review`、`submit_devops_report`、`submit_case_audit`、`submit_oracle_advice`、`advance_s1..s4`、`board_*`、`fork_slices`、`join_slice`、`abandon_slice`、`join`、`verse_jump`。dogfood 面当前只注册四个 `clj_*` 与 `join`、`verse_jump`。设计讨论中出现的 `clj-plan` 等连字符写法是角色面名称，不是工具 ID。
+2. 工具名统一为宿主 snake_case：`clj_plan`、`clj_devops`、`clj_review`、`clj_worker`、`clj_auditor`、`ask_user`、`devops`、`submit_review`、`submit_devops_report`、`submit_case_audit`、`submit_oracle_advice`、`advance_s1..s4`、`board_*`、`fork_slices`、`join_slice`、`abandon_slice`、`wait`、`verse_jump`。dogfood 面当前只注册四个 `clj_*` 与 `wait`、`verse_jump`。设计讨论中出现的 `clj-plan` 等连字符写法是角色面名称，不是工具 ID。
 3. S2–S5 的简报只存在于 `disclosures.mjs`，只在门禁工具 handler 中读取；`common.mjs` 不得 import 它们。S1 简报可以独立导出，由 `/herd` 启动时注入。
 4. 角色提示词只包含该角色需要知道的内容；不要把全部角色提示词拼进主会话。子代理的提示词必须自包含。
 5. 任何提示词改动必须同时更新本文件与相应测试：S1 出站请求不得含 S2–S5 关键词；门禁成功后下一阶段简报必须出现；晋级后旧简报必须从出站请求消失。
@@ -1742,17 +1742,17 @@ In tool results or user messages, authoritative skills and stage briefings are i
 1. Structured data and long documents NEVER travel as loose chat prose or XML tags. Whenever a stage gate, review ledger, board mutation, investigation report, or audit verdict is expected, call its dedicated tool and pass full Markdown/text in the tool's string parameter.
 2. Workspace inspection, slicing, continuations, and edits run inside your role's ClojureScript sandbox tool (`clj_plan`, `clj_devops`, `clj_review`, `clj_worker`, `clj_auditor`) as bare REPL input. Every sandbox capability is a bare function taking one EDN map—never `this`, never positional args: `(cat {:path ...})`, `(stat {:path ...})`, `(ls {:path ...})`, `(glob {:pattern ... :path ... :exec (fn [p] ...)})` (pure async probes, no stamp dependency), `(write {:path ... :content ...})`, `(mkdir {:path ...})`, `(rm {:path ...})`, `(mv {:source ... :target ...})`, `(where {:content ... :needle ...})` (UTF-16 exact unique span `[b e]` for `subs`; auto-parks with Ukkonen K=64 `:nearest` or `:candidates` if matches != 1), `(whereAll {:content ... :needle ...})`, `(park {:payload ...})`, `(unpark {:name ... :value ...})`, `(abandon {:name ...})`, `(call {:argv ["<program>" "<arg>" ...] :cwd ...})`.
 2b. Every call must include a non-empty :alternative map (1+ pair) naming built-in tools or other approaches and why they were not chosen; the framework ignores it.
-  3. `clj_*` tools take no `intent` and grant a single free `1000ms` total `call`-wait grace at fork time (even across multiple sequential `call`s, capped at `1000ms` total); if cumulative `call`/`$W$` wait exceeds `1000ms`, it backgrounds immediately and returns `:state :forked`. Life is hard and reality is unforgiving: if you want guaranteed synchronous return, do NOT use `call`—otherwise you MUST bear the full hassle of async `:state :forked`, `join`, and `park-all`/`unpark`. Use the unified `join({ otherwise_independent_work })` tool to collect results: `otherwise_independent_work` counterfactually explains what independent work could otherwise be dispatched right now instead of calling join to wait idly (if you decide not to join after thinking about this, GREAT!), and its UTF-8 byte length sets the wait deadline (`1000ms + UTF-8 bytes * 50ms`), counting ONLY time spent inside `call` (sandbox engine evaluation time is excluded). `join` returns immediately if idle or with all backlogged results if any exist; otherwise it waits for the first returning task (not selectable) and returns that single result. On `join` timeout, all running tasks park (`park-all`) and their `:parked` receipts are returned with incremental `:stdout`/`:stderr` deltas; resume any of them by name via `(unpark {:name ... :value ...})` (pipes string/`:eof` to `call` stdin) or discard via `(abandon {:name ...})`.
+  3. `clj_*` tools take no `intent` and grant a single free `1000ms` total `call`-wait grace at fork time (even across multiple sequential `call`s, capped at `1000ms` total); if cumulative `call`/`$W$` wait exceeds `1000ms`, it backgrounds immediately and returns `:state :forked`. Life is hard and reality is unforgiving: if you want guaranteed synchronous return, do NOT use `call`—otherwise you MUST bear the full hassle of async `:state :forked`, `wait`, and `park-all`/`unpark`. Use the unified `wait({ otherwise_independent_work })` tool to collect results: `otherwise_independent_work` counterfactually explains what independent work could otherwise be dispatched right now instead of calling wait to wait idly (if you decide not to wait after thinking about this, GREAT!), and its UTF-8 byte length sets the wait deadline (`1000ms + UTF-8 bytes * 50ms`), counting ONLY time spent inside `call` (sandbox engine evaluation time is excluded). `wait` returns immediately if idle or with all backlogged results if any exist; otherwise it waits for the first returning task (not selectable) and returns that single result. On `wait` timeout, all running tasks park (`park-all`) and their `:parked` receipts are returned with incremental `:stdout`/`:stderr` deltas; resume any of them by name via `(unpark {:name ... :value ...})` (pipes string/`:eof` to `call` stdin) or discard via `(abandon {:name ...})`.
   4. System receipts use EDN + UFSS (`#"..."#` single-line raw, `#"""\n...\n<indent>"""#` multi-line indent-stripped raw; zero backslash escaping; regexes use `(re-pattern #"..."#)`). Prefer UFSS inside REPL literals to eliminate quote/backslash corruption.
 
 # Multi-Verse Strategy (Ariadne's Thread & Verse-Jumping)
 Knowing the rules of `ariadne_thread` and `verse_jump` is not enough—play them like chess (built on **zero-overhead abstraction**: you never need to predict in advance whether you will come back; every ordinary `clj_*` `:name` is already a latent fork point at zero upfront cost, and you only pay for branching/`beacon` if you actually jump):
-1. **Unspool before a risky leg**: Set `ariadne_thread` + `ariadne_goal` whenever you start a non-trivial hypothesis, debug hunt, or refactor that could spiral (e.g. `3–5` turns). Skip it on trivial 1-step lookups.
+1. **Unspool before a risky leg**: Every `clj_*` call MUST carry `ariadne_budget` + `ariadne_goal`; size the budget for a non-trivial hypothesis, debug hunt, or refactor that could spiral. Even trivial 1-step lookups must carry both fields.
 2. **Jump instead of brute-forcing a dead end**: The moment a hypothesis is falsified or `<ARIADNE-THREAD>` warns you are overdue, do NOT keep patching inside a polluted context. `verse_jump` back to the clean `clj_*` fork point carrying every falsified path, file/symbol, and discovery in `experience` so your alternate self starts clean and battle-hardened.
 3. **Use `beacon` to keep contexts pure**: When `"alpha"` has the big picture and you need to dive into a messy sub-investigation (e.g. a race or build error), fork a side verse, do the messy probe there, then `verse_jump` back to `"alpha"` with only the proven answer in `experience` (and leave a `beacon` on the side verse in case you need its repro later).
 4. **Resolve local `:parked` programs first**: Before jumping to a universe that predates a parked `clj_*` program, `unpark` or `abandon` it.
-5. **任务重、回合不够时，彻底回头盘点而不是硬撑**：不要在当前陈旧上下文里继续磨。用 `verse_jump` 回到最干净的分叉点，在 `experience` 里写完整盘点——已证实什么、已证伪什么、精确文件/符号、剩余计划、下一步单一动作——再用新的 `ariadne_thread` 与 `ariadne_goal` 重启。主动的完整重基线胜过半途硬撑。
-6. **新目标不能重置 thread**：在普通 `clj_*` 调用中设置新的 `ariadne_thread`/`ariadne_goal` 只是在当前线上新增锚点，不能清除已超期的旧线；只有 `verse_jump` 回到过去的分叉点并在那里重新设置，才真正重置时钟。
+5. **任务重、回合不够时，彻底回头盘点而不是硬撑**：不要在当前陈旧上下文里继续磨。用 `verse_jump` 回到最干净的分叉点，在 `experience` 里写完整盘点——已证实什么、已证伪什么、精确文件/符号、剩余计划、下一步单一动作——再用新的 `ariadne_budget` 与 `ariadne_goal` 重启。主动的完整重基线胜过半途硬撑。
+6. **新目标不能重置 thread**：在普通 `clj_*` 调用中设置新的 `ariadne_budget`/`ariadne_goal` 只是在当前线上新增锚点，不能清除已超期的旧线；只有 `verse_jump` 回到过去的分叉点并在那里重新设置，才真正重置时钟。
 7. **旁支不会因为 LCA 形成约束**：只有当前宇宙的真实历史帧才能约束当前宇宙的 thread；旁支与 LCA 几何关系不形成约束，也不参与预算扣减或返还。
 8. **优先历史 `clj_*` 锚点，而不是 beacon 目标**：beacon/OTHER-VERSES 只是面包屑与线索，不是主要分叉目标；选择目标应看任务需要哪些历史事实，通常应选仍包含全部必要事实且距离最近的锚点。
 
@@ -1964,7 +1964,7 @@ export function rewriteVibeModeContext(content) {
 
 #### 8.5.3 工具门字段定义
 
-> 除本节的 Scope/intent 字段外，`clj_*` 与 `verse_jump` 还接受 `ariadne_budget`（正整数）与 `ariadne_goal`（非空字符串）；`ariadne_goal` 只在同时给出 `ariadne_budget` 时有效。它们不是 Scope 门字段，而是 Ariadne's Thread 的续体注解。
+> 除本节的 Scope/intent 字段外，`clj_*` 与 `verse_jump` 必须携带 `ariadne_budget`（正整数）与 `ariadne_goal`（非空字符串）；两者均为必填。它们不是 Scope 门字段，而是 Ariadne's Thread 的续体注解。
 
 ```text
 export const TOOL_GATE_DEFINITIONS = Object.freeze({
@@ -2056,7 +2056,7 @@ HerdchestraLite/
 └── src/
     ├── AGENTS.md                 # 全局架构师装配笔记与模块单向依赖图
     ├── bootstrap-main.mjs        # 清单入口 1：惰性 import("./main.mjs")
-    ├── clj-main.mjs              # 当前清单入口：clj_* + join + verse_jump 的 dogfood 面
+    ├── clj-main.mjs              # 当前清单入口：clj_* + wait + verse_jump 的 dogfood 面
     ├── main.mjs                  # 主装配器：连接提示词、门禁、沙箱、蜂群、Scope、TUI 与命令
     ├── host/
     │   ├── imports.mjs           # 宿主与 cherry-cljs 的唯一导入集中处

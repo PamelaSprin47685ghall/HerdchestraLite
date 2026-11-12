@@ -6,7 +6,7 @@
 
 当前清单（`package.json` 的 `omp.extensions` / `pi.extensions`）只有一个入口：
 
-1. `src/clj-main.mjs`：最小 dogfood 面。只注册 `clj_plan`、`clj_devops`、`clj_review`、`clj_worker`、`join` 与 `/clj-status`；不加载阶段、看板、worktree、审计或 TUI。它只依赖 `clj-sandbox/*`、`host/health.mjs`、`util/file-lock.mjs`，因此不需要 omp 宿主包即可在本地测试。
+1. `src/clj-main.mjs`：最小 dogfood 面。只注册 `clj_plan`、`clj_devops`、`clj_review`、`clj_worker`、`wait`、`verse_jump` 与 `/clj-status`；不加载阶段、看板、worktree、审计或 TUI。它只依赖 `clj-sandbox/*`、`host/health.mjs`、`util/file-lock.mjs`，因此不需要 omp 宿主包即可在本地测试。
 
 以下入口与模块保留给后续扩张，当前清单不加载：
 
