@@ -2,22 +2,28 @@
 
 > 本文件不是规格。仓库根 `AGENTS.md` 是唯一 SSOT；两者冲突时以根规格为准。本文件只记录当前 `src/` 的模块边界、单向依赖、装配现状与迁移遗留；未关闭的规格偏差写在 `DEBT.md`。
 
+## 0 组织原则
+
+文件按功能组织，不按层或类型机械拆分：一个能力的实现、模型面向说明与契约放在同一模块；不为一常量或一段提示新建中转文件，也不保留只做 re-export 的薄层。调用方直接引用实现处；删除中间层时同步删除引用与文档条目。
+
 ## 1 入口与装配
 
 当前清单（`package.json` 的 `omp.extensions` / `pi.extensions`）只有一个入口：
 
-1. `src/clj-main.mjs`：最小 dogfood 面。只注册 `clj_plan`、`clj_devops`、`clj_review`、`clj_worker`、`wait`、`verse_jump` 与 `/clj-status`；不加载阶段、看板、worktree、审计或 TUI。它只依赖 `clj-sandbox/*`、`host/health.mjs`、`util/file-lock.mjs`，因此不需要 omp 宿主包即可在本地测试。
+1. `src/clj-main.mjs`：最小 dogfood 面。只注册 `clj_devops`、`wait`、`time_leap`、`ask_beacon` 与 `/clj-status`，并通过黑名单移除宿主 `read`/`write`/`edit`/`bash` 等工具；不加载阶段、看板、worktree、审计或 TUI。它依赖 `clj-sandbox/*`、`scope/*`、`host/*`、`prompts/*`、`util/*`，因此不需要 omp 宿主包即可在本地测试。
 
 以下入口与模块保留给后续扩张，当前清单不加载：
 
 - `src/bootstrap-main.mjs`：惰性 `import("./main.mjs")`，调用默认工厂，并把成功/失败写入 `host/health.mjs`。
-- `src/main.mjs`：完整装配的保留主装配器。它注册命令、工具与 hook，连接 stage gate、board、runner、sandbox、Scope、TUI 与 subagent 适配器；不实现看板、门禁或沙箱的内部语义。
+- `src/main.mjs`：完整装配的保留主装配器。它注册命令、工具与 hook，连接 stage gate、board、runner、sandbox、TUI 与 subagent 适配器；不实现看板、门禁或沙箱的内部语义。
 
-`src/clj-main.mjs` 没有角色 admission：主会话可以选任一 `clj_*` 工具。该边界只适用于当前 dogfood 面，阶段层接回时必须恢复角色收窄。
+`src/clj-main.mjs` 没有角色 admission：主会话可以使用 `clj_devops`。该边界只适用于当前 dogfood 面，阶段层接回时必须恢复角色收窄。
 
-`src/clj-main.mjs` 的系统提示词由 `host/hack-system-prompt.mjs` 托管注入：`before_agent_start` 在宿主提示词后追加 `COMMON_CORE_RULES`（六块 repo-aware 规则，tool-agnostic）与 `prompts/dogfood-surface.mjs`（只描述真实注册的六个工具，并说明运行时机制协同）；`prompts/ufss-note.mjs` 提供任意层 UFSS 围栏说明，两个装配共用同一份文本。托管区段有固定 marker，重复触发原位替换；handler 抛错时 fail-open 并记 health。S1–S5 简报、Scope 字段与角色提示词都不注入，因为本面没有对应工具与阶段。
+`src/clj-main.mjs` 的系统提示词由 `host/hack-system-prompt.mjs` 托管注入：`before_agent_start` 在宿主提示词后追加 `COMMON_CORE_RULES`（repo-aware 规则，tool-agnostic）与 `clj-sandbox/ufss.mjs` 导出的 `UFSS_PROMPT_NOTE`。托管区段有固定 marker，重复触发原位替换；handler 抛错时 fail-open 并记 health。S1–S5 简报、旧 Scope 字段与角色提示词都不注入，因为本面没有对应工具与阶段。
 
-`src/clj-main.mjs` 同时维护 `HOST_TOOL_BLACKLIST`（`read`/`write`/`edit`/`apply_patch`/`ast_edit`/`ast_grep`/`bash`/`exec`/`eval`/`glob`/`grep`/`find`）。`applyCljToolSurface` 在 `session_start` 与 `before_agent_start` 从 `getActiveTools()` 的当前集合中减法移除这些名字，再确保四个 `clj_*` 激活；它不重建允许列表，未列出的工具保持原有激活状态。禁用 `read`/`write` 会切断宿主 `xd://` 传输设备，这是当前 dogfood 的有意代价。
+omp 在进程内缓存已加载的 ESM 模块，系统提示词在会话启动时组装；修改 `src/prompts/*` 后必须重启 omp 或新开进程，当前进程不会热更新。
+
+`src/clj-main.mjs` 同时维护 `HOST_TOOL_BLACKLIST`（`read`/`write`/`edit`/`apply_patch`/`ast_edit`/`ast_grep`/`bash`/`exec`/`eval`/`glob`/`grep`/`find`）。`applyCljToolSurface` 在 `session_start` 与 `before_agent_start` 从 `getActiveTools()` 的当前集合中减法移除这些名字，再确保 `clj_devops` 与 `wait`/`time_leap`/`ask_beacon` 激活；它不重建允许列表，未列出的工具保持原有激活状态。禁用 `read`/`write` 会切断宿主 `xd://` 传输设备，这是当前 dogfood 的有意代价。
 
 `src/clj-sandbox/cherry.mjs` 是 Cherry 加载的唯一实现；`host/imports.mjs` 重导出它，`clj-sandbox/evaluator.mjs` 直接依赖它。这样本地面无需导入 `@oh-my-pi/pi-coding-agent` 或 `typebox`。
 
@@ -60,7 +66,7 @@ swarm/auditors（只依赖 util/errors）
 prompts/common、prompts/runtime-wires（不 import 其他产品模块）；prompts/roles ── clj-sandbox/ufss
 tui/dashboard-widget ── tui/dashboard-model
 
-clj-main ── clj-sandbox/tools、host/hack-context、host/hack-system-prompt、prompts/common、prompts/dogfood-surface、prompts/ufss-note、scope/ariadne、util/errors
+clj-main ── clj-sandbox/tools、host/hack-context、host/hack-system-prompt、prompts/common、clj-sandbox/ufss、scope/ariadne、util/errors
 main ── 以上全部（按需注入）
 bootstrap-main ── host/health + main
 scope/gate ───── scope/ledger、scope/schema
@@ -89,9 +95,8 @@ scope/gate ───── scope/ledger、scope/schema
 | `clj-sandbox/evaluator.mjs` | Promise-CPS 解释器、符号表、续体、期限 | `imports`、`errors`、`ufss`、`where` |
 | `clj-sandbox/vfs.mjs` | 批内 VFS、stamp、结构冲突、W 提交 | `atomic-write`、`errors` |
 | `clj-sandbox/tools.mjs` | 角色能力矩阵与 `clj_*` 工具面；Plan 可读冻结 `cases.edn`，Auditor 拒绝读取并只消费注入 CASE | `errors`、`evaluator`、`ufss`、`vfs` |
-| `scope/schema.mjs` | 五种传输形状的 Scope 注入/剥离 | — |
-| `scope/gate.mjs` | Scope 准入、回合结算与剥离（无独立 tool-gate） | `ledger`、`schema` |
-| `scope/ledger.mjs` | Scope 四型、预算、归档、`assume` | `errors` |
+| `scope/ariadne.mjs` | Ariadne 锚点、Time Leap、Beacon 封存 | `errors` |
+| `scope/beacon-query.mjs` | 只读 Beacon 查询 | `ariadne` |
 | `scope/projection.mjs` | 出站裁剪、简报钉住、双块锚点、缓存断点 | `errors` |
 | `stages/disclosures.mjs` | S1–S5 简报文本 | — |
 | `stages/parsers.mjs` | S1/S2 方法论与 S3/S4 文档结构校验；CASE 严格 Schema、modules/slices 覆盖校验；不解析 Markdown CASE | — |
@@ -103,7 +108,7 @@ scope/gate ───── scope/ledger、scope/schema
 | `swarm/runner.mjs` | Reviewer ⇄ Swarm、槽位、接力屏障、Nudge、Oracle、恢复 | `errors`、`board` |
 | `swarm/auditors.mjs` | K 路审计隔离、冻结 `cases.edn`/`s1-summary` 字节与活哈希绑定、单 CASE 注入、单提交校验、返工派生 | `errors` |
 | `prompts/common.mjs` | COMMON 规范文本（无 S2–S5 剧透） | — |
-| `prompts/ufss-note.mjs` | EDN + UFSS 任意层围栏说明；`common.mjs` 与 `dogfood-surface.mjs` 共用的唯一文本源 | — |
+| `clj-sandbox/ufss.mjs` | EDN + UFSS 读写实现，并导出模型面向的 `UFSS_PROMPT_NOTE` | — |
 | `prompts/roles.mjs` | 固定角色提示词、`buildCaseAuditorPrompt`、CASE 记录 EDN+UFSS 呈现 | `ufss` |
 | `prompts/runtime-wires.mjs` | 语言后缀、gate 字段、Nudge | — |
 | `tui/dashboard-model.mjs` | 纯数据双态/审计矩阵 | — |
@@ -112,8 +117,8 @@ scope/gate ───── scope/ledger、scope/schema
 
 ## 4 当前装配状态
 
-- **当前激活面是 clj-only（见 §1）**；本节其余内容是完整装配的保留状态，不代表清单会加载它们。`/herd`、门禁、看板、worktree、审计、TUI 与 Scope 当前不可用；`DEBT.md` D0 记录该缺口与扩张顺序。
-- 两个清单入口、`main.mjs` 的工具/命令注册、阶段门禁、看板、worktree、沙箱、Scope、TUI 与 runner 端口在当前源码中有注册/装配代码；这不等于行为验收完成。
+- **当前激活面是 clj-only（见 §1）**；本节其余内容是完整装配的保留状态，不代表清单会加载它们。`/herd`、门禁、看板、worktree、审计与 TUI 当前不可用；`DEBT.md` D0 记录该缺口与扩张顺序。
+- 两个清单入口、`main.mjs` 的工具/命令注册、阶段门禁、看板、worktree、沙箱、Ariadne、TUI 与 runner 端口在当前源码中有注册/装配代码；这不等于行为验收完成。
 - S1 是唯一手工批准门禁：`advance_s1` 展示磁盘上的真实 `plans/<slug>/s1-brainstorm.md` 并等待明确批准或修改；真实产品运行只能由人类操作员批准。获用户授权的隔离测试中，AI 操作员可以操作真实确认界面模拟批准或修改，但必须在实测记录中注明该次操作是测试模拟，不冒充人类批准或生产授权。产品不识别操作者身份，不新增测试模式或身份字段；无法证明隔离时不得使用该例外。
 - `advance_s4` 通过 `runner.forkSlices` 创建 Slice 并启动 runner；`join_slice` 在 FIFO 队列耗尽时调用 `runMissionAudit`，另有 `session_start`/`agent_end` 的 `auditReady` 触发、`scheduleAuditRetry` 退避与冻结文件编辑导致的批次作废。`tests/s5-wiring.test.mjs` 是自动化集成，不是手工验收；真实宿主、重启和全 Slice 触发尚未验收。
 - `prompts/runtime-wires.mjs#rewriteVibeModeContext` 已接入 `context` 出站副本的 `vibe-mode-context` 消息；`buildCaseAuditorPrompt` 已由 `runMissionAudit` 的 `buildPrompt` 使用，`startAgent` 使用调用方 `systemPrompt` 并透传请求选项。
@@ -129,7 +134,7 @@ scope/gate ───── scope/ledger、scope/schema
 - `contract.mjs` 的权威控制态是 `:frozen` 七项（`s1`、`s1-summary`、`s2`、`s2-cases`、`s3`、`s3-modules`、`s4`）；`contract-line` 只从七项纯派生。S1 摘要与 CASE 分别走 `saveS1Summary`/`saveS2Cases` 与 `readS1Summary`/`readS2Cases`（返回同一份 UTF-8 bytes + sha256）；S4 slices 是 `mission["s4-slices"]` inline，不进七项。`verifyFrozenPrefix` 支持阶段前缀校验，`realign` 支持 summary/cases/modules/slices 目标并返回 frozen/contractLine/caseIds；映射失效时必须同次传完整 modules/slices，否则 `:MAPPING_REALIGN_REQUIRED`，不等待人工。`structure.cases` 只接受 `case_id`（工具）或 `case-id`（EDN），旧 `{id}` 不再兼容；slices/modules 同理使用 `slice_id`/`slice-id`、`path`。S2 的权威提交入口是 `commitS2(root, slug, {manual_tests_markdown, cases}, {callId,structure})`：同一 mission lock 内写/复用 cases.edn 与文档、回读校验、再提交 mission；外部改动/旧回执均 fail closed，不能拆成 save+save+freeze 三段。
 - D13 阶段控制态已按新根规范落源码并有各组件窄测报告：`advance_s1` 写/冻结 `s1-summary.md`；`advance_s2` 接收结构化 `cases` 并由 `commitS2` 原子写 `cases.edn` 与冻结 `s2-cases`；`advance_s3` 持久化完整 `:s3-modules`（inline 哈希）；`advance_s4` 从冻结 `cases.edn` 校验覆盖并写 `:s4-slices`；`main.caseSpecsFor` 从 `cases.edn`/`s1-summary.md` 单次读取并重读 mission 核对哈希，`startAuditBatch` 再与活哈希绑定；`board_finish` 校验工作区相对 `dependency_paths`，`wait_for` 支持 `condition:`；`clj_plan`/`clj_auditor` 的 `cases.edn` 读取边界已接入。这些是源码与窄测状态，不是验收；真实审计 end-to-end、统一全量复测与真实宿主版本仍未完成。详见 `DEBT.md` D13。
 - S1 未冻结时，`advance_s1` 的新 call-id 可以原子替换 summary（`saveS1Summary` allowReplace）；同一 call-id 不同载荷仍 `:CALL_REPLAY_MISMATCH`，S1 已冻结后 `:FILE_CONFLICT`。文档与 summary 的提交顺序是先文档、后 summary；中间崩溃无 pending、不构成批准，重试同/新 call-id 重新对齐后再开面板。
-- 多工人修复已有源码与窄自动化测试：`worktrees.edn` 当前态、看板同事务 wake、主装配 durable board + `$W$` + Holder `call` 窄场景（`tests/main-consumer.test.mjs`）、`call` 取消/日志、冻结文件 human-edit realign、Scope 准入/结算/投影。它们都没有真实宿主复测，不能写成已验收。
+- 多工人修复已有源码与窄自动化测试：`worktrees.edn` 当前态、看板同事务 wake、主装配 durable board + `$W$` + Holder `call` 窄场景（`tests/main-consumer.test.mjs`）、`call` 取消/日志、冻结文件 human-edit realign、Ariadne 锚点与出站投影。它们都没有真实宿主复测，不能写成已验收。
 - Evaluator lazy-fix 当前交付：pull/lazyPull、LazyStream HOF、seq/rest/next、run!/sort/sort-by/update、hash/=/str/pr-str、some/every? 短路、tree-seq root/children、reductions/partition-by/split-with 输入、map/set 深物化、for/case/condp/letfn/when-* 宏、map :or、defn metadata 已有源码/测试覆盖；`memoize`（含 `cljs.core/memoize`）、`doto`、`try` 多重 catch（有序匹配、未命中回落外层、`Error`/类名与 `:code` 匹配、finally 必须最后、class 后缺绑定显式拒绝）与 transducer 族（`map`/`filter`/`remove`/`keep`/`mapcat`/`map-indexed`/`keep-indexed`/`take-while`/`drop-while`/`partition-by` 的一元 transducer arity，`take`/`drop`/`dedupe`/`distinct`/`interpose`/`partition-all`/`cat`/`halt-when`，`transduce`/`sequence`/`eduction`、三参数 `into`、`comp`/`completing`/`reduced` 族）已接入。解释器 fn 与异步 capability 走 LazyStream `call` 描述符，可参与 transducer 回调与 reducer；`sequence` 返回惰性 LazyStream，`eduction` 返回可重复消费的惰性描述，`into`/`transduce`/`vec`/`count`/`first`/`reduce` 等消费者按需展开。限制：`halt-when` 的最终值已贯通 `into`/`transduce` 的同步与异步路径（`sequence`/`eduction` 只停止输出）；`sequence`/`eduction` 在需要物化的消费者上仍受 200000 上限；deadline checkpoint 内存引用/忽略 unpark 值、pendingCall/regexCall 帧等待仍受限。D8 的 commit/discard 端口已与 control 竞争，端口 Promise reject 现在归入 rejected 而非穿出，rejected discard 标 `:uncertain`/`pending false`；被 abort 放弃的 capability 外部副作用归属仍需 C4。上述只有窄自动化，不是手工验收。
 - Auditor per-auditor sandbox：`src/sandbox/` 已提供 bwrap + 两阶段 Landlock + 私有 tmux session，`ensureIsolationPaths` 在 §8.4 模板后追加实际路径；设计上宿主 TCP/Unix socket 不可达，框架 fixed provider relay socket 按设计可达且只转发 pinned provider。网络层只有窄测试；凭据/平台（`~/.omp/agent`/profiles、平台路径）只有提示/静态检查，credentials host-side 仅 proxy mode，env-only provider 由 `selectAuditTransport` 拒绝；真实 tmux/omp 隔离与资源回收未验证。
 - 用户允许每批已知实操 bug 修完后进行一轮 tmux；发现新一批 bug 就停修。主真实 tmux 轮次正在开始，本文更新时尚未产生结果；不得把组件窄测当成验收。

@@ -763,3 +763,26 @@ export function printUfss(value, options = {}) {
 export function renderReceipt(value) {
 	return `${printUfss(value)}\n`;
 }
+
+
+export const UFSS_PROMPT_NOTE = [
+	"# Universal Fence-Scaled String (UFSS): Arbitrary-Depth Raw Fences",
+	"",
+	"Every receipt you get is EDN, and every string in it is printed as UFSS (Universal Fence-Scaled String). You are not restricted to one escaping style; you are expected to pick the strongest one.",
+	"",
+	"Three string forms, all accepted by the same reader:",
+	"1. Standard escaped string — only for short text with no quote, no backslash, no newline. This is the fallback, not the default.",
+	"2. Single-line raw fence: one or more hash characters, then a quoted body, then the same number of hash characters. The body is taken verbatim: quotes, backslashes, and hash characters inside stay literal.",
+	"3. Multi-line raw block: hash, triple quote, newline, the body, then triple quote and hash alone on the last line. The closing indent is stripped from every non-empty body line; a trailing newline is preserved exactly.",
+	"",
+	'Scaling is the point. If the body already contains a quote, a backslash, or a line beginning with three quotes, raise the fence by one hash: two hashes, three hashes, and so on without a ceiling. With n hashes the forms are #^n"..."#^n and #^n"""..."""#^n. The printer chooses the smallest n whose closing sequence does not appear in the body, so a raw fence always exists. The reader and printer are a bijection: round-tripping any string returns it byte for byte.',
+	"",
+	"WARNING — the mistakes that actually break a fence:",
+	"- A raw fence is not a regex. `#\"...\"#` is a raw string; write regexes as `(re-pattern #\"...\"#)`.",
+	"- Never hand-build backslash escapes for quotes, backslashes, or newlines in code, paths, diffs, or multi-line prose. If the body needs those escapes, raise the fence depth instead.",
+	"- The closing fence must stand alone on its own line, at the same indent as the opening line. Any trailing parenthesis or text makes it a parse error, not a closing fence.",
+	"- Every non-empty body line must carry at least the closing fence indent. A short line is `:UFSS_INDENT_VIOLATION`, never silently swallowed.",
+	"- If the body contains three consecutive quotes, a closing-fence sequence, or a line of hashes, raise the fence by one hash until the closing sequence does not occur in the body.",
+	"- Control characters other than newline and tab cannot live in a raw fence; use a standard escaped string for those.",
+	"- JSON, standard EDN, and UFSS are all accepted on input and normalized. On output the framework never sends escaped JSON noise for text a fence can carry; do not pre-escape it yourself.",
+].join("\n");

@@ -18,8 +18,9 @@ import { describeSandboxTool } from "./clj-sandbox/tools.mjs";
 import { hackContext } from "./host/hack-context.mjs";
 import { hackSystemPrompt } from "./host/hack-system-prompt.mjs";
 import { recordHealth } from "./host/health.mjs";
-import { COMMON_CORE_TEXT } from "./prompts/common.mjs";
-import { DOGFOOD_SURFACE_TEXT } from "./prompts/dogfood-surface.mjs";
+import { hostSessionKey } from "./host/session-key.mjs";
+import { COMMON_RULES_TEXT } from "./prompts/common.mjs";
+
 import { appendOutboundContextTail } from "./prompts/runtime-wires.mjs";
 import {
 	ARIADNE_BUDGET_FIELD,
@@ -32,7 +33,7 @@ import { herdError } from "./util/errors.mjs";
 
 const VERSION = "1";
 const ENTRY = "clj.core";
-const TOOL_ROLES = Object.freeze(["plan", "devops", "review", "worker"]);
+const TOOL_ROLES = Object.freeze(["devops"]);
 const TOOL_NAMES = Object.freeze({
 	plan: "clj_plan",
 	devops: "clj_devops",
@@ -41,7 +42,7 @@ const TOOL_NAMES = Object.freeze({
 });
 const ROLE_LABELS = Object.freeze({
 	plan: "Plan / read-only",
-	devops: "Plan DevOps / read-only + call",
+	devops: "DevOps / privileged worker",
 	review: "Reviewer / read-only",
 	worker: "Worker / read-write",
 });
@@ -90,12 +91,12 @@ const SANDBOX_PARAMETERS = Object.freeze({
 		name: {
 			type: "string",
 			minLength: 1,
-			description: "Optional REPL name for park/unpark; auto-generated when omitted.",
+			description: "Optional REPL name for park/unpark and for a later time_leap target; auto-generated when omitted.",
 		},
 		code: {
 			type: "string",
 			minLength: 1,
-			description: "Bare ClojureScript REPL input; runs in a Worker thread.",
+			description: "Bare ClojureScript REPL input (any number of top-level expressions; the last value is the receipt). Every capability takes one EDN map. Tool-First: a string parameter accepts a full long document, not just a one-line value; free-form prose is valid whenever the tool does not parse it. Data the system must parse goes through its dedicated parameter. Human-facing prose is fine.",
 		},
 		[WORKERS_FIELD]: {
 			type: "integer",
@@ -106,13 +107,13 @@ const SANDBOX_PARAMETERS = Object.freeze({
 			type: "integer",
 			minimum: 1,
 			description:
-				"Ariadne's Thread — required turn budget: unspool a golden thread into the labyrinth before stepping deeper. Multiple active threads compose automatically by taking the tightest deadline (never a hard block—just an unmistakable conscience nudge if you drift past 0).",
+				"Ariadne's Thread — required turn budget (integer >= 1). Size it for the whole investigation, implementation, and focused verification. Active anchors compose by arithmetic mean: remaining = mean(anchor deadlines) - current turn. This is a soft conscience nudge, never a hard block. When a hypothesis is falsified or the thread is overdue, use time_leap instead of patching a polluted context.",
 		},
 		[ARIADNE_GOAL_FIELD]: {
 			type: "string",
 			minLength: 1,
 			description:
-				"Ariadne's Goal — required: name the exact dragon you are slaying or proof you are hunting within this thread; it becomes your north star if you later time_leap back here.",
+				"Ariadne's Goal — required non-empty string paired with ariadne_budget: name the exact dragon you are slaying or proof you are hunting within this thread; it becomes your north star if you later time_leap back here.",
 		},
 	},
 });
@@ -142,6 +143,8 @@ const WAIT_PARAMETERS = Object.freeze({
  * activation state the user or host already chose; this module never builds a
  * "the only allowed tools" list from scratch.
  */
+export const DEFAULT_HIDDEN_TOOLS = Object.freeze(["clj_plan", "clj_review", "clj_worker", "clj_auditor"]);
+
 export const HOST_TOOL_BLACKLIST = Object.freeze([
 	"read",
 	"write",
@@ -166,19 +169,19 @@ const TIME_LEAP_PARAMETERS = Object.freeze({
 			type: "string",
 			minLength: 1,
 			description:
-				"The :name of a clj_* program anchor on the CURRENT timeline AFTER the latest compaction. Pre-compaction or other-branch anchors are unknown. Never resurrects an old universe.",
+				"The :name of a clj_* program anchor on the CURRENT timeline AFTER the latest compaction. Pre-compaction or other-branch anchors are unknown, so only post-compaction clj_* names are valid leap targets. Before choosing, inspect the anchor list in <ARIADNE-THREAD>: each anchor states its updated budget (the Ariadne remaining you would get after jumping back). Prefer an anchor with little irrelevant context and an updated budget that covers your remaining work and is materially larger than the current line; do not leap merely because it is the most recent, cleanest, most relevant, or has the largest updated budget. If recent anchors are unsuitable, actively consider distant anchors with cleaner context and sufficient updated budget. In experience, still pass the normal experience (proven facts, falsified paths, exact files/symbols, remaining plan, and next move), and additionally enumerate completed, partially completed, and not-started user requirements in exhaustive detail. Carry missing facts in `experience`.",
 		},
 		experience: {
 			type: "string",
 			minLength: 1,
 			description:
-				"Your full subjective lived experience to pour into the rewritten timeline (proven facts, falsified paths, exact files/symbols, remaining plan, next move).",
+				"Your full subjective lived experience to pour into the rewritten timeline: proven facts, falsified paths, exact files/symbols, remaining plan, and the single next move — especially facts that were unknown at the target anchor's time. Do not replace this normal experience with the requirement list. In addition to it, the experience MUST enumerate, in exhaustive detail, every user requirement that is already completed (with exact files/symbols and verification), which are partially done, and which are not started, so the future self never redoes finished work. This string may carry a long, structured prose report; do not compress it into a one-liner.",
 		},
 		beacon: {
 			type: "string",
 			minLength: 1,
 			description:
-				"Mandatory read-only Beacon summarizing the sealed branch you are departing from so future turns can query it with ask_beacon (never resurrected).",
+				"Mandatory read-only Beacon summarizing the sealed branch you are departing from; future turns query it with ask_beacon. This string may carry a long summary, so write enough for ask_beacon to answer precisely. Sealed branches are never resurrected or jumped back to.",
 		},
 	},
 });
@@ -191,12 +194,12 @@ const ASK_BEACON_PARAMETERS = Object.freeze({
 		target: {
 			type: "string",
 			minLength: 1,
-			description: "The Beacon :name from <BEACONS> to query in read-only mode.",
+			description: "The Beacon :name from <BEACONS> to query. Beacons are read-only sealed branches and are never resurrected or switched to.",
 		},
 		question: {
 			type: "string",
 			minLength: 1,
-			description: "Specific question for the sealed Beacon to answer directly from its cached prefix (no tools).",
+			description: "Specific question for the sealed Beacon. It answers directly from its cached prefix with tools strictly forbidden and returns only text.",
 		},
 	},
 });
@@ -235,16 +238,6 @@ function toolFailure(error) {
 
 function rootFor(ctx) {
 	return resolve(ctx?.cwd ?? process.cwd());
-}
-
-function hostSessionKey(ctx, root) {
-	const identity =
-		ctx?.sessionManager?.getSessionFile?.() ??
-		ctx?.sessionManager?.getSessionId?.() ??
-		ctx?.agent?.id ??
-		ctx?.id ??
-		`pid-${process.pid}`;
-	return `${identity}\u0000${root}`;
 }
 
 function recoverAriadneHistory(ariadne, sessionKey, ctx, currentCallId = null) {
@@ -477,9 +470,10 @@ export async function applyCljToolSurface(pi) {
 	if (!Array.isArray(active)) {
 		return { ok: false, error: { code: ":HOST_API_MISMATCH", message: "getActiveTools did not return an array" } };
 	}
-	const removed = active.filter((name) => HOST_TOOL_BLACKLIST.includes(name));
-	const next = active.filter((name) => !HOST_TOOL_BLACKLIST.includes(name));
-	// Own-tool activation only; no other tool is added or removed here.
+	const hidden = (name) => HOST_TOOL_BLACKLIST.includes(name) || DEFAULT_HIDDEN_TOOLS.includes(name);
+	const removed = active.filter(hidden);
+	const next = active.filter((name) => !hidden(name));
+	// Default mode subtracts hidden role tools, then forces clj_devops plus wait/time_leap/ask_beacon.
 	for (const name of CLJ_TOOL_NAMES) {
 		if (!next.includes(name)) next.push(name);
 	}
@@ -502,7 +496,7 @@ export async function applyCljToolSurface(pi) {
 }
 
 /**
- * Register the four Worker-hosted sandbox tools and unified `wait`. Kept as an
+ * Register the default devops sandbox and unified `wait`. Kept as an
  * exported function so a test or a future assembly can compose the same surface
  * without the omp default entry.
  */
@@ -688,7 +682,7 @@ export function registerCljTools(pi, deps = {}) {
 					const callId =
 						typeof toolCallId === "string" && toolCallId.length > 0 ? toolCallId : `fork-${randomUUID().slice(0, 12)}`;
 					const root = rootFor(ctx);
-					const sessionKey = hostSessionKey(ctx, root);
+					const sessionKey = hostSessionKey(ctx);
 					const pool = getPool(state, sessionKey);
 					if (ariadne) {
 						try {
@@ -902,7 +896,7 @@ export function registerCljTools(pi, deps = {}) {
 			name: "wait",
 			label: "Wait",
 			description:
-				"Wait for the first result from your async clj_* sandbox programs or from background subagents/jobs you started. Returns immediately with all backlogged sandbox results; otherwise blocks until the earliest clj program or host job settles. The required otherwise_independent_work string sizes the sandbox wait as 1000ms + UTF-8 bytes * 50ms; the host side uses the native wait. Call wait again to collect remaining results.",
+				"Wait for the first result from your async clj_* sandbox programs or from background subagents/jobs you started. Returns immediately with all backlogged sandbox results; otherwise blocks until the earliest clj program or host job settles. The required otherwise_independent_work string sizes the sandbox wait as 1000ms + UTF-8 bytes * 50ms. On timeout all running sandbox tasks park and return :parked receipts; resume one with (unpark {:name ... :value ...}) or discard it with (abandon {:name ...}). Call wait again to collect remaining results.",
 			parameters: WAIT_PARAMETERS,
 			async execute(_toolCallId, params = {}, signal, onUpdate, ctx) {
 				let plan;
@@ -912,8 +906,7 @@ export function registerCljTools(pi, deps = {}) {
 					return toolFailure(error);
 				}
 				const finish = (result) => withWorkerNudge(result, plan.workers);
-				const root = rootFor(ctx);
-				const sessionKey = hostSessionKey(ctx, root);
+								const sessionKey = hostSessionKey(ctx);
 				ariadne?.markTurnActive(sessionKey);
 				const pool = getPool(state, sessionKey);
 				while (pool.startingPromises.size > 0) {
@@ -1107,7 +1100,7 @@ export function registerCljTools(pi, deps = {}) {
 			name: "time_leap",
 			label: "Time Leap++",
 			description:
-				"Time Leap++: cut the CURRENT post-compaction timeline back to a past clj_* anchor, carrying your full `experience` and leaving a mandatory read-only `beacon` on the departed branch. Never accepts `ariadne_budget`/`ariadne_goal` (re-anchor on your next `clj_*` call) and never resurrects old universes.",
+				"Time Leap++: cut the CURRENT post-compaction timeline back to a past clj_* anchor, carrying your full `experience` and leaving a mandatory read-only `beacon` on the departed branch. Resolve parked clj_* programs first with unpark or abandon, because a leap that predates them is refused. Never accepts `ariadne_budget`/`ariadne_goal` (re-anchor on your next `clj_*` call) and never resurrects old universes.",
 			parameters: TIME_LEAP_PARAMETERS,
 			async execute(toolCallId, params = {}, _signal, _onUpdate, ctx) {
 				if (!isPlainObject(params)) {
@@ -1121,8 +1114,7 @@ export function registerCljTools(pi, deps = {}) {
 				if (!ariadne) {
 					return toolFailure(herdError("HOST_API_MISMATCH", "Time Leap++ is disabled in this session"));
 				}
-				const root = rootFor(ctx);
-				const sessionKey = hostSessionKey(ctx, root);
+								const sessionKey = hostSessionKey(ctx);
 				const pool = getPool(state, sessionKey);
 				while (pool.startingPromises.size > 0) {
 					await Promise.all([...pool.startingPromises]);
@@ -1134,7 +1126,7 @@ export function registerCljTools(pi, deps = {}) {
 					const parkedNames = (pool.parkedList ?? []).map((item) => item.name);
 					recoverAriadneHistory(ariadne, sessionKey, ctx);
 					const res = ariadne.timeLeap(sessionKey, params, { jumpCallId, leafId, parkedNames });
-					const text = `{:state :time-leaped :target ${JSON.stringify(res.target)} :beacon ${JSON.stringify(res.beaconName)} :refunded-turns ${res.refunded} :remaining-turns ${res.remaining === null ? "nil" : res.remaining}}`;
+					const text = `{:state :time-leaped :target ${JSON.stringify(res.target)} :beacon ${JSON.stringify(res.beaconName)} :updated-budget ${res.updatedBudget === null ? "nil" : res.updatedBudget}}`;
 					return { content: [{ type: "text", text }], details: res };
 				} catch (error) {
 					return toolFailure(error);
@@ -1173,8 +1165,7 @@ export function registerCljTools(pi, deps = {}) {
 				if (!ariadne) {
 					return toolFailure(herdError("HOST_API_MISMATCH", "Beacons are disabled in this session"));
 				}
-				const root = rootFor(ctx);
-				const sessionKey = hostSessionKey(ctx, root);
+								const sessionKey = hostSessionKey(ctx);
 				const beacon = ariadne.getBeacon(sessionKey, params.target);
 				if (!beacon) {
 					return toolFailure(
@@ -1203,7 +1194,7 @@ export function registerCljTools(pi, deps = {}) {
 					const systemPrompt =
 						typeof ctx?.getSystemPrompt === "function"
 							? ctx.getSystemPrompt()
-							: `${COMMON_CORE_TEXT}\n\n${DOGFOOD_SURFACE_TEXT}`;
+							: `${COMMON_RULES_TEXT}`;
 					const res = await queryBeacon({
 						beacon,
 						question: params.question,
@@ -1242,7 +1233,7 @@ export function registerCljTools(pi, deps = {}) {
 				`clj-core: ${cherry.loaded ? "ready" : "not-loaded"}${cherry.version ? ` (cherry-cljs ${cherry.version})` : ""}`,
 				`tools: ${CLJ_TOOL_NAMES.join(", ")}`,
 				`host tool blacklist: ${HOST_TOOL_BLACKLIST.join(", ")}`,
-				"surface: Worker-hosted clj_* + unified wait; /herd, board, worktrees, and audit are not enabled",
+				"surface: default mode exposes clj_devops only; /herd, board, worktrees, and audit are not enabled",
 			];
 			ctx?.ui?.notify?.(lines.join("\n"), cherry.loaded ? "info" : "warning");
 		},
@@ -1265,23 +1256,22 @@ export function registerCljTools(pi, deps = {}) {
 		};
 		pi.on("session_start", resurface);
 		hackSystemPrompt(pi, async () => resurface(), {
-			block: `${COMMON_CORE_TEXT}\n\n${DOGFOOD_SURFACE_TEXT}`,
+			block: COMMON_RULES_TEXT,
 			entry: `${ENTRY}.systemPrompt`,
 		});
 		if (ariadne) {
 			const settle = (_event, ctx) => {
-				const root = rootFor(ctx);
-				ariadne.settleTurn(hostSessionKey(ctx, root));
+								ariadne.settleTurn(hostSessionKey(ctx));
 			};
 			pi.on("turn_end", settle);
 			pi.on("agent_end", settle);
 		}
-		pi.on("session_shutdown", () => {
+		pi.on("session_shutdown", (_event, ctx) => {
+			if (ariadne) ariadne.retireSession(hostSessionKey(ctx));
 			state.terminate();
 		});
 		hackContext(pi, (event, ctx) => {
-			const root = rootFor(ctx);
-			const sessionKey = hostSessionKey(ctx, root);
+			const sessionKey = hostSessionKey(ctx);
 			const pool = state.pools.get(sessionKey);
 			const parkedPrograms = pool?.parkedList ?? [];
 			const leap = ariadne ? ariadne.consumePendingLeap(sessionKey) : null;
@@ -1367,3 +1357,4 @@ export default async function activate(pi) {
 	state.warmup();
 	return state;
 }
+

@@ -81,7 +81,7 @@ const WORKER_CAPABILITIES = Object.freeze([
  */
 export const CAPABILITY_MATRIX = Object.freeze({
 	plan: Object.freeze(["cat", "where", "whereAll", "park", "unpark", "abandon"]),
-	devops: Object.freeze(["cat", "stat", "ls", "glob", "where", "whereAll", "park", "unpark", "abandon", "call"]),
+	devops: Object.freeze([...WORKER_CAPABILITIES, "call"]),
 	review: Object.freeze(["cat", "stat", "ls", "glob", "where", "whereAll", "unpark", "abandon"]),
 	worker: WORKER_CAPABILITIES,
 	holder: Object.freeze([...WORKER_CAPABILITIES, "call"]),
@@ -105,7 +105,7 @@ const CAPABILITY_NAMES = new Set([
 	"call",
 ]);
 
-const WRITE_ROLES = new Set(["worker", "holder", "auditor"]);
+const WRITE_ROLES = new Set(["worker", "holder", "auditor", "devops"]);
 const CALL_DENIAL_ROLES = new Set(["worker"]);
 const CALL_FORBIDDEN_ROLES = new Set();
 
@@ -1053,7 +1053,7 @@ function parameters() {
 
 const ROLE_DENIALS = Object.freeze({
 	plan: "No stat, ls, write, mkdir, rm, mv, or call; only cat is bound for contract files and attachments.",
-	devops: "No write, mkdir, rm, or mv; call is best-effort read-only.",
+	devops: "Privileged worker: every Worker capability plus call. No token required.",
 	review: "No write, mkdir, rm, mv, call, or park; cat, stat, and ls are read-only.",
 	worker:
 		"No call in a Swarm Worker session; call returns :TOKEN_REQUIRED. A Swarm Holder session grants call under the token.",
@@ -1064,7 +1064,15 @@ const ROLE_DENIALS = Object.freeze({
 
 function toolDescription(role) {
 	const capabilities = CAPABILITY_MATRIX[role].join(", ");
-	return `Run ClojureScript REPL input in the ${ROLE_LABELS[role]} sandbox. Bound capabilities: ${capabilities}. ${ROLE_DENIALS[role]} Submit bare REPL input; other sandbox names from COMMON are not bound. call is argv-only: (call {:argv ["prog" "arg"] :cwd ...}); no shell, pipes, redirects, globbing, or &&. Every call must include a non-empty :alternative map (1+ pair) naming built-in tools or other approaches and why they were not chosen; the framework ignores it. Programs without call return synchronously; hitting call backgrounds immediately (:state :forked). If you want synchronous return, do not use call—otherwise bear the async hassle of join.`;
+	return `Run ClojureScript REPL input in the ${ROLE_LABELS[role]} sandbox. Bound capabilities: ${capabilities}. ${ROLE_DENIALS[role]}
+
+Tool-First: pass data that the system must parse through its dedicated parameter; a string parameter is a full document channel, not a one-line field, and free-form prose is valid there whenever the tool only stores or displays it. Chat XML tags are not a system data channel. Prose meant for the human reader is fine.
+
+Submit bare REPL input: any number of top-level expressions; the last value is the receipt. Every capability is a bare function taking ONE EDN map—never a receiver, never positional args: (cat {:path ...}), (stat {:path ...}), (ls {:path ...}), (glob {:pattern ... :path ... :exec (fn [p] ...)}), (write {:path ... :content ...}), (mkdir {:path ...}), (rm {:path ...}), (mv {:source ... :target ...}), (where {:content ... :needle ...}), (whereAll {:content ... :needle ...}), (park {:payload ...}), (unpark {:name ... :value ...}), (abandon {:name ...}), (call {:argv ["prog" "arg"] :cwd ...}).
+
+Batch VFS: write/mkdir/rm/mv mutate an in-memory overlay first. The batch commits atomically only when the program returns normally; an exception, (park ...), or a conflict leaves disk untouched. A stamp conflict returns :FILE_CONFLICT. (where ...) requires exactly one UTF-16 match and otherwise parks with :nearest or :candidates; resume with (unpark {:name ... :value [b e]}). (whereAll ...) returns all spans and [] on zero matches. Receipts and structured literals are EDN + UFSS; never hand-build JSON escaping.
+
+call is argv-only: no shell, pipes, redirects, globbing, or &&. Every call must include a non-empty :alternative map (1+ pair) naming built-in tools or other approaches and why they were not chosen; the framework ignores it. clj_* grants a single free 1000ms total call-wait grace at fork time; once cumulative call wait exceeds it, the program backgrounds immediately (:state :forked) and you collect results with wait (deadline = 1000ms + UTF-8 bytes * 50ms). If you want guaranteed synchronous return, do not use call.`;
 }
 
 const TOOL_DESCRIPTION_BY_NAME = Object.freeze({

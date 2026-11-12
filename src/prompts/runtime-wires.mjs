@@ -1,8 +1,9 @@
 /**
- * P2: runtime wiring text and schemas, copied verbatim from AGENTS.md §8.5.
+ * P2: runtime wiring text, copied verbatim from AGENTS.md §8.5.
  *
- * Depends on nothing. The language suffix keeps the NUL + BOM prefix so the
- * host treats it as system-level discipline, not ordinary user content.
+ * Depends on nothing. The `<skill version="1.0">` shape carries system-level
+ * force, not ordinary user content; the old NUL + BOM prefix is deliberately
+ * not reproduced.
  */
 
 /**
@@ -33,13 +34,6 @@ export function rewriteVibeModeContext(content) {
 	return rewritten === content ? content : rewritten;
 }
 
-export const TOOL_GATE_DEFINITIONS = Object.freeze({
-	more_workers_without_hitting_mythical_man_month: {
-		type: "integer",
-		description:
-			"Maintain aggressive causal parallelism (Brooks check: disjoint contracts/slices ready to run concurrently; target total workload in turns / 100). Never skimp on dispatching independent work.",
-	},
-});
 /**
  * Build the unattended nudge that names the current legal exit tool.
  * Empty obligation/park sections are omitted.

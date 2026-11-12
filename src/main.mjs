@@ -1,4 +1,12 @@
 /**
+ * REFERENCE IMPLEMENTATION ONLY.
+ *
+ * `clj-main.mjs` is the default entry and will gradually replace this full
+ * assembly. This file may lag behind AGENTS.md and is not maintained in
+ * lockstep with every prompt/assembly change.
+ */
+
+/**
  * M0: the main assembly.
  *
  * This file connects the real modules through the host's public extension API:

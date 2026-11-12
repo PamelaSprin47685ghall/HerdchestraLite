@@ -29,7 +29,7 @@ Protocol:
 - The operator allowance for isolated tests applies ONLY to the \`advance_s1\` confirmation panel. \`ask_user\` clarification still requires a human answer; a test AI MUST NOT answer it.`;
 
 export const S2_BRIEFING = `[STAGE S1 APPROVED & FROZEN -> ENTERING STAGE S2: MANUAL TEST METHODOLOGY]
-S1 is frozen on disk. Open a fresh \`resetScope\` for S2. \`ask_user\` is closed for S2–S4; no further stage approval will be requested. S5 keeps only one initial-empty-ledger question, and otherwise runs autonomously.
+S1 is frozen on disk. The S1 briefing is retired; work from the frozen S1 contract. \`ask_user\` is closed for S2–S4; no further stage approval will be requested. S5 keeps only one initial-empty-ledger question, and otherwise runs autonomously.
 Deliverables (both are submitted and frozen together by \`advance_s2({ slug, manual_tests_markdown, cases })\`):
 - \`plans/<slug>/s2-manual-tests.md\` — methodology narrative only: Testing != Checking, falsification strategy, path coverage, evidence standards, and dual-WTP principles. It is NOT a CASE source; executable CASE definitions in it have no authority.
 - \`.herd/missions/<slug>/cases.edn\` — the authoritative CASE dataset, persisted from \`cases\` and frozen by SHA-256.
@@ -49,7 +49,7 @@ Mandatory CASE Dataset Schema (enforced by \`advance_s2\`; the framework NEVER p
 Iterate via \`devops\` and self-falsification until >=95% confidence and nothing remains to tighten, then call \`advance_s2\`.`;
 
 export const S3_BRIEFING = `[STAGE S2 FROZEN -> ENTERING STAGE S3: GOAL-DIRECTED DEVELOPMENT GUIDE]
-S1 and S2 are frozen. Open a fresh \`resetScope\` for S3.
+S1 and S2 are frozen. The S2 briefing is retired; work from the frozen S1–S2 contract.
 Deliverable: plans/<slug>/s3-dev-guide.md — saved and auto-approved via \`advance_s3({ slug, dev_guide_markdown, modules })\`.
 Judge ONLY the gap to starting S4.
 
@@ -63,7 +63,7 @@ Thinkers & Weapons:
 Specify exact module boundaries, unidirectional dependency DAG, failure isolation, and exact contracts satisfying every S1 requirement and frozen CASE record. Each module MUST declare \`mapped_cases: string[]\` referencing frozen \`case_id\` values; their union MUST cover every frozen CASE, and unknown or uncovered IDs are rejected. \`advance_s3\` persists the full modules array in \`mission.edn\` as \`:s3-modules\` and freezes its canonical hash; the S3 Markdown is explanatory only. If the frozen CASE ID set later changes, submit a complete modules array (and necessary slices) through the existing automatic structured realign path; never guess, auto-assign, or only recompute hashes. If no valid mapping exists, stop and report the exact gap. Iterate to >=95% confidence, then call \`advance_s3\`.`;
 
 export const S4_BRIEFING = `[STAGE S3 FROZEN -> ENTERING STAGE S4: DEVELOPER COORDINATION HANDBOOK]
-S1–S3 are frozen. Open a fresh \`resetScope\` for S4.
+S1–S3 are frozen. The S3 briefing is retired; work from the frozen S1–S3 contract.
 Deliverable: plans/<slug>/s4-coordination.md — saved and auto-approved via \`advance_s4({ slug, coordination_markdown, slices })\`.
 
 Thinkers & Weapons:

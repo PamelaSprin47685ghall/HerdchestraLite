@@ -50,16 +50,18 @@ function fakeHost({ active, baseWaitMs } = {}) {
 	return host;
 }
 
+const TEST_SESSION_MANAGER = Object.freeze({ getSessionId: () => "clj-core-test" });
+
 function forkTool(tools, name, id, params, cwd) {
 	return tools
 		.get(name)
-		.execute(id, { ariadne_budget: 5, ariadne_goal: "dogfood test", ...params }, undefined, undefined, { cwd });
+		.execute(id, { ariadne_budget: 5, ariadne_goal: "dogfood test", ...params }, undefined, undefined, { cwd, sessionManager: TEST_SESSION_MANAGER });
 }
 
 function waitTool(tools, id, nextIndependentWork, cwd) {
 	return tools
 		.get("wait")
-		.execute(id, { otherwise_independent_work: nextIndependentWork }, undefined, undefined, { cwd });
+		.execute(id, { otherwise_independent_work: nextIndependentWork }, undefined, undefined, { cwd, sessionManager: TEST_SESSION_MANAGER });
 }
 
 async function callTool(
@@ -111,14 +113,11 @@ describe("clj-only async dogfood surface", () => {
 		expect(warmed.workerCherry?.loaded).toBe(true);
 	});
 
-	it("registers the four sandbox tools and unified wait", () => {
+	it("registers the default devops sandbox and unified wait", () => {
 		const { tools } = fakeHost();
 		expect([...tools.keys()].sort()).toEqual([
 			"ask_beacon",
 			"clj_devops",
-			"clj_plan",
-			"clj_review",
-			"clj_worker",
 			"time_leap",
 			"wait",
 		]);
@@ -130,14 +129,16 @@ describe("clj-only async dogfood surface", () => {
 		const result = await applyCljToolSurface(pi);
 
 		expect(result.ok).toBe(true);
-		expect([...result.removed].sort()).toEqual([...HOST_TOOL_BLACKLIST].sort());
+		expect([...result.removed].sort()).toEqual([...HOST_TOOL_BLACKLIST, "clj_plan"].sort());
 		for (const name of HOST_TOOL_BLACKLIST) expect(pi.active).not.toContain(name);
 		expect(pi.active).toContain("todo");
 		expect(pi.active).toContain("task");
 		expect(pi.active).toContain("web_search");
 		expect(pi.active).toContain("lsp");
 		expect(pi.active).toContain("my_custom_tool");
-		expect(pi.active).toContain("clj_worker");
+		expect(pi.active).not.toContain("clj_plan");
+		expect(pi.active).not.toContain("clj_worker");
+		expect(pi.active).toContain("clj_devops");
 		expect(pi.active).toContain("wait");
 		expect(pi.active).not.toContain("unselected_tool");
 	});
@@ -217,7 +218,7 @@ describe("clj-only async dogfood surface", () => {
 		const { tools } = fakeHost();
 		const forkWithIntent = await forkTool(
 			tools,
-			"clj_plan",
+			"clj_devops",
 			"bad-fork",
 			{ code: "1", intent: "should be rejected" },
 			root,
@@ -225,7 +226,7 @@ describe("clj-only async dogfood surface", () => {
 		expect(forkWithIntent.isError).toBe(true);
 		expect(forkWithIntent.content[0].text).toContain(":INVALID_ARGUMENT");
 
-		const badJoin = await tools.get("wait").execute("bad-join", {}, undefined, undefined, { cwd: root });
+		const badJoin = await tools.get("wait").execute("bad-join", {}, undefined, undefined, { cwd: root, sessionManager: TEST_SESSION_MANAGER });
 		expect(badJoin.isError).toBe(true);
 		expect(badJoin.content[0].text).toContain(":INVALID_ARGUMENT");
 	});
@@ -260,6 +261,7 @@ describe("clj-only async dogfood surface", () => {
 				undefined,
 				{
 					cwd: root,
+					sessionManager: TEST_SESSION_MANAGER,
 					invokeTool: async () => ({
 						content: [{ type: "text", text: "Nothing to wait for: no background job." }],
 						details: { op: "wait", jobs: [] },
@@ -300,7 +302,7 @@ describe("clj-only async dogfood surface", () => {
 
 	it("returns synchronously when no call is executed, even if call appears in an untaken branch", async () => {
 		const { tools } = fakeHost();
-		const plan = await forkTool(tools, "clj_plan", "sync-1", { name: "p-sync", code: "(+ 1 2)" }, root);
+		const plan = await forkTool(tools, "clj_devops", "sync-1", { name: "p-sync", code: "(+ 1 2)" }, root);
 		expect(plan.isError).not.toBe(true);
 		expect(plan.content[0].text).toContain(":state :completed");
 		expect(plan.content[0].text).toContain(":value 3");
@@ -341,7 +343,7 @@ describe("clj-only async dogfood surface", () => {
 		expect(next.content[0].text).toContain(":state :idle");
 	});
 
-	it("runs non-call tools synchronously while a call task runs in background, then waits for the call", async () => {
+	it("backgrounds a second devops program while a call holds the write gate", async () => {
 		const { tools } = fakeHost({ baseWaitMs: 0 });
 		const slow = await forkTool(
 			tools,
@@ -355,19 +357,21 @@ describe("clj-only async dogfood surface", () => {
 		writeFileSync(join(root, "fast.txt"), "fast-done");
 		const fast = await forkTool(
 			tools,
-			"clj_plan",
+			"clj_devops",
 			"fast",
 			{ name: "fast-job", code: `(cat {:path "fast.txt"})` },
 			root,
 		);
 		expect(fast.isError).not.toBe(true);
-		expect(fast.content[0].text).toContain(":state :completed");
-		expect(fast.content[0].text).toContain("fast-done");
+		expect(fast.content[0].text).toContain(":state :forked");
 
-		const second = await waitTool(tools, "j-2", "收集仍在后台运行的慢任务结果。", root);
-		expect(second.isError).not.toBe(true);
-		expect(second.content[0].text).toContain("; joined: clj_devops slow-job");
-		expect(second.content[0].text).toContain("slow-done");
+		const joined = await waitTool(tools, "j-2", "收集持锁 call 与排队的 cat。", root);
+		expect(joined.isError).not.toBe(true);
+		const rest = await waitTool(tools, "j-3", "收集另一个后台任务。", root);
+		expect(rest.isError).not.toBe(true);
+		const combined = `${joined.content[0].text}\n${rest.content[0].text}`;
+		expect(combined).toContain("slow-done");
+		expect(combined).toContain("fast-done");
 	});
 
 	it("pipes unpark :value into call stdin and delivers non-overlapping stdout/stderr deltas across parks", async () => {
@@ -423,7 +427,7 @@ describe("clj-only async dogfood surface", () => {
 		const started = Date.now();
 		const workerFork = await forkTool(
 			tools,
-			"clj_worker",
+			"clj_devops",
 			"wait-w",
 			{ name: "wait-w", code: `(write {:path "queued.txt" :content "queued-ok"})` },
 			root,
@@ -450,7 +454,7 @@ describe("clj-only async dogfood surface", () => {
 			),
 			forkTool(
 				tools,
-				"clj_worker",
+				"clj_devops",
 				"mix-write",
 				{ name: "mix-w", code: `(write {:path "mixed.txt" :content "w-ok"})` },
 				root,
@@ -526,7 +530,7 @@ describe("clj-only async dogfood surface", () => {
 		const { tools } = fakeHost();
 		const result = await callTool(
 			tools,
-			"clj_worker",
+			"clj_devops",
 			"repl",
 			{
 				code: `(write {:path "repl.txt" :content "ok"})`,
@@ -541,7 +545,7 @@ describe("clj-only async dogfood surface", () => {
 		const { tools } = fakeHost();
 		const outside = join(root, "..", `clj-outside-${Date.now()}.txt`);
 		const outsideCode = `(write {:path ${JSON.stringify(outside)} :content "outside"})`;
-		const outsideResult = await callTool(tools, "clj_worker", "outside", { code: outsideCode }, root);
+		const outsideResult = await callTool(tools, "clj_devops", "outside", { code: outsideCode }, root);
 		expect(outsideResult.isError).not.toBe(true);
 		expect(readFileSync(outside, "utf8")).toBe("outside");
 		rmSync(outside, { force: true });
@@ -550,7 +554,7 @@ describe("clj-only async dogfood surface", () => {
 		writeFileSync(join(root, "AGENTS.md"), "old");
 		const blind = await callTool(
 			tools,
-			"clj_worker",
+			"clj_devops",
 			"blind",
 			{
 				code: `(write {:path "blind.txt" :content "new"})\n(write {:path "AGENTS.md" :content "new"})`,
@@ -597,12 +601,12 @@ describe("clj-only async dogfood surface", () => {
 		expect(result.content[0].text).toContain("argv");
 	});
 
-	it("does not create control directories for read-only tools", async () => {
+	it("reads a file through the default devops tool", async () => {
 		writeFileSync(join(root, "package.json"), "{}");
 		const { tools } = fakeHost();
 		const result = await callTool(
 			tools,
-			"clj_plan",
+			"clj_devops",
 			"readonly",
 			{
 				name: "readonly",
@@ -611,7 +615,8 @@ describe("clj-only async dogfood surface", () => {
 			root,
 		);
 		expect(result.isError).not.toBe(true);
-		expect(existsSync(join(root, ".herd"))).toBe(false);
+		expect(result.content[0].text).toContain(":state :completed");
+		expect(result.content[0].text).toContain(":value \"{}\"");
 	});
 
 	it("worker reads, writes, and commits through the protected VFS", async () => {
@@ -619,7 +624,7 @@ describe("clj-only async dogfood surface", () => {
 		const { tools } = fakeHost();
 		const result = await callTool(
 			tools,
-			"clj_worker",
+			"clj_devops",
 			"write-1",
 			{
 				name: "write-probe",
@@ -640,7 +645,7 @@ describe("clj-only async dogfood surface", () => {
 		const { tools } = fakeHost();
 		const file = await callTool(
 			tools,
-			"clj_worker",
+			"clj_devops",
 			"stat-file",
 			{
 				name: "stat-file",
@@ -658,7 +663,7 @@ describe("clj-only async dogfood surface", () => {
 
 		const dir = await callTool(
 			tools,
-			"clj_worker",
+			"clj_devops",
 			"stat-dir",
 			{
 				name: "stat-dir",
@@ -702,7 +707,7 @@ describe("clj-only async dogfood surface", () => {
 		const { tools } = fakeHost();
 		const result = await callTool(
 			tools,
-			"clj_worker",
+			"clj_devops",
 			"dedupe",
 			{
 				name: "dedupe",
@@ -730,7 +735,7 @@ describe("clj-only async dogfood surface", () => {
 
 		const parked = await callTool(
 			tools,
-			"clj_worker",
+			"clj_devops",
 			"park-1",
 			{
 				name: "slice",
@@ -745,7 +750,7 @@ describe("clj-only async dogfood surface", () => {
 
 		const resumed = await callTool(
 			tools,
-			"clj_worker",
+			"clj_devops",
 			"park-2",
 			{
 				name: "resume",
@@ -760,7 +765,7 @@ describe("clj-only async dogfood surface", () => {
 	it("always injects language requirement in context tail even when nothing is parked", async () => {
 		const { hooks } = fakeHost();
 		const ctxHandler = hooks.get("context")[0];
-		const out = await ctxHandler({ messages: [{ role: "user", content: "hi" }] }, { cwd: root });
+		const out = await ctxHandler({ messages: [{ role: "user", content: "hi" }] }, { cwd: root, sessionManager: TEST_SESSION_MANAGER });
 		expect(out.messages).toHaveLength(2);
 		expect(out.messages[1].role).toBe("user");
 		const tailText = out.messages[1].content[0].text;
@@ -772,7 +777,7 @@ describe("clj-only async dogfood surface", () => {
 		const { tools, hooks } = fakeHost();
 		const parked = await callTool(
 			tools,
-			"clj_worker",
+			"clj_devops",
 			"ab-1",
 			{
 				name: "abandoned-job",
@@ -783,17 +788,17 @@ describe("clj-only async dogfood surface", () => {
 		expect(parked.content[0].text).toContain(":state :parked");
 
 		const ctxHandler = hooks.get("context")[0];
-		const withParked = await ctxHandler({ messages: [{ role: "user", content: "hi" }] }, { cwd: root });
+		const withParked = await ctxHandler({ messages: [{ role: "user", content: "hi" }] }, { cwd: root, sessionManager: TEST_SESSION_MANAGER });
 		expect(withParked?.messages?.length).toBe(2);
 		expect(withParked.messages[1].role).toBe("user");
 		const blocks = withParked.messages[1].content;
 		expect(blocks[0].text).toContain('<skill version="1.0">');
 		expect(blocks[1].text).toContain("<UNDECIDED-PARKED-PROGRAMS>");
-		expect(blocks[1].text).toContain("clj_worker: abandoned-job");
+		expect(blocks[1].text).toContain("clj_devops: abandoned-job");
 
 		const abandoned = await callTool(
 			tools,
-			"clj_worker",
+			"clj_devops",
 			"ab-2",
 			{ name: "abandon-caller", code: `(abandon {:name "abandoned-job"})` },
 			root,
@@ -803,7 +808,7 @@ describe("clj-only async dogfood surface", () => {
 		expect(abandoned.content[0].text).toContain(":state :failed");
 		expect(() => readFileSync(join(root, "should-not-exist.txt"), "utf8")).toThrow();
 
-		const afterAbandon = await ctxHandler({ messages: [{ role: "user", content: "hi" }] }, { cwd: root });
+		const afterAbandon = await ctxHandler({ messages: [{ role: "user", content: "hi" }] }, { cwd: root, sessionManager: TEST_SESSION_MANAGER });
 		expect(afterAbandon.messages).toHaveLength(2);
 		expect(afterAbandon.messages).toHaveLength(2);
 		expect(afterAbandon.messages[1].content[0].text).toContain('<skill version="1.0">');
@@ -818,7 +823,7 @@ describe("clj-only async dogfood surface", () => {
 
 		const missingExec = await callTool(
 			tools,
-			"clj_review",
+			"clj_devops",
 			"glob-missing-exec",
 			{ name: "glob-err", code: `(glob {:pattern "**/*.mjs" :path "sub"})` },
 			root,
@@ -828,7 +833,7 @@ describe("clj-only async dogfood surface", () => {
 
 		const namesOnly = await callTool(
 			tools,
-			"clj_review",
+			"clj_devops",
 			"glob-names",
 			{ name: "glob-id", code: `(glob {:pattern "**/*.mjs" :path "sub" :exec identity})` },
 			root,
@@ -839,7 +844,7 @@ describe("clj-only async dogfood surface", () => {
 
 		const res = await callTool(
 			tools,
-			"clj_review",
+			"clj_devops",
 			"glob-1",
 			{
 				name: "glob-cat",
@@ -851,30 +856,20 @@ describe("clj-only async dogfood surface", () => {
 		expect(res.content[0].text).toContain('["sub/a.mjs" "alpha"]');
 		expect(res.content[0].text).toContain('["sub/b.mjs" "beta"]');
 		expect(res.content[0].text).not.toContain("c.txt");
-		expect(existsSync(join(root, ".herd"))).toBe(false);
 	});
 	it("requires Ariadne budget and goal on every clj call", async () => {
 		const { tools } = fakeHost();
-		const res = await tools.get("clj_plan").execute("a-required", { code: "1" }, undefined, undefined, { cwd: root });
+		const res = await tools.get("clj_devops").execute("a-required", { code: "1" }, undefined, undefined, { cwd: root, sessionManager: TEST_SESSION_MANAGER });
 		expect(res.isError).toBe(true);
 		expect(res.content[0].text).toContain("ariadne_budget");
 	});
 
-	it("rejects a write capability in the plan role", async () => {
+	it("does not register plan, review, or worker on the default surface", () => {
 		const { tools } = fakeHost();
-		const result = await callTool(
-			tools,
-			"clj_plan",
-			"deny-1",
-			{
-				name: "deny-probe",
-				code: `(write {:path "forbidden.txt" :content "no"})`,
-			},
-			root,
-		);
-		expect(result.isError).toBe(true);
-		expect(result.content[0].text).toContain(":CAPABILITY_DENIED");
-		expect(() => readFileSync(join(root, "forbidden.txt"), "utf8")).toThrow();
+		expect(tools.has("clj_plan")).toBe(false);
+		expect(tools.has("clj_review")).toBe(false);
+		expect(tools.has("clj_worker")).toBe(false);
+		expect(tools.has("clj_devops")).toBe(true);
 	});
 
 	it("rejects a stale read-set instead of overwriting external changes", async () => {
@@ -883,7 +878,7 @@ describe("clj-only async dogfood surface", () => {
 
 		const parked = await callTool(
 			tools,
-			"clj_worker",
+			"clj_devops",
 			"conflict-1",
 			{
 				name: "conflict",
@@ -898,7 +893,7 @@ describe("clj-only async dogfood surface", () => {
 		writeFileSync(join(root, "conflict.txt"), "x\nx\nEXTRA\n");
 		const resumed = await callTool(
 			tools,
-			"clj_worker",
+			"clj_devops",
 			"conflict-2",
 			{
 				name: "conflict-resume",

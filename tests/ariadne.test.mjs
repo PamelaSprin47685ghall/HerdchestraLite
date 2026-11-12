@@ -49,7 +49,7 @@ describe("Time Leap++ + Ariadne's Thread + Read-Only Beacons", () => {
 		store.validateAndApplyFork(sk, { ariadne_budget: 5, ariadne_goal: "goal-1" }, "p1", "c1", "clj_plan");
 		store.settleTurn(sk); // currentTurn = 1, deadline = 6 (remaining 5)
 		store.validateAndApplyFork(sk, { ariadne_budget: 2, ariadne_goal: "goal-2" }, "p2", "c2", "clj_plan");
-		store.settleTurn(sk); // currentTurn = 2, minDeadline = 4 (remaining 2)
+		store.settleTurn(sk); // currentTurn = 2, mean deadline = 5 (remaining 3)
 
 		// Missing beacon -> rejected
 		expect(() => store.timeLeap(sk, { target: "p2", experience: "go back" })).toThrow(/beacon/);
@@ -72,7 +72,7 @@ describe("Time Leap++ + Ariadne's Thread + Read-Only Beacons", () => {
 			}),
 		).toThrow(/ariadne_goal/);
 
-		// Valid time_leap back to p2: restores turn=1, pops p2 so p1 (remaining=5) is restored (refunded=3)
+		// Valid time_leap back to p2: restores turn=1, pops p2 so p1 (remaining=5) is restored (updatedBudget=5)
 		const res = store.timeLeap(
 			sk,
 			{ target: "p2", experience: "approach A failed; try B", beacon: "Redis race details live here" },
@@ -81,7 +81,7 @@ describe("Time Leap++ + Ariadne's Thread + Read-Only Beacons", () => {
 		expect(res.target).toBe("p2");
 		expect(res.beaconName).toBe(ALPHA_VERSE);
 		expect(res.remaining).toBe(5);
-		expect(res.refunded).toBe(3);
+		expect(res.updatedBudget).toBe(5);
 
 		// Cannot jump to or resurrect the sealed beacon "alpha"
 		expect(() => store.timeLeap(sk, { target: "alpha", experience: "resurrect", beacon: "b2" })).toThrow(
@@ -132,10 +132,10 @@ describe("Time Leap++ + Ariadne's Thread + Read-Only Beacons", () => {
 
 	it("acts as a soft gate at remaining <= 0 without blocking tools", async () => {
 		const { tools, hooks } = fakeHost();
-		const cljPlan = tools.get("clj_plan");
+		const cljDevops = tools.get("clj_devops");
 		const ctx = { cwd: root };
 
-		await cljPlan.execute(
+		await cljDevops.execute(
 			"c1",
 			{ name: "start", code: "1", ariadne_budget: 1, ariadne_goal: "finish quickly" },
 			undefined,
@@ -143,7 +143,7 @@ describe("Time Leap++ + Ariadne's Thread + Read-Only Beacons", () => {
 			ctx,
 		);
 		await hooks.get("turn_end")[0]({}, ctx);
-		await cljPlan.execute(
+		await cljDevops.execute(
 			"c2",
 			{ name: "step2", code: "2", ariadne_budget: 1, ariadne_goal: "finish quickly" },
 			undefined,
@@ -151,7 +151,7 @@ describe("Time Leap++ + Ariadne's Thread + Read-Only Beacons", () => {
 			ctx,
 		);
 		await hooks.get("turn_end")[0]({}, ctx);
-		const r3 = await cljPlan.execute(
+		const r3 = await cljDevops.execute(
 			"c3",
 			{ name: "step3", code: "3", ariadne_budget: 1, ariadne_goal: "finish quickly" },
 			undefined,
@@ -279,7 +279,7 @@ describe("Time Leap++ + Ariadne's Thread + Read-Only Beacons", () => {
 			},
 		};
 		await tools
-			.get("clj_plan")
+			.get("clj_devops")
 			.execute("c1", { name: "p1", code: "1", ariadne_budget: 3, ariadne_goal: "solve" }, undefined, undefined, ctx);
 		const leapRes = await tools
 			.get("time_leap")

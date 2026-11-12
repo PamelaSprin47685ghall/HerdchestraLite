@@ -155,18 +155,7 @@ describe("capability matrix", () => {
 	it("matches AGENTS.md §4.2 for all six roles", () => {
 		expect(Object.keys(CAPABILITY_MATRIX)).toEqual(["plan", "devops", "review", "worker", "holder", "auditor"]);
 		expect([...CAPABILITY_MATRIX.plan]).toEqual(["cat", "where", "whereAll", "park", "unpark", "abandon"]);
-		expect([...CAPABILITY_MATRIX.devops]).toEqual([
-			"cat",
-			"stat",
-			"ls",
-			"glob",
-			"where",
-			"whereAll",
-			"park",
-			"unpark",
-			"abandon",
-			"call",
-		]);
+		expect([...CAPABILITY_MATRIX.devops]).toEqual([...CAPABILITY_MATRIX.worker, "call"]);
 		expect([...CAPABILITY_MATRIX.review]).toEqual([
 			"cat",
 			"stat",
@@ -330,14 +319,14 @@ describe("capability matrix", () => {
 		const plan = describeSandboxTool("clj_plan");
 		expect(plan).toContain("Bound capabilities: cat, where, whereAll, park, unpark");
 		expect(plan).toContain("No stat, ls, write, mkdir, rm, mv, or call");
-		expect(plan.toLowerCase()).toContain("other sandbox names from common are not bound");
 
 		const review = describeSandboxTool("clj_review");
 		expect(review).toContain("No write, mkdir, rm, mv, call, or park");
 
 		const devops = describeSandboxTool("clj_devops");
-		expect(devops).toContain("call is best-effort read-only");
-		expect(devops).toContain("No write, mkdir, rm, or mv");
+		expect(devops).toContain("Privileged worker");
+		expect(devops).toContain("No token required");
+		expect(devops).not.toContain("best-effort read-only");
 
 		const worker = describeSandboxTool("clj_worker");
 		expect(worker).toContain(":TOKEN_REQUIRED");
@@ -601,7 +590,7 @@ describe("role capability boundaries", () => {
 		expect(existsSync(marker)).toBe(false);
 	});
 
-	it("DevOps can inspect and call, but cannot write", async () => {
+	it("DevOps can inspect, call, and write", async () => {
 		const root = sandbox();
 		const logs = join(root, "logs");
 		file(root, "a.txt", "alpha");
@@ -633,7 +622,8 @@ describe("role capability boundaries", () => {
 			name: "w",
 			code: '(write {:path "a.txt" :content "x"})',
 		});
-		expect(keywordName(field(field(write.receipt, "error"), "code"))).toBe("CAPABILITY_DENIED");
+		expect(write.isError).not.toBe(true);
+		expect(keywordName(field(write.receipt, "state"))).toBe("completed");
 	});
 
 	it("fails closed when call has no write gate", async () => {
