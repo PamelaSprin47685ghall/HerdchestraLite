@@ -165,4 +165,33 @@ describe("Everything Everywhere Verse-Jumping + Ariadne's Thread", () => {
 		expect(resumed.messages[3].content[0].text).toContain("B failed, back to alpha");
 		expect(resumed.messages[3].content[0].text).toContain("p1");
 	});
+
+	it("requires cleaning up parked programs missing from target universe, while allowing parked programs present in target history", () => {
+		const store = createAriadneStore();
+		const sk = "s-parked";
+
+		store.validateAndApplyFork(sk, {}, "shared-parked", "c0", "clj_worker");
+		store.settleTurn(sk);
+		store.validateAndApplyFork(sk, {}, "branch-point", "c1", "clj_plan");
+		store.settleTurn(sk);
+		store.validateAndApplyFork(sk, {}, "later-parked", "c2", "clj_worker");
+		store.settleTurn(sk);
+
+		// Jumping to branch-point with later-parked still parked must fail
+		expect(() =>
+			store.verseJump(
+				sk,
+				{ target: "branch-point", experience: "go back" },
+				{ jumpCallId: "vj-err", parkedNames: ["shared-parked", "later-parked"] },
+			),
+		).toThrow(/later-parked/);
+
+		// Once later-parked is cleaned up, shared-parked IS in branch-point's history so jump succeeds!
+		const ok = store.verseJump(
+			sk,
+			{ target: "branch-point", experience: "shared-parked still lives in past" },
+			{ jumpCallId: "vj-ok", parkedNames: ["shared-parked"] },
+		);
+		expect(ok.kind).toBe("fork-history");
+	});
 });

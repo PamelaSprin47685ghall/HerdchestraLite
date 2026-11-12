@@ -191,7 +191,7 @@ export function createAriadneStore() {
 		return hidden;
 	}
 
-	function verseJump(sessionKey, params, { jumpCallId = null, leafId = null } = {}) {
+	function verseJump(sessionKey, params, { jumpCallId = null, leafId = null, parkedNames = [] } = {}) {
 		const targetProgram = params.target;
 		const experience = params.experience;
 		if (typeof targetProgram !== "string" || targetProgram.trim().length === 0) {
@@ -215,6 +215,21 @@ export function createAriadneStore() {
 				activatedVerses: [...s.activatedVerses.keys()],
 				currentHistory: s.active.stack.map((f) => f.programName),
 			});
+		}
+
+		if (Array.isArray(parkedNames) && parkedNames.length > 0) {
+			const targetIndex =
+				existingActivated && stackIdx === undefined
+					? existingActivated.verse.indexByProgram
+					: new Map(s.active.stack.slice(0, stackIdx).map((f, i) => [f.programName, i]));
+			const orphans = parkedNames.filter((name) => typeof name === "string" && !targetIndex.has(name));
+			if (orphans.length > 0) {
+				throw herdError(
+					"RESOURCES_NOT_QUIESCENT",
+					`Target universe ${JSON.stringify(targetProgram)} does not know about your parked programs (${orphans.join(", ")}). Resolve them via (unpark ...) or (abandon ...) before jumping.`,
+					{ target: targetProgram, orphans },
+				);
+			}
 		}
 
 		const leavingVerse = s.active;

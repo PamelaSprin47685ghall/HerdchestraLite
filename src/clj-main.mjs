@@ -1026,7 +1026,8 @@ export function registerCljTools(pi, deps = {}) {
 					const jumpCallId =
 						typeof toolCallId === "string" && toolCallId.length > 0 ? toolCallId : `vj-${randomUUID().slice(0, 12)}`;
 					const leafId = ctx?.sessionManager?.getLeafId?.() ?? null;
-					const res = ariadne.verseJump(sessionKey, params, { jumpCallId, leafId });
+					const parkedNames = (pool.parkedList ?? []).map((item) => item.name);
+					const res = ariadne.verseJump(sessionKey, params, { jumpCallId, leafId, parkedNames });
 					const text = `{:state :verse-jumped :kind ${JSON.stringify(res.kind)} :target ${JSON.stringify(res.target)} :lca-distance ${res.lcaDistance} :remaining-turns ${res.remaining === null ? "nil" : res.remaining} :refunded-turns ${res.refunded}}`;
 					return { content: [{ type: "text", text }], details: res };
 				} catch (error) {
