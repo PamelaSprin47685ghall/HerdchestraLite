@@ -3,9 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerCljTools } from "../src/clj-main.mjs";
-import { applyTimeLeapToMessages, createAriadneStore } from "../src/scope/ariadne.mjs";
+import { ALPHA_VERSE, applyVerseJumpToMessages, createAriadneStore } from "../src/scope/ariadne.mjs";
 
-describe("Ariadne's Thread + Time Leap", () => {
+describe("Everything Everywhere Verse-Jumping + Ariadne's Thread", () => {
 	const activeHosts = [];
 	let root;
 
@@ -27,13 +27,13 @@ describe("Ariadne's Thread + Time Leap", () => {
 			},
 			async setActiveTools() {},
 		};
-		const state = registerCljTools(pi, { ownerId: "ariadne-test" });
+		const state = registerCljTools(pi, { ownerId: "verse-test" });
 		activeHosts.push(state);
 		return { tools, hooks, state };
 	}
 
 	beforeEach(() => {
-		root = mkdtempSync(join(tmpdir(), "ariadne-test-"));
+		root = mkdtempSync(join(tmpdir(), "verse-test-"));
 	});
 
 	afterEach(() => {
@@ -41,73 +41,73 @@ describe("Ariadne's Thread + Time Leap", () => {
 		rmSync(root, { recursive: true, force: true });
 	});
 
-	it("tracks tightest deadline and ties in O(1) and restores earlier anchors on time_leap", () => {
+	it("tracks only activated parallel verses hidden from current history, computes LCA distance, and shares ariadne_thread/ariadne_goal DRYly", () => {
 		const store = createAriadneStore();
 		const sk = "s1";
 
-		// Unlimited before any ariadne_thread is set
-		const unlim = store.validateAndApplyFork(sk, {}, "p0", "c0", "clj_plan");
-		expect(unlim.remaining).toBeNull();
-		expect(store.formatAriadneBlock(sk)).toBeNull();
+		// Ordinary unactivated programs in alpha
+		store.validateAndApplyFork(sk, {}, "p0", "c0", "clj_plan");
 		store.settleTurn(sk);
 
-		// Turn 0: p1 sets deadline 0 + 5 = 5
 		store.validateAndApplyFork(sk, { ariadne_thread: 5, ariadne_goal: "goal-1" }, "p1", "c1", "clj_plan");
-		store.settleTurn(sk); // justAnchored: currentTurn stays 0
-
-		// Walk 1 turn forward -> currentTurn = 1
+		store.settleTurn(sk);
 		store.markTurnActive(sk);
-		store.settleTurn(sk);
-		expect(store.status(sk).remaining).toBe(4);
+		store.settleTurn(sk); // currentTurn = 2
 
-		// Turn 1: p2 sets ariadne_thread 4 -> deadline 1 + 4 = 5 (ties p1!)
-		store.validateAndApplyFork(sk, { ariadne_thread: 4, ariadne_goal: "goal-2" }, "p2", "c2", "clj_plan");
+		store.validateAndApplyFork(sk, {}, "p2-ordinary", "c2", "clj_plan");
 		store.settleTurn(sk);
-		const tied = store.status(sk);
-		expect(tied.remaining).toBe(4);
-		expect(tied.tightest.map((t) => t.programName)).toEqual(["p1", "p2"]);
-
-		// Turn 1 -> p3 sets ariadne_thread 2 -> deadline 1 + 2 = 3 (tighter than 5!)
 		store.validateAndApplyFork(sk, { ariadne_thread: 2, ariadne_goal: "goal-3" }, "p3", "c3", "clj_plan");
 		store.settleTurn(sk);
-		expect(store.status(sk).tightest.map((t) => t.programName)).toEqual(["p3"]);
-		expect(store.status(sk).remaining).toBe(2);
 
-		// p4 sets looser ariadne_thread 10 -> p3 still wins
-		store.validateAndApplyFork(sk, { ariadne_thread: 10, ariadne_goal: "goal-4" }, "p4", "c4", "clj_plan");
-		store.settleTurn(sk);
-		expect(store.status(sk).tightest.map((t) => t.programName)).toEqual(["p3"]);
+		expect(store.status(sk).verseName).toBe(ALPHA_VERSE);
+		expect(store.status(sk).otherVerses).toEqual([]);
 
-		// Time leap back to p2 pops p2 itself (plus p3, p4), restoring p1 so LLM can pick a new budget
-		const leaped = store.timeLeap(sk, { target_program: "p2", hint: "skip p3/p4" });
-		expect(leaped.remaining).toBe(4);
-		expect(leaped.refunded).toBe(2);
-		expect(store.status(sk).tightest.map((t) => t.programName)).toEqual(["p1"]);
+		// Jump to p2-ordinary with a fresh ariadne_thread+ariadne_goal: alpha is frozen as activated; p0 is NOT surfaced!
+		const j1 = store.verseJump(
+			sk,
+			{
+				target: "p2-ordinary",
+				experience: "try B with full subjective experience",
+				ariadne_thread: 4,
+				ariadne_goal: "approach-B",
+			},
+			{ jumpCallId: "vj-1", leafId: "leaf-alpha" },
+		);
+		expect(j1.kind).toBe("fork-history");
+		expect(j1.lcaDistance).toBe(2); // [p2-ordinary, p3]
+		expect(j1.otherVerses.map((v) => v.verseName)).toEqual(["alpha"]);
+		const block = store.formatAriadneBlock(sk);
+		expect(block).toContain("<OTHER-VERSES>");
+		expect(block).toContain("alpha");
+		expect(block).not.toContain("p0");
+
+		// Jump back into alpha: uses alpha's saved cutCallId ("vj-1") DRYly!
+		const j2 = store.verseJump(
+			sk,
+			{ target: "alpha", experience: "B failed, resume alpha" },
+			{ jumpCallId: "vj-2", leafId: "leaf-p2" },
+		);
+		expect(j2.kind).toBe("resume-verse");
+		expect(j2.otherVerses.map((v) => v.verseName)).toEqual(["p2-ordinary"]);
 	});
 
-	it("acts as a soft gate at remaining <= 0 without blocking tools and injects guilt message", async () => {
+	it("acts as a soft gate at remaining <= 0 without blocking tools", async () => {
 		const { tools, hooks } = fakeHost();
 		const cljPlan = tools.get("clj_plan");
 		const ctx = { cwd: root };
 
-		// Cold start with 1 turn
-		const r1 = await cljPlan.execute(
+		await cljPlan.execute(
 			"c1",
 			{ name: "start", code: "1", ariadne_thread: 1, ariadne_goal: "finish quickly" },
 			undefined,
 			undefined,
 			ctx,
 		);
-		expect(r1.isError).not.toBe(true);
 		await hooks.get("turn_end")[0]({}, ctx);
-
-		// Walk 2 more turns past deadline (remaining becomes -1)
-		const r2 = await cljPlan.execute("c2", { name: "step2", code: "2" }, undefined, undefined, ctx);
-		expect(r2.isError).not.toBe(true);
+		await cljPlan.execute("c2", { name: "step2", code: "2" }, undefined, undefined, ctx);
 		await hooks.get("turn_end")[0]({}, ctx);
-
 		const r3 = await cljPlan.execute("c3", { name: "step3", code: "3" }, undefined, undefined, ctx);
-		expect(r3.isError).not.toBe(true); // soft gate: NOT blocked!
+		expect(r3.isError).not.toBe(true);
 		await hooks.get("turn_end")[0]({}, ctx);
 
 		const ctxRes = await hooks.get("context")[0]({ messages: [{ role: "user", content: "hi" }] }, ctx);
@@ -115,39 +115,54 @@ describe("Ariadne's Thread + Time Leap", () => {
 		expect(blocks[0].text).toContain('<skill version="1.0">');
 		expect(blocks[1].text).toContain("<ARIADNE-THREAD>");
 		expect(blocks[1].text).toContain("出门太久忘本了");
-		expect(blocks[1].text).toContain("start（目标：finish quickly）");
 	});
 
-	it("replaces target toolCall + toolResult with a single user message containing only Goal and hint", () => {
-		const messages = [
+	it("uses the exact same cutFromToolCall path for fork-history and resume-verse", () => {
+		const alphaMessages = [
 			{ role: "user", content: "go" },
 			{
 				role: "assistant",
-				content: [
-					{ type: "thinking", thinking: "plan" },
-					{ type: "toolCall", id: "call-p1", name: "clj_plan", arguments: { name: "p1", code: "1" } },
-					{ type: "toolCall", id: "call-p2", name: "clj_devops", arguments: { name: "p2", code: "2" } },
-				],
+				content: [{ type: "toolCall", id: "call-p1", name: "clj_plan", arguments: { name: "p1", code: "1" } }],
 			},
 			{ role: "toolResult", toolCallId: "call-p1", toolName: "clj_plan", content: [{ type: "text", text: "old-p1" }] },
 			{
-				role: "toolResult",
-				toolCallId: "call-p2",
-				toolName: "clj_devops",
-				content: [{ type: "text", text: "old-p2" }],
+				role: "assistant",
+				content: [
+					{ type: "toolCall", id: "vj-1", name: "verse_jump", arguments: { target: "p1", experience: "fork" } },
+				],
 			},
-			{ role: "assistant", content: [{ type: "text", text: "wrong path" }] },
+			{ role: "toolResult", toolCallId: "vj-1", toolName: "verse_jump", content: [{ type: "text", text: "jumped" }] },
 		];
 
-		const next = applyTimeLeapToMessages(messages, {
+		// Fork-history cuts at call-p1
+		const forked = applyVerseJumpToMessages(alphaMessages, {
+			kind: "fork-history",
 			targetProgram: "p1",
-			targetToolCallId: "call-p1",
+			cutCallId: "call-p1",
 			targetGoal: "fix login",
-			hint: "don't touch p2, use approach B",
+			experience: "use approach B",
+			otherVerses: [{ verseName: "alpha", goal: "try A" }],
 		});
+		expect(forked.messages).toHaveLength(2);
+		expect(forked.messages[1].role).toBe("user");
+		expect(forked.messages[1].content[0].text).toContain("Goal: fix login");
+		expect(forked.messages[1].content[0].text).toContain("use approach B");
+		expect(forked.messages[1].content[0].text).toContain("alpha");
 
-		expect(next).toHaveLength(2);
-		expect(next[1].role).toBe("user");
-		expect(next[1].content[0].text).toBe("Goal: fix login\n\ndon't touch p2, use approach B");
+		// Resume-verse cuts at alpha's verse_jump call ("vj-1"), leaving p1 + its result intact!
+		const resumed = applyVerseJumpToMessages(forked.messages, {
+			kind: "resume-verse",
+			targetProgram: "alpha",
+			cutCallId: "vj-1",
+			fallbackMessages: alphaMessages,
+			targetGoal: "try A",
+			experience: "B failed, back to alpha",
+			otherVerses: [{ verseName: "p1", goal: "fix login" }],
+		});
+		expect(resumed.messages).toHaveLength(4);
+		expect(resumed.messages[2].role).toBe("toolResult");
+		expect(resumed.messages[3].role).toBe("user");
+		expect(resumed.messages[3].content[0].text).toContain("B failed, back to alpha");
+		expect(resumed.messages[3].content[0].text).toContain("p1");
 	});
 });

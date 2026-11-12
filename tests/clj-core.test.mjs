@@ -117,7 +117,7 @@ describe("clj-only async dogfood surface", () => {
 			"clj_review",
 			"clj_worker",
 			"join",
-			"time_leap",
+			"verse_jump",
 		]);
 	});
 

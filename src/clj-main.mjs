@@ -21,7 +21,7 @@ import { appendOutboundContextTail } from "./prompts/runtime-wires.mjs";
 import {
 	ARIADNE_GOAL_FIELD,
 	ARIADNE_THREAD_FIELD,
-	applyTimeLeapToMessages,
+	applyVerseJumpToMessages,
 	createAriadneStore,
 } from "./scope/ariadne.mjs";
 import { herdError } from "./util/errors.mjs";
@@ -62,7 +62,7 @@ const WORKERS_FIELD = "more_workers_without_hitting_mythical_man_month";
 const WORKERS_FIELD_DESCRIPTION =
 	"自检：按 Brooks《人月神话》推导此刻还能增派多少工人。只数与既有契约互不相交、跨切片通信成本 O(1) 且现在已就绪的切片；无法证明互不相交的一律计 0。";
 const FORK_ALLOWED_FIELDS = new Set(["name", "code", "i", WORKERS_FIELD, ARIADNE_THREAD_FIELD, ARIADNE_GOAL_FIELD]);
-const TIME_LEAP_ALLOWED_FIELDS = new Set(["target_program", "hint", "i"]);
+const VERSE_JUMP_ALLOWED_FIELDS = new Set(["target", "experience", ARIADNE_THREAD_FIELD, ARIADNE_GOAL_FIELD, "i"]);
 const JOIN_ALLOWED_FIELDS = new Set(["otherwise_independent_work", "i", WORKERS_FIELD]);
 
 /**
@@ -101,13 +101,13 @@ const SANDBOX_PARAMETERS = Object.freeze({
 			type: "integer",
 			minimum: 1,
 			description:
-				"Ariadne's Thread — unspool a golden thread into the labyrinth: declare how many turns you allow yourself from this checkpoint before the thread pulls taut (1 turn = 1 point). Multiple active threads compose by taking the tightest remaining deadline. Optional: leave blank to walk freely or ride your current thread.",
+				"Ariadne's Thread — unspool a golden thread into the labyrinth before stepping deeper: how many turns (1 turn = 1 point) may you wander from this checkpoint before your past self taps you on the shoulder? Multiple active threads compose automatically by taking the tightest deadline (never a hard block—just an unmistakable conscience nudge if you drift past 0). Optional: omit to walk free or ride your current thread.",
 		},
 		[ARIADNE_GOAL_FIELD]: {
 			type: "string",
 			minLength: 1,
 			description:
-				"Ariadne's Goal — name the exact milestone, proof, or dragon you intend to slay within this thread (required whenever ariadne_thread is set; preserved as your north star if you Time Leap back here).",
+				"Ariadne's Goal — name the exact dragon you are slaying or proof you are hunting within this thread (required whenever ariadne_thread is set; becomes your north star if you later Verse-Jump back here).",
 		},
 	},
 });
@@ -152,27 +152,37 @@ export const HOST_TOOL_BLACKLIST = Object.freeze([
 	"find",
 ]);
 
-const TIME_LEAP_PARAMETERS = Object.freeze({
+const VERSE_JUMP_PARAMETERS = Object.freeze({
 	type: "object",
 	additionalProperties: false,
-	required: ["target_program", "hint"],
+	required: ["target", "experience"],
 	properties: {
-		target_program: {
+		target: {
 			type: "string",
 			minLength: 1,
 			description:
-				"The :name of the past clj_* program to leap back to. That program call (and everything after it) is rewound and replaced by your full-memory Time Leap message, refunding all turns spent since then and letting you choose a fresh ariadne_thread budget.",
+				'The :name of the parallel universe to jump to (e.g. "alpha", an activated verse from <OTHER-VERSES>, or any historical clj_* program name to fork a new universe). Your leaving universe freezes cleanly on its branch in the same .jsonl so you can jump back later.',
 		},
-		hint: {
+		experience: {
 			type: "string",
 			minLength: 1,
 			description:
-				"Full-memory Time Leap transfer (NOT a cramped 36-byte text—write generously!): pack in every hard-won discovery, exact file path, symbol name, falsified dead end, and concrete next step so your past self wakes up with 100% of the wisdom and 0% of the detour.",
+				"Your full subjective lived experience to pour into the target self (write generously—this is full Verse-Jumping, NOT a cramped 36-byte D-Mail!): bring every hard-won intuition, exact file path, line/symbol, falsified dead end, and the decisive next move so your alternate self wakes up already battle-hardened.",
+		},
+		[ARIADNE_THREAD_FIELD]: {
+			type: "integer",
+			minimum: 1,
+			description: "Optional Ariadne's Thread turn budget to unspool upon arriving in the target universe.",
+		},
+		[ARIADNE_GOAL_FIELD]: {
+			type: "string",
+			minLength: 1,
+			description: "Optional Ariadne's Goal for the target universe (required when ariadne_thread is set).",
 		},
 	},
 });
 
-const CLJ_TOOL_NAMES = Object.freeze([...TOOL_ROLES.map((role) => TOOL_NAMES[role]), "join", "time_leap"]);
+const CLJ_TOOL_NAMES = Object.freeze([...TOOL_ROLES.map((role) => TOOL_NAMES[role]), "join", "verse_jump"]);
 
 function isPlainObject(value) {
 	if (value === null || typeof value !== "object") return false;
@@ -989,22 +999,22 @@ export function registerCljTools(pi, deps = {}) {
 
 	try {
 		pi.registerTool({
-			name: "time_leap",
-			label: "Time Leap (Ariadne's Thread)",
+			name: "verse_jump",
+			label: "Verse Jump (Everything Everywhere)",
 			description:
-				"Time Leap (barrier-synchronized): jump back to a named past clj_* checkpoint, erasing the detour and replacing that turn with a clean user message carrying its original Goal plus your rich, full-memory Time Leap transfer—refunding spent turns and letting you set a fresh Ariadne's Thread budget.",
-			parameters: TIME_LEAP_PARAMETERS,
-			async execute(_toolCallId, params = {}, _signal, _onUpdate, ctx) {
+				'Verse-Jumping (Everything Everywhere All at Once · barrier-synchronized): freeze your current universe cleanly on its branch in the same .jsonl and transfer the "who I am" spotlight token + your full subjective lived experience to another universe—either an activated parallel verse from <OTHER-VERSES> (such as "alpha") to resume where it left off, or any historical clj_* program :name to fork a brand-new worldline. Nothing is lost; you can always jump back.',
+			parameters: VERSE_JUMP_PARAMETERS,
+			async execute(toolCallId, params = {}, _signal, _onUpdate, ctx) {
 				if (!isPlainObject(params)) {
-					return toolFailure(herdError("INVALID_ARGUMENT", "time_leap parameters must be an object"));
+					return toolFailure(herdError("INVALID_ARGUMENT", "verse_jump parameters must be an object"));
 				}
 				for (const key of Object.keys(params)) {
-					if (!TIME_LEAP_ALLOWED_FIELDS.has(key)) {
-						return toolFailure(herdError("INVALID_ARGUMENT", `unknown time_leap field: ${key}`, { field: key }));
+					if (!VERSE_JUMP_ALLOWED_FIELDS.has(key)) {
+						return toolFailure(herdError("INVALID_ARGUMENT", `unknown verse_jump field: ${key}`, { field: key }));
 					}
 				}
 				if (!ariadne) {
-					return toolFailure(herdError("HOST_API_MISMATCH", "Ariadne's Thread is disabled in this session"));
+					return toolFailure(herdError("HOST_API_MISMATCH", "Verse-Jumping is disabled in this session"));
 				}
 				const root = rootFor(ctx);
 				const sessionKey = hostSessionKey(ctx, root);
@@ -1013,8 +1023,11 @@ export function registerCljTools(pi, deps = {}) {
 					await Promise.all([...pool.startingPromises]);
 				}
 				try {
-					const res = ariadne.timeLeap(sessionKey, params);
-					const text = `{:state :leaped :target ${JSON.stringify(res.targetProgram)} :remaining-turns ${res.remaining} :refunded-turns ${res.refunded}}`;
+					const jumpCallId =
+						typeof toolCallId === "string" && toolCallId.length > 0 ? toolCallId : `vj-${randomUUID().slice(0, 12)}`;
+					const leafId = ctx?.sessionManager?.getLeafId?.() ?? null;
+					const res = ariadne.verseJump(sessionKey, params, { jumpCallId, leafId });
+					const text = `{:state :verse-jumped :kind ${JSON.stringify(res.kind)} :target ${JSON.stringify(res.target)} :lca-distance ${res.lcaDistance} :remaining-turns ${res.remaining === null ? "nil" : res.remaining} :refunded-turns ${res.refunded}}`;
 					return { content: [{ type: "text", text }], details: res };
 				} catch (error) {
 					return toolFailure(error);
@@ -1022,12 +1035,12 @@ export function registerCljTools(pi, deps = {}) {
 			},
 		});
 	} catch (error) {
-		failures.push("time_leap");
+		failures.push("verse_jump");
 		recordHealth({
 			entry: ENTRY,
 			status: "failed",
 			version: VERSION,
-			capabilities: { tool: "time_leap" },
+			capabilities: { tool: "verse_jump" },
 			requiredCapabilities: ["tool"],
 			degraded: true,
 			error: errorText(error),
@@ -1081,12 +1094,28 @@ export function registerCljTools(pi, deps = {}) {
 			const sessionKey = hostSessionKey(ctx, root);
 			const pool = state.pools.get(sessionKey);
 			const parkedPrograms = pool?.parkedList ?? [];
-			const leap = ariadne ? ariadne.consumePendingLeap(sessionKey) : null;
-			const baseMessages = leap ? applyTimeLeapToMessages(event?.messages, leap) : event?.messages;
+			const jump = ariadne ? ariadne.consumePendingJump(sessionKey) : null;
+			let baseMessages = event?.messages;
+			let branchBaseMessages;
+			if (jump) {
+				ariadne.attachLeavingSnapshot(
+					sessionKey,
+					jump.leavingName,
+					event?.messages,
+					ctx?.sessionManager?.getLeafId?.(),
+				);
+				const applied = applyVerseJumpToMessages(event?.messages, jump, ctx?.sessionManager);
+				baseMessages = applied.messages;
+				if (applied.branchSwitched && ctx?.sessionManager && typeof ctx.sessionManager.getBranch === "function") {
+					branchBaseMessages = ctx.sessionManager
+						.getBranch()
+						.filter((e) => e && e.type === "message" && e.message)
+						.map((e) => e.message);
+				}
+			}
 			const ariadneBlock = ariadne ? ariadne.formatAriadneBlock(sessionKey) : null;
-			return {
-				messages: appendOutboundContextTail(baseMessages, { parkedPrograms, ariadneBlock }),
-			};
+			const messages = appendOutboundContextTail(baseMessages, { parkedPrograms, ariadneBlock });
+			return branchBaseMessages !== undefined ? { messages, branchBaseMessages } : { messages };
 		});
 	}
 

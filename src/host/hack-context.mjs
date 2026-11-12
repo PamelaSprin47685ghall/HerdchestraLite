@@ -141,10 +141,11 @@ export function hackContext(pi, handler) {
 			return result;
 		}
 		const after = result.messages;
-		const delta = computeMessagesDelta(before, after);
+		const base = Array.isArray(result.branchBaseMessages) ? result.branchBaseMessages : before;
+		const delta = computeMessagesDelta(base, after);
 		if (delta.changed) {
-			syncSessionDelta(ctx?.sessionManager, before, after, delta.prefixLen);
+			syncSessionDelta(ctx?.sessionManager, base, after, delta.prefixLen);
 		}
-		return result;
+		return { messages: after };
 	});
 }
