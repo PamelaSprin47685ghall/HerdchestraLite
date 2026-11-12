@@ -8,9 +8,10 @@
  * - Soft gate: when `remaining <= 0`, tools are NOT blocked; instead, the
  *   `<ARIADNE-THREAD>` block persistently reminds the LLM that it has wandered
  *   too far and forgotten its anchor.
- * - `applyTimeLeapToMessages` strips any sibling `toolCall`s (e.g. `p2`) from
- *   the target `assistant` message and replaces `p1`'s `toolResult` with `hint`
- *   so `p1` + its replaced `toolResult` becomes the exact end of history.
+ * - `applyTimeLeapToMessages` replaces the target `assistant` (`toolCall`)
+ *   + `toolResult` (and everything after) with a single `user` message
+ *   containing only the Goal at that point and `hint`, popping `target_program`
+ *   itself so the LLM can re-anchor with a new `ariadne_thread` budget.
  */
 
 import { herdError } from "../util/errors.mjs";
@@ -164,8 +165,8 @@ export function createAriadneStore() {
 		const prevTop = topFrame(s);
 		const prevRemaining = prevTop && prevTop.minDeadline !== null ? prevTop.minDeadline - s.currentTurn : null;
 
-		// Pop everything after targetFrame in O(popped)
-		const discarded = s.stack.splice(idx + 1);
+		// Pop targetFrame itself (and everything after) so the LLM can choose a new budget at that point.
+		const discarded = s.stack.splice(idx);
 		for (const f of discarded) {
 			s.indexByProgram.delete(f.programName);
 		}
@@ -173,13 +174,16 @@ export function createAriadneStore() {
 		s.justAnchored = false;
 		s.turnDirty = false;
 
-		const nextRemaining = targetFrame.minDeadline === null ? null : targetFrame.minDeadline - s.currentTurn;
-		const refunded = prevRemaining !== null ? Math.max(0, nextRemaining - prevRemaining) : 0;
+		const restoredTop = topFrame(s);
+		const nextRemaining =
+			restoredTop && restoredTop.minDeadline !== null ? restoredTop.minDeadline - s.currentTurn : null;
+		const refunded = nextRemaining !== null && prevRemaining !== null ? Math.max(0, nextRemaining - prevRemaining) : 0;
+		const targetGoal = targetFrame.ownGoal ?? targetFrame.tightest?.[0]?.goal ?? null;
 
 		s.pendingLeap = {
 			targetProgram,
 			targetToolCallId: targetFrame.toolCallId,
-			targetToolName: targetFrame.toolName,
+			targetGoal,
 			hint: hint.trim(),
 		};
 
@@ -187,7 +191,7 @@ export function createAriadneStore() {
 			targetProgram,
 			remaining: nextRemaining,
 			refunded,
-			tightest: targetFrame.tightest,
+			tightest: restoredTop ? restoredTop.tightest : [],
 		};
 	}
 
@@ -246,15 +250,13 @@ export function createAriadneStore() {
 
 /**
  * Rewrite `messages` for a Time Leap back to `leap.targetProgram`:
- * - Finds the `assistant` message containing `targetToolCallId` (or matching
- *   `:name "<targetProgram>"` in its `toolResult`), strips all sibling
- *   `toolCall` blocks (like `p2`) from that `assistant` message so ONLY `p1`'s
- *   `toolCall` remains, replaces `p1`'s `toolResult` with `hint`, and drops
- *   everything after it.
+ * Replaces the target `assistant` (`toolCall`) + `toolResult` (and everything
+ * after) with a single `user` message containing only the Goal at that point
+ * and `hint`.
  */
 export function applyTimeLeapToMessages(messages, leap) {
 	if (!Array.isArray(messages) || !leap) return messages;
-	const { targetToolCallId, targetToolName, targetProgram, hint } = leap;
+	const { targetToolCallId, targetProgram, targetGoal, hint } = leap;
 
 	let assistantIdx = -1;
 	let resolvedCallId = targetToolCallId;
@@ -269,59 +271,34 @@ export function applyTimeLeapToMessages(messages, leap) {
 		);
 	}
 
-	let resultIdx = -1;
-	if (typeof resolvedCallId === "string" && resolvedCallId.length > 0) {
-		resultIdx = messages.findIndex((m) => m && m.role === "toolResult" && m.toolCallId === resolvedCallId);
-	}
-	if (resultIdx === -1) {
+	if (assistantIdx === -1) {
 		const needle = `:name ${JSON.stringify(targetProgram)}`;
-		resultIdx = messages.findIndex((m) => {
+		const resultIdx = messages.findIndex((m) => {
 			if (m?.role !== "toolResult") return false;
 			const blocks = Array.isArray(m.content) ? m.content : [];
 			return blocks.some((b) => typeof b?.text === "string" && b.text.includes(needle));
 		});
 		if (resultIdx !== -1 && typeof messages[resultIdx]?.toolCallId === "string") {
 			resolvedCallId = messages[resultIdx].toolCallId;
-			if (assistantIdx === -1) {
-				assistantIdx = messages.findIndex(
-					(m) =>
-						m &&
-						m.role === "assistant" &&
-						Array.isArray(m.content) &&
-						m.content.some((b) => b && b.type === "toolCall" && b.id === resolvedCallId),
-				);
-			}
+			assistantIdx = messages.findIndex(
+				(m) =>
+					m &&
+					m.role === "assistant" &&
+					Array.isArray(m.content) &&
+					m.content.some((b) => b && b.type === "toolCall" && b.id === resolvedCallId),
+			);
+		}
+		if (assistantIdx === -1 && resultIdx !== -1) {
+			assistantIdx = resultIdx;
 		}
 	}
 
-	if (resultIdx === -1) return messages;
+	if (assistantIdx === -1) return messages;
 
-	const origResult = messages[resultIdx];
-	const replacedResult = {
-		...origResult,
-		role: "toolResult",
-		toolCallId: origResult.toolCallId ?? resolvedCallId,
-		toolName: origResult.toolName ?? targetToolName,
-		content: [
-			{
-				type: "text",
-				text: `<TIME-LEAP-HINT target=${JSON.stringify(targetProgram)}>\n${hint}\n</TIME-LEAP-HINT>`,
-			},
-		],
-		isError: false,
+	const text = targetGoal ? `Goal: ${targetGoal}\n\n${hint}` : hint;
+	const userMessage = {
+		role: "user",
+		content: [{ type: "text", text }],
 	};
-
-	if (assistantIdx !== -1 && assistantIdx < resultIdx) {
-		const origAssistant = messages[assistantIdx];
-		const filteredContent = origAssistant.content.filter(
-			(b) => !(b && b.type === "toolCall" && b.id !== resolvedCallId),
-		);
-		const trimmedAssistant = {
-			...origAssistant,
-			content: filteredContent,
-		};
-		return [...messages.slice(0, assistantIdx), trimmedAssistant, replacedResult];
-	}
-
-	return [...messages.slice(0, resultIdx), replacedResult];
+	return [...messages.slice(0, assistantIdx), userMessage];
 }

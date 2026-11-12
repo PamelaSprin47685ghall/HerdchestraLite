@@ -78,11 +78,11 @@ describe("Ariadne's Thread + Time Leap", () => {
 		store.settleTurn(sk);
 		expect(store.status(sk).tightest.map((t) => t.programName)).toEqual(["p3"]);
 
-		// Time leap back to p2 pops p3 and p4, restoring tied [p1, p2]
+		// Time leap back to p2 pops p2 itself (plus p3, p4), restoring p1 so LLM can pick a new budget
 		const leaped = store.timeLeap(sk, { target_program: "p2", hint: "skip p3/p4" });
 		expect(leaped.remaining).toBe(4);
 		expect(leaped.refunded).toBe(2);
-		expect(store.status(sk).tightest.map((t) => t.programName)).toEqual(["p1", "p2"]);
+		expect(store.status(sk).tightest.map((t) => t.programName)).toEqual(["p1"]);
 	});
 
 	it("acts as a soft gate at remaining <= 0 without blocking tools and injects guilt message", async () => {
@@ -118,7 +118,7 @@ describe("Ariadne's Thread + Time Leap", () => {
 		expect(blocks[1].text).toContain("start（目标：finish quickly）");
 	});
 
-	it("prunes sibling toolCalls (p2) from target assistant message and replaces p1 toolResult with hint", () => {
+	it("replaces target toolCall + toolResult with a single user message containing only Goal and hint", () => {
 		const messages = [
 			{ role: "user", content: "go" },
 			{
@@ -142,14 +142,12 @@ describe("Ariadne's Thread + Time Leap", () => {
 		const next = applyTimeLeapToMessages(messages, {
 			targetProgram: "p1",
 			targetToolCallId: "call-p1",
-			targetToolName: "clj_plan",
+			targetGoal: "fix login",
 			hint: "don't touch p2, use approach B",
 		});
 
-		expect(next).toHaveLength(3);
-		expect(next[1].content.map((b) => b.id ?? b.type)).toEqual(["thinking", "call-p1"]);
-		expect(next[2].toolCallId).toBe("call-p1");
-		expect(next[2].content[0].text).toContain("<TIME-LEAP-HINT");
-		expect(next[2].content[0].text).toContain("don't touch p2, use approach B");
+		expect(next).toHaveLength(2);
+		expect(next[1].role).toBe("user");
+		expect(next[1].content[0].text).toBe("Goal: fix login\n\ndon't touch p2, use approach B");
 	});
 });
