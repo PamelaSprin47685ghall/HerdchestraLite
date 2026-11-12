@@ -267,4 +267,24 @@ describe("Everything Everywhere Verse-Jumping + Ariadne's Thread", () => {
 		expect(res.messages[0].content).toBe("compaction-summary");
 		expect(res.messages.some((m) => m.content === "pre-compaction-giant-1")).toBe(false);
 	});
+
+	it("keeps aging older anchors even when newer clj_* calls set their own ariadne_thread", () => {
+		const store = createAriadneStore();
+		const sk = "s-age";
+
+		store.validateAndApplyFork(sk, { ariadne_thread: 3, ariadne_goal: "root-goal" }, "p1", "c1", "clj_plan");
+		store.settleTurn(sk);
+		expect(store.status(sk).remaining).toBe(3);
+
+		// Subsequent turn ALSO sets ariadne_thread: 5 -> p1 must still age from 3 -> 2!
+		store.validateAndApplyFork(sk, { ariadne_thread: 5, ariadne_goal: "sub-goal" }, "p2", "c2", "clj_plan");
+		store.settleTurn(sk);
+		expect(store.status(sk).remaining).toBe(2);
+		expect(store.status(sk).tightest.map((t) => t.programName)).toEqual(["p1"]);
+
+		// Another turn setting ariadne_thread: 5 -> p1 ages from 2 -> 1!
+		store.validateAndApplyFork(sk, { ariadne_thread: 5, ariadne_goal: "sub-goal-2" }, "p3", "c3", "clj_plan");
+		store.settleTurn(sk);
+		expect(store.status(sk).remaining).toBe(1);
+	});
 });

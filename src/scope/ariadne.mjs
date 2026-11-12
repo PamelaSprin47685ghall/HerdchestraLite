@@ -27,7 +27,6 @@ function createEmptyVerse(verseName = ALPHA_VERSE) {
 		verseName,
 		currentTurn: 0,
 		turnDirty: false,
-		justAnchored: false,
 		stack: [],
 		indexByProgram: new Map(),
 	};
@@ -43,7 +42,6 @@ function cloneVerse(verse, verseName, sliceEnd) {
 		verseName,
 		currentTurn: verse.currentTurn,
 		turnDirty: false,
-		justAnchored: false,
 		stack,
 		indexByProgram,
 	};
@@ -78,7 +76,7 @@ export function createAriadneStore() {
 		return s;
 	}
 
-	function pushStackFrame(v, params, programName, toolCallId, toolName) {
+	function pushStackFrame(v, params, programName, toolCallId, toolName, { isVerseJump = false } = {}) {
 		const hasThread = params[ARIADNE_THREAD_FIELD] !== undefined;
 		const hasGoal = params[ARIADNE_GOAL_FIELD] !== undefined;
 
@@ -109,7 +107,7 @@ export function createAriadneStore() {
 				);
 			}
 			const goal = rawGoal.trim();
-			const ownDeadline = v.currentTurn + turns;
+			const ownDeadline = v.currentTurn + (isVerseJump ? 0 : 1) + turns;
 			const entry = { programName, goal, deadlineTurn: ownDeadline };
 
 			let minDeadline;
@@ -137,7 +135,6 @@ export function createAriadneStore() {
 			};
 			v.indexByProgram.set(programName, v.stack.length);
 			v.stack.push(frame);
-			v.justAnchored = true;
 			v.turnDirty = true;
 			return { remaining: minDeadline - v.currentTurn, tightest };
 		}
@@ -173,10 +170,6 @@ export function createAriadneStore() {
 		const v = getSession(sessionKey).active;
 		if (!v.turnDirty) return { settled: false, currentTurn: v.currentTurn };
 		v.turnDirty = false;
-		if (v.justAnchored) {
-			v.justAnchored = false;
-			return { settled: true, currentTurn: v.currentTurn };
-		}
 		v.currentTurn += 1;
 		return { settled: true, currentTurn: v.currentTurn };
 	}
@@ -291,7 +284,8 @@ export function createAriadneStore() {
 
 		// DRY: if verse_jump carries `thread` + `goal`, apply it identically to `clj_*`!
 		if (params[ARIADNE_THREAD_FIELD] !== undefined || params[ARIADNE_GOAL_FIELD] !== undefined) {
-			pushStackFrame(s.active, params, `${targetProgram}#jump`, jumpCallId, "verse_jump");
+			pushStackFrame(s.active, params, `${targetProgram}#jump`, jumpCallId, "verse_jump", { isVerseJump: true });
+			s.active.turnDirty = false;
 		}
 
 		const nextTop = topFrame(s.active);
