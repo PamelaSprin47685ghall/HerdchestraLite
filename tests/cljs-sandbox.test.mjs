@@ -81,6 +81,24 @@ describe("CLJS nbb sandbox", () => {
 		expect(text).toContain(":value 3");
 	});
 
+	it("replays the same call id and rejects a changed payload", async () => {
+		const params = {
+			name: "replay-case",
+			code: "(js/Date.now)",
+			ariadne_budget: 5,
+			ariadne_goal: "test",
+		};
+		const first = await tool.execute("call-replay-1", params, null);
+		const second = await tool.execute("call-replay-1", params, null);
+		expect(second.content[0].text).toBe(first.content[0].text);
+		const mismatch = await tool.execute(
+			"call-replay-1",
+			{ ...params, code: "(+ 1 2)" },
+			null,
+		);
+		expect(mismatch.content[0].text).toContain("CALL_REPLAY_MISMATCH");
+	});
+
 	it("passes UFSS fences through the pre-pass", async () => {
 		const result = await run('(count ##"abc"##)');
 		expect(result.content[0].text).toContain(":value 3");

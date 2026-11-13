@@ -22,13 +22,39 @@
 (defn- sandbox-deadline [code]
   (+ 1000 (* 50 (byte-length code))))
 
+(defonce receipts (atom {}))
+
+(defn- digest [params]
+  (pr-str (js->clj params :keywordize-keys true)))
+
+(defn- replay-mismatch []
+  (ex-info "the same call id arrived with a different payload"
+           {:code :CALL_REPLAY_MISMATCH}))
+
 (defn- execute [tool-call-id params _signal]
-  (let [name (.-name params)
-        code (.-code params)]
-    (ariadne/record-anchor! name tool-call-id)
-    (-> (repl/run name code (sandbox-deadline code))
-        (.then (fn [result] (clj->js (tool-result (ufss/print result)))))
-        (.catch (fn [error] (clj->js (tool-error error)))))))
+  (let [request-digest (digest params)]
+    (if-let [cached (and tool-call-id (@receipts tool-call-id))]
+      (if (= request-digest (:digest cached))
+        (clj->js (tool-result (:text cached)))
+        (clj->js (tool-error (replay-mismatch))))
+      (let [name (.-name params)
+            code (.-code params)]
+        (ariadne/record-anchor! name tool-call-id)
+        (-> (repl/run name code (sandbox-deadline code))
+            (.then (fn [result]
+                     (let [text (ufss/print result)]
+                       (when tool-call-id
+                         (swap! receipts assoc tool-call-id
+                                {:digest request-digest :text text}))
+                       (clj->js (tool-result text)))))
+            (.catch (fn [error]
+                      (let [text (ufss/print {:state :failed
+                                              :error {:message (str error)
+                                                      :code (:code (ex-data error))}})]
+                        (when tool-call-id
+                          (swap! receipts assoc tool-call-id
+                                 {:digest request-digest :text text}))
+                        (clj->js (tool-error error))))))))))
 
 (defn- wait-execute [_tool-call-id params _signal]
   (let [work (.-otherwise_independent_work params)]

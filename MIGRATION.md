@@ -24,10 +24,10 @@
 
 ### 1.3 会话语义
 - [x] `name` 运行中唯一。
-- [ ] 同一 `call-id` 重放与 `:CALL_REPLAY_MISMATCH`。
-- [ ] `name` 完成后复用。
-- [~] 期限：`clj_*` 用 code 字节、`wait` 用 counterfactual 字节按 `1000 + 50×bytes` 计算；缺超时 park-all。
-- [ ] `park` 时工具立即返回 `:state :parked`（当前等待到超时）。
+- [x] 同一 `call-id` 重放与 `:CALL_REPLAY_MISMATCH`；不同载荷拒绝。
+- [x] `name` 完成后复用（`running` 集合只覆盖活动程序）。
+- [x] 期限：`clj_*` 用 code 字节、`wait` 用 counterfactual 字节按 `1000 + 50×bytes` 计算；超时 `park-all` 标记运行中程序为 `:parked :deadline` 并返回。
+- [x] `park` 时工具立即返回 `:state :parked`；程序在 `await` 处等待 `unpark`，其余部分继续。
 - [ ] 多程序/后果自负的全局 ctx 行为说明。
 
 ### 1.4 输出

@@ -140,7 +140,27 @@
           (.catch (fn [_] (collect-or-wait))))
       (idle-receipt))))
 
+(defn- running-names []
+  (->> @programs
+       (keep (fn [[name entry]] (when (= :running (:state entry)) name)))
+       vec))
+
+(defn- park-all! []
+  (let [names (running-names)]
+    (doseq [name names]
+      (remember! name {:state :parked
+                       :reason :deadline
+                       :payload {:reason :deadline}}))
+    (mapv (fn [name] {:name name :state :parked :reason :deadline}) names)))
+
 (defn wait-for-result
   ([] (wait-for-result 30000))
   ([deadline-ms]
-   (with-deadline (js/Promise.resolve (collect-or-wait)) (or deadline-ms 30000))))
+   (-> (with-deadline (js/Promise.resolve (collect-or-wait)) (or deadline-ms 30000))
+       (.catch (fn [error]
+                 (if (= :STALLED (:code (ex-data error)))
+                   (let [parked (park-all!)]
+                     (if (seq parked)
+                       {:state :parked :reason :deadline :programs parked}
+                       (throw error)))
+                   (throw error)))))))
