@@ -15,8 +15,8 @@ async function evalJson(form) {
 describe("Ariadne anchors and beacons", () => {
   it("records an anchor and queues a time leap", async () => {
     const result = await evalJson(`(do
-      (herd.ariadne/record-anchor! "anchor-1" "call-1")
-      (herd.ariadne/time-leap! {:target "anchor-1"
+      (herd.ariadne/record-anchor! \"test\" \"anchor-1\" \"call-1\")
+      (herd.ariadne/time-leap! \"test\" {:target "anchor-1"
                                 :experience "e"
                                 :beacon_name "beacon-1"
                                 :beacon_description "d"}))`);
@@ -26,19 +26,19 @@ describe("Ariadne anchors and beacons", () => {
   });
 
   it("consumes the pending jump exactly once", async () => {
-    const first = await evalJson("(herd.ariadne/consume-jump!)");
-    const second = await evalJson("(herd.ariadne/consume-jump!)");
+    const first = await evalJson("(herd.ariadne/consume-jump! \"test\")");
+    const second = await evalJson("(herd.ariadne/consume-jump! \"test\")");
     expect(first.target).toBe("anchor-1");
     expect(second).toBe(null);
   });
 
   it("rejects unknown targets and duplicate beacons", async () => {
     const unknown = await evalJson(`(try
-      (herd.ariadne/time-leap! {:target "missing" :experience "e"})
+      (herd.ariadne/time-leap! \"test\" {:target "missing" :experience "e"})
       (catch :default e {:code (:code (ex-data e))}))`);
     expect(unknown.code).toBe("STALE_CONTROL");
     const duplicate = await evalJson(`(try
-      (herd.ariadne/time-leap! {:target "anchor-1"
+      (herd.ariadne/time-leap! \"test\" {:target "anchor-1"
                                 :experience "e"
                                 :beacon_name "beacon-1"
                                 :beacon_description "d"})
@@ -47,10 +47,10 @@ describe("Ariadne anchors and beacons", () => {
   });
 
   it("returns beacon descriptions and rejects unknown beacons", async () => {
-    const found = await evalJson("(herd.ariadne/ask-beacon {:target \"beacon-1\" :question \"q\"})");
+    const found = await evalJson("(herd.ariadne/ask-beacon \"test\" {:target \"beacon-1\" :question \"q\"})");
     expect(found.description).toBe("d");
     const missing = await evalJson(`(try
-      (herd.ariadne/ask-beacon {:target "missing" :question "q"})
+      (herd.ariadne/ask-beacon \"test\" {:target "missing" :question "q"})
       (catch :default e {:code (:code (ex-data e))}))`);
     expect(missing.code).toBe("INVALID_ARGUMENT");
   });

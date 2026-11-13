@@ -23,8 +23,8 @@ async function clj(form) {
 describe("time leap context projection", () => {
   it("trims messages at the anchor and appends the experience", async () => {
     await clj("(require '[herd.ariadne :as a])");
-    await clj("(a/record-anchor! \"ctx-anchor\" \"call-ctx\")");
-    await clj("(a/time-leap! {:target \"ctx-anchor\" :experience \"EXP\" :beacon_name \"ctx-beacon\" :beacon_description \"D\"})");
+    await clj("(a/record-anchor! \"main\" \"ctx-anchor\" \"call-ctx\")");
+    await clj("(a/time-leap! \"main\" {:target \"ctx-anchor\" :experience \"EXP\" :beacon_name \"ctx-beacon\" :beacon_description \"D\"})");
     const handler = globalThis.__pi.hooks.get("context");
     const messages = [
       { role: "user", content: "u0" },
