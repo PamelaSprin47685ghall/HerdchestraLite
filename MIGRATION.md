@@ -92,6 +92,7 @@
 
 - `env -u BUN_OPTIONS bun test tests`：184 pass / 1 skip / 0 fail，19 files。
 - 真实 `omp 18.20.0` 已加载本工作区；`omp -p` 两次成功调用 `clj_devops` 并取得 EDN 回执。
+- 手工验收（真实 omp 18.20，子代理会话）：`time_leap` 到达锚点并记录 experience；`ask_beacon` 回执含 `:experience "carry-me-2"` 并由模型引用；主会话 `wait` 在 sandbox 无短等结果时转宿主 wait，返回已完成子代理结果与仍在运行的 job。
 - `tests/cljs-sandbox.test.mjs`：CLJS/nbb 工具注册、EDN 回执、UFSS fence、`cat`、`where`、`park`/`wait`、`call`、call-id 重放、错误回执、工具面黑名单。
 - `tests/cljs-parsers.test.mjs`：S1 八段校验、CASE 严格 Schema、重复 ID、未知字段、阈值越界、S4 Promela 必填。
 - `tests/ufss-cljs.test.mjs`：数据双射与六个业务源码的 `canonical-source` 幂等。
