@@ -81,12 +81,6 @@
 - **影响**：模型收到 `:parked` 后可能尝试恢复而失败；`park-all` 不是真正的表达式级挂起。
 - **下一步**：在 Promise 模型内明确 `:deadline` 与显式 `park` 的区别（回执字段区分），或为超时程序注入可暂停的 await 点；在此之前不得把 deadline 标记宣传为可恢复挂起。
 
-## D23 错误回执的 call-id 重放不一致
-
-- **缺口**：`execute` 在失败路径缓存 `(ufss/print {:state :failed ...})`，但实际返回的是 `tool-error` 包出的 `{:isError true :code ...}`；同一 call-id 重放会返回成功形态的 `tool-result`。
-- **影响**：重放错误调用时回执形状变化，消费者可能误判成功。
-- **下一步**：缓存完整的 `tool-error` 文本与 `isError` 标志，重放时原样返回。
-
 ## D24 `stamp` 的 nsec 由浮点 `mtimeMs` 推导
 
 - **缺口**：`stamp-of` 用 `(mod mtimeMs 1000) * 1e6` 计算 `:mtimeNsec`，精度低于旧实现的 bigint `mtimeNs`；极端情况下同一 `(sec, nsec, size)` 可能碰撞。
@@ -99,17 +93,11 @@
 - **影响**：`read` 的宿主解码/格式化语义与旧完整装配不同；两者都读真实文件，但 `read` 的“只保证可读”边界未兑现。
 - **下一步**：通过受控 Runner 捕获调用 `invokeNativeTool("read", ...)`；不可用时返回 `:HOST_API_MISMATCH`，不回退 `node:fs`。
 
-## D26 `ls` 返回字符串数组
-
-- **缺口**：`ls` 现在返回 `{:exists true :entries ["name" ...]}`；旧实现返回带 `isDir`/`isFile`/`isSymlink` 的 entry 对象。
-- **影响**：模型无法从 `ls` 判断目录/文件/符号链接，只能再逐项 `stat`。
-- **下一步**：按旧 schema 返回 entry 对象，保留缺失目录的 `{:exists false :entries []}`。
-
 ## D27 `where` 最近行诊断未做完整带宽优化
 
-- **缺口**：`nearest-line` 对每行做全行 Levenshtein（K=64、10M 单元预算），未做公共前后缀裁剪，也未按 Ukkonen 带状 DP 只填对角线带。
-- **影响**：大文件或长行下会提前耗尽 10M 预算，最近行可能不完整；正确性边界未用属性测试覆盖。
-- **下一步**：先裁剪公共前后缀，再只计算带宽 $2K+1$ 的单元；补大文件预算测试。
+- **缺口**：`nearest-line` 已修掉 DP 越界并对每行做全行 Levenshtein（K=64、10M 单元预算），但未做公共前后缀裁剪，也未只计算 $2K+1$ 对角线带。
+- **影响**：大文件或长行下会提前耗尽预算，最近行可能不完整。
+- **下一步**：先裁剪公共前后缀，再只填带宽内的单元；补大文件预算测试。
 
 ## D28 `call` 日志命名与上限
 
