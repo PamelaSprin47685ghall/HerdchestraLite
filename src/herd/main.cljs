@@ -313,11 +313,56 @@ Time leap experience:
 (defn- session-start [_event _ctx]
   (apply-tool-surface!))
 
+(defonce cache-probe (atom nil))
+
+(defn- sha256-text [text]
+  (let [crypto (js/require "node:crypto")]
+    (.digest (.update (.createHash crypto "sha256") text "utf8") "hex")))
+
+(defn- first-diff [a b]
+  (let [n (min (count a) (count b))]
+    (loop [i 0]
+      (if (>= i n)
+        {:index n :a "" :b ""}
+        (if (= (nth a i) (nth b i))
+          (recur (inc i))
+          {:index i
+           :a (subs a (max 0 (- i 40)) (min (count a) (+ i 40)))
+           :b (subs b (max 0 (- i 40)) (min (count b) (+ i 40)))})))))
+
+(defn- probe-request [event]
+  (try
+    (let [payload (or (.-payload event) event)
+          system (str (.-system payload))
+          tools (try (js/JSON.stringify (or (.-tools payload) #js []))
+                     (catch :default _ "unserializable"))
+          system-hash (sha256-text system)
+          tools-hash (sha256-text tools)
+          prev @cache-probe]
+      (when (or (nil? prev)
+                (not= system-hash (:system-hash prev))
+                (not= tools-hash (:tools-hash prev)))
+        (let [fs (js/require "node:fs")
+              entry {:at (js/Date.now)
+                     :system-hash system-hash
+                     :tools-hash tools-hash
+                     :system-len (count system)
+                     :tools-len (count tools)
+                     :system-diff (when prev (first-diff (:system prev) system))
+                     :tools-diff (when prev (first-diff (:tools prev) tools))}]
+          (.mkdirSync fs ".herd" #js {:recursive true})
+          (.appendFileSync fs ".herd/cache-probe.jsonl"
+                           (str (js/JSON.stringify (clj->js entry)) "\n"))))
+      (reset! cache-probe {:system system :tools tools
+                           :system-hash system-hash :tools-hash tools-hash})
+      nil)
+    (catch :default _ nil)))
 (defn install-hooks! []
   (.on js/globalThis.__pi "before_agent_start" before-agent-start)
   (.on js/globalThis.__pi "session_start"
        session-start)
-  (.on js/globalThis.__pi "context" context-handler))
+  (.on js/globalThis.__pi "context" context-handler)
+  (.on js/globalThis.__pi "before_provider_request" probe-request))
 
 (register-all!)
 (install-hooks!)
