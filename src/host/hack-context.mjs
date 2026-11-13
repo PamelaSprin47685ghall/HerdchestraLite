@@ -97,28 +97,36 @@ export function syncSessionDelta(sessionManager, before, after, prefixLen) {
 	}
 	let branched = false;
 	if (prefixLen < before.length) {
-		const branchEntries = sessionManager.getBranch();
-		const messageEntries = Array.isArray(branchEntries)
-			? branchEntries.filter((entry) => entry && MESSAGE_ENTRY_TYPES.has(entry.type))
-			: [];
-		let replacedEntry = null;
-		const replaced = before[prefixLen];
-		for (let index = messageEntries.length - 1; index >= 0; index -= 1) {
-			const entry = messageEntries[index];
-			if (deepEqual(entry.message ?? entry, replaced)) {
-				replacedEntry = entry;
-				break;
-			}
-		}
-		if (replacedEntry === null || replacedEntry.parentId == null) {
+		if (prefixLen === 0) {
+			// No common prefix: start a fresh root branch. The host rejects
+			// branch(null) with "Entry null not found", so resetLeaf is the
+			// only root operation.
 			if (typeof sessionManager.resetLeaf !== "function") {
 				return { persisted: false, branched: false, appended: 0 };
 			}
 			sessionManager.resetLeaf();
-		} else if (typeof sessionManager.branch === "function") {
-			sessionManager.branch(replacedEntry.parentId);
 		} else {
-			return { persisted: false, branched: false, appended: 0 };
+			const branchEntries = sessionManager.getBranch();
+			const messageEntries = Array.isArray(branchEntries)
+				? branchEntries.filter((entry) => entry && MESSAGE_ENTRY_TYPES.has(entry.type))
+				: [];
+			const replaced = before[prefixLen];
+			let replacedEntry = null;
+			for (let index = messageEntries.length - 1; index >= 0; index -= 1) {
+				const entry = messageEntries[index];
+				if (deepEqual(entry.message ?? entry, replaced)) {
+					replacedEntry = entry;
+					break;
+				}
+			}
+			if (replacedEntry === null || replacedEntry.parentId == null) {
+				if (typeof sessionManager.resetLeaf !== "function") {
+					return { persisted: false, branched: false, appended: 0 };
+				}
+				sessionManager.resetLeaf();
+			} else {
+				sessionManager.branch(replacedEntry.parentId);
+			}
 		}
 		branched = true;
 	}
@@ -129,6 +137,53 @@ export function syncSessionDelta(sessionManager, before, after, prefixLen) {
 		appended += 1;
 	}
 	return { persisted: true, branched, appended };
+}
+
+/**
+ * Cut the host session to a barrier branch and append the successor briefing.
+ *
+ * `parentId` is the last host entry that stays visible; `null` starts the new
+ * branch at the session root. The append runs only after the branch succeeds,
+ * so a missing session API leaves the host history untouched. The briefing is
+ * stored as one user message; the successor's context is rebuilt by the next
+ * request from the system prompt and the injected stage briefing.
+ *
+ * @param {any} sessionManager
+ * @param {{ parentId?: string | null, briefing?: unknown }} [options]
+ * @returns {{ persisted: boolean, branched: boolean, appended: number, via?: string }}
+ */
+export function applyHistoryBarrier(sessionManager, options = {}) {
+	if (
+		!sessionManager ||
+		typeof sessionManager.branch !== "function" ||
+		typeof sessionManager.appendMessage !== "function"
+	) {
+		return { persisted: false, branched: false, appended: 0 };
+	}
+	const parentId = options.parentId ?? null;
+	let via = "branch";
+	if (parentId === null) {
+		// The host rejects branch(null) with "Entry null not found";
+		// only resetLeaf can start a fresh root.
+		if (typeof sessionManager.resetLeaf !== "function") {
+			return { persisted: false, branched: false, appended: 0 };
+		}
+		sessionManager.resetLeaf();
+		via = "resetLeaf";
+	} else {
+		sessionManager.branch(parentId);
+	}
+	let appended = 0;
+	if (options.briefing != null) {
+		sessionManager.appendMessage(
+			normalizeAppendMessage({
+				role: "user",
+				content: [{ type: "text", text: String(options.briefing) }],
+			}),
+		);
+		appended = 1;
+	}
+	return { persisted: true, branched: true, appended, via };
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { computeMessagesDelta, hackContext } from "../src/host/hack-context.mjs";
+import { applyHistoryBarrier, computeMessagesDelta, hackContext } from "../src/host/hack-context.mjs";
 import { appendOutboundContextTail } from "../src/prompts/runtime-wires.mjs";
 
 function fakeSessionManager(initialEntries = []) {
@@ -147,6 +147,65 @@ describe("hackContext", () => {
 				.filter(Boolean),
 		).toHaveLength(2);
 		expect(sm.getBranch().at(-1).message.content[0].thinking).toBe("trimmed");
+	});
+
+	it("cuts the host branch at a barrier and appends the successor briefing", () => {
+		const sm = fakeSessionManager([
+			{ type: "message", id: "e1", parentId: null, message: { role: "user", content: "seed" } },
+			{ type: "message", id: "e2", parentId: "e1", message: { role: "assistant", content: "old tenure" } },
+		]);
+		const result = applyHistoryBarrier(sm, { parentId: "e1", briefing: "[STAGE S2]" });
+		expect(result).toEqual({ persisted: true, branched: true, appended: 1, via: "branch" });
+		expect(sm.calls[0]).toEqual({ op: "branch", branchFromId: "e1" });
+		expect(sm.calls[1].parentId).toBe("e1");
+		expect(sm.getBranch().map((entry) => entry.message)).toHaveLength(2);
+		expect(sm.getBranch().at(-1).message.content[0].text).toBe("[STAGE S2]");
+	});
+
+	it("starts a root branch when parentId is null and degrades without a session API", () => {
+		const sm = fakeSessionManager([
+			{ type: "message", id: "e1", parentId: null, message: { role: "user", content: "old" } },
+		]);
+		const result = applyHistoryBarrier(sm, { parentId: null, briefing: "seed again" });
+		expect(result).toEqual({ persisted: true, branched: true, appended: 1, via: "resetLeaf" });
+		expect(sm.calls[0]).toEqual({ op: "resetLeaf" });
+		expect(sm.getBranch().map((entry) => entry.message)).toHaveLength(1);
+		expect(sm.getBranch()[0].message.content[0].text).toBe("seed again");
+		expect(applyHistoryBarrier(null, { briefing: "x" })).toEqual({
+			persisted: false,
+			branched: false,
+			appended: 0,
+		});
+	});
+
+	it("starts a root branch when messages share no prefix at all", async () => {
+		const handlers = new Map();
+		const pi = { on: (name, fn) => handlers.set(name, fn) };
+		hackContext(pi, () => ({ messages: [{ role: "user", content: "brand-new" }] }));
+		const sm = fakeSessionManager([
+			{ type: "message", id: "e1", parentId: null, message: { role: "user", content: "old-a" } },
+			{ type: "message", id: "e2", parentId: "e1", message: { role: "assistant", content: "old-b" } },
+		]);
+		const before = sm.getBranch().map((entry) => entry.message);
+		await handlers.get("context")({ messages: before }, { sessionManager: sm });
+		expect(sm.calls.map((call) => call.op)).toEqual(["resetLeaf", "appendMessage"]);
+		const branch = sm.getBranch().map((entry) => entry.message);
+		expect(branch).toHaveLength(1);
+		expect(branch[0].content).toBe("brand-new");
+	});
+
+	it("degrades cleanly when resetLeaf is absent because branch(null) is invalid", () => {
+		const minimal = {
+			branch: () => {
+				throw new Error("Entry null not found");
+			},
+			appendMessage: () => {},
+		};
+		expect(applyHistoryBarrier(minimal, { parentId: null, briefing: "b" })).toEqual({
+			persisted: false,
+			branched: false,
+			appended: 0,
+		});
 	});
 
 	it("resets leaf when index 0 is modified and degrades cleanly without sessionManager", async () => {

@@ -2491,33 +2491,7 @@ function compareProtectedSnapshots(before, after, reportPath) {
 	return undefined;
 }
 
-/**
- * Contract hashes were removed from the lifecycle. This compatibility stub
- * keeps the audit ports harmless while the remaining call sites are deleted.
- */
-async function verifyContract() {
-	return { ok: true, contract: { hashes: {} } };
-}
-
-async function recheckMission(batch, args) {
-	const live = await verifyContract(args.root, args.slug);
-	if (live?.ok !== true) {
-		return {
-			ok: false,
-			code: live?.error?.code ?? ":CONTRACT_HASH_MISMATCH",
-			message: live?.error?.message ?? "live contract cannot be verified",
-		};
-	}
-	const expected = batch.contractVerification?.hashes ?? {};
-	for (const [stage, hash] of Object.entries(expected)) {
-		if (live.contract?.hashes?.[stage] !== hash) {
-			return {
-				ok: false,
-				code: ":CONTRACT_HASH_MISMATCH",
-				message: `frozen ${stage} changed during the report write`,
-			};
-		}
-	}
+async function recheckMission(args) {
 	const after = snapshotWorkspace(args.root);
 	if (after?.ok !== true) {
 		return { ok: false, code: ":AUDIT_WORKSPACE_MUTATED", message: "workspace snapshot failed" };
@@ -2736,8 +2710,7 @@ async function runMissionAudit(state) {
 					const result = reader({ caseId });
 					return result?.ok === true ? { submissions: [result.submission] } : { ok: false, error: result?.error };
 				},
-				verifyContract: (_expected, context = {}) =>
-					verifyContract(context.root ?? state.root, context.slug ?? state.slug),
+
 				timeoutMs: 30 * 60 * 1000,
 				baseTmpDir: "/tmp",
 				signal: state.lastContext?.signal,
@@ -2758,12 +2731,7 @@ async function runMissionAudit(state) {
 				environment: `omp ${process.env.OMP_VERSION ?? "unknown"}`,
 				host: process.env.OMP_VERSION ?? "unknown",
 			},
-			// B3 already verified the contract before the batch; T2's post-report
-			// recheck is the second, independent gate. Reuse the batch receipt
-			// here instead of adding a third verification path.
-			ports: {
-				verifyContract: () => ({ ok: batch.contractVerification?.ok === true }),
-			},
+
 		});
 		if (result?.verdict !== "PASS" || result?.ok === false) {
 			const repair = deriveRepairSlices({ aggregateResult: result });
@@ -2788,7 +2756,7 @@ async function runMissionAudit(state) {
 		}
 		const report = await writeS5Report(state.root, state.slug, result, {
 			approvalPort,
-			recheckPort: (args) => recheckMission(batch, args),
+			recheckPort: (args) => recheckMission(args),
 			caseIds: specs.cases.map((entry) => entry.case_id),
 		});
 		if (report?.ok === true) {
