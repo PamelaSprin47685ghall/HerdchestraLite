@@ -190,10 +190,10 @@
                 (recur (+ i 2) (conj body next))))
             :else (recur (inc i) (conj body ch))))))))
 
-(defn- line-indent [out i]
+(defn- string-column [out]
   (let [text (apply str out)
         line-start (inc (or (str/last-index-of text "\n") -1))]
-    (count (take-while #(= % \space) (subs text line-start i)))))
+    (- (count text) line-start)))
 
 (defn wrap
   "Upgrade standard strings to the shortest UFSS fence."
@@ -205,7 +205,7 @@
         (let [ch (subs text i (inc i))]
           (if (= ch "\"")
             (if-let [[body end] (read-standard-string text i)]
-              (let [indent (line-indent out i)
+              (let [indent (string-column out)
                     rendered (format-string body indent)]
                 (recur end (conj out rendered)))
               (recur (inc i) (conj out ch)))
