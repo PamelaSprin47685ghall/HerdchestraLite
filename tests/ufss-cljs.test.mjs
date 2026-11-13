@@ -61,7 +61,7 @@ describe("CLJS UFSS", () => {
 	});
 
 	it("reads every source string through the official reader", async () => {
-		for (const name of ["prompts.cljs", "sandbox.cljs", "repl.cljs", "main.cljs", "ufss.cljs", "stages/parsers.cljs", "stages/tenure.cljs", "stages/disclosures.cljs"]) {
+		for (const name of ["prompts.cljs", "sandbox.cljs", "repl.cljs", "main.cljs", "ufss.cljs", "stages/parsers.cljs", "stages/tenure.cljs", "stages/disclosures.cljs", "stages/scores.cljs"]) {
 			const source = readFileSync(new URL(`../src/herd/${name}`, import.meta.url), "utf8");
 			const roundtrip = await nbb.loadString(
 				`(require '[herd.ufss :as u]) (every? (fn [s] (= s (u/read (u/print s)))) (u/literals ${JSON.stringify(source)}))`,
@@ -71,7 +71,7 @@ describe("CLJS UFSS", () => {
 	});
 
 	it("keeps every source canonical under the formatter pipeline", async () => {
-		for (const name of ["prompts.cljs", "sandbox.cljs", "repl.cljs", "main.cljs", "ufss.cljs", "bootstrap.cljs", "stages/parsers.cljs", "stages/tenure.cljs", "stages/disclosures.cljs"]) {
+		for (const name of ["prompts.cljs", "sandbox.cljs", "repl.cljs", "main.cljs", "ufss.cljs", "bootstrap.cljs", "stages/parsers.cljs", "stages/tenure.cljs", "stages/disclosures.cljs", "stages/scores.cljs"]) {
 			const source = readFileSync(new URL(`../src/herd/${name}`, import.meta.url), "utf8");
 			const canonical = await nbb.loadString(
 				`(require '[herd.ufss :as u]) (u/canonical-source ${JSON.stringify(source)})`,
