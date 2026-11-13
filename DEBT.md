@@ -73,5 +73,5 @@
 ## D33 scores 核心已迁移，审计证据链未收口
 
 - **现状**：`stages/scores.cljs` 已实现 CASE/提交/阈值/min(U,D)/PASS-FAIL-INCOMPLETE 与 canonical 覆盖。
-- **缺口**：snapshot 对比、audit environment/limitations/lessons、完整拒绝矩阵、repair spec、`writeS5Report` 与批准签发仍未迁移；当前聚合在缺少 snapshot/audit 时仍可能判 PASS。
-- **下一步**：补 snapshot canonical 对比与 audit 必填校验，接 repair spec 与 `writeS5Report`，再与 `attach_case_audit` 对接。
+- **缺口**：`writeS5Report`、批准签发与 `attach_case_audit` 接线仍未迁移。
+- **下一步**：接 `writeS5Report` 与批准签发，再与 `attach_case_audit` 对接。

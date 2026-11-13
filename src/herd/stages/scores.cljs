@@ -91,17 +91,82 @@
 
     :else value))
 
+(defn- canonical-file [file]
+  (when (and (map? file) (text? (:path file)) (text? (:sha256 file)))
+    {:path (:path file)
+     :sha256 (:sha256 file)
+     :stamp (or (:stamp file) {})}))
+
+(defn- canonical-snapshot [snapshot]
+  (when (and (map? snapshot) (sequential? (:files snapshot)) (seq (:files snapshot)))
+    (let [files (keep canonical-file (:files snapshot))]
+      (when (= (count files) (count (:files snapshot)))
+        {:digest (or (:digest snapshot) "")
+         :files (vec (sort-by (juxt :path :sha256) files))}))))
+
+(defn- validate-audit [audit invalid]
+  (when (some? audit)
+    (if-not (map? audit)
+      (do
+        (invalid! invalid (rejection :INVALID_ARGUMENT
+                                     "audit must be an object"
+                                     {:field :audit}))
+        nil)
+      (if (text? (:environment audit))
+        {:environment (string/trim (:environment audit))
+         :limitations (if (string? (:limitations audit)) (string/trim (:limitations audit)) "")
+         :lessons (if (string? (:lessons audit)) (string/trim (:lessons audit)) "")}
+        (do
+          (invalid! invalid (rejection :INVALID_ARGUMENT
+                                       "audit.environment must be a non-empty string"
+                                       {:field :audit}))
+          nil)))))
+
+(defn- repair-spec [rows contract]
+  (let [failed (filter (fn [row] (and (:valid row) (not (:passed row)))) rows)]
+    (when (seq failed)
+      (let [ids (mapv :case-id failed)]
+        {:failed_cases ids
+         :goal (str "修复未达标 CASE 并重新审计：" (string/join ", " ids))
+         :revision (when contract (:revision contract))
+         :next_revision (when contract (inc (:revision contract)))
+         :cases failed}))))
 (defn aggregate [request]
   (let [invalid (atom [])
         specs (validate-case-specs (:case-specs request) invalid)
         submissions (if (sequential? (:submissions request)) (:submissions request) [])
+        before (canonical-snapshot (:snapshot-before request))
+        after (canonical-snapshot (:snapshot-after request))
+        checked? (and (some? before) (some? after))
+        mutated? (not (= before after))
+        audit (validate-audit (:audit request) invalid)
+        contract (when (map? (:contract request)) (:contract request))
         rows (atom [])
         missing (atom [])
-        unknown (atom [])]
+        unknown (atom [])
+        duplicates (atom [])]
     (when-not (sequential? (:submissions request))
       (invalid! invalid (rejection :INVALID_ARGUMENT
                                    "submissions must be an array"
                                    {:field :submissions})))
+    (when (and (some? (:snapshot-before request)) (nil? before))
+      (invalid! invalid (rejection :INVALID_ARGUMENT
+                                   "snapshot-before is not a usable snapshot"
+                                   {:field :snapshot-before})))
+    (when (and (some? (:snapshot-after request)) (nil? after))
+      (invalid! invalid (rejection :INVALID_ARGUMENT
+                                   "snapshot-after is not a usable snapshot"
+                                   {:field :snapshot-after})))
+    (when (and checked? mutated?)
+      (invalid! invalid (rejection :AUDIT_WORKSPACE_MUTATED
+                                   "the main workspace changed during the audit"
+                                   {:field :snapshot-after})))
+    (doseq [[case-id count] (frequencies (map :case_id (filter map? submissions)))]
+      (when (and (text? case-id) (> count 1))
+        (swap! duplicates conj case-id)
+        (invalid! invalid (rejection :AUDIT_DUPLICATE_CASE
+                                     (str case-id ": exactly one audit submission is allowed")
+                                     {:case-id case-id :count count}))))
     (doseq [submission submissions]
       (cond
         (not (map? submission))
@@ -161,7 +226,8 @@
                               :valid valid?
                               :passed (and valid? (>= score (:threshold spec)))
                               :report-markdown (when (text? report) report)})))))
-    (let [rejected? (or (seq @invalid) (seq @missing) (seq @unknown))
+    (let [rejected? (or (seq @invalid) (seq @missing) (seq @unknown) (seq @duplicates)
+                        mutated? (not checked?) (nil? audit))
           all-passed? (and (seq @rows) (every? :passed @rows))
           verdict (cond rejected? :INCOMPLETE all-passed? :PASS :else :FAIL)]
       {:ok (= verdict :PASS)
@@ -171,5 +237,10 @@
        :missing @missing
        :unknown @unknown
        :invalid @invalid
+       :duplicates @duplicates
+       :workspace-mutated mutated?
+       :snapshot-checked checked?
+       :audit audit
+       :repair-spec (repair-spec @rows contract)
        :rejected rejected?
        :retry-required rejected?})))
