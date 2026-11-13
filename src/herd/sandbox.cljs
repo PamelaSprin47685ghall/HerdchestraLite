@@ -217,6 +217,13 @@
 (defonce notifiers (atom {}))
 (defonce current-name (atom nil))
 (defonce parked (atom {}))
+(defonce active-calls (atom {}))
+
+(defn- register-call! [name entry]
+  (swap! active-calls assoc name entry))
+
+(defn- unregister-call! [name]
+  (swap! active-calls dissoc name))
 
 (defn- remember-park! [name resolve reject payload]
   (swap! parked assoc name {:resolve resolve :reject reject :payload payload}))
@@ -335,12 +342,20 @@
     value))
 
 (defn abandon [{:keys [name]}]
-  (if-let [entry (@parked name)]
-    (do
-      ((:reject entry) (ex-info "program abandoned" {:code :ABANDONED :name name}))
-      (forget-park! name)
-      {:name name :state :abandoned :cleared true})
-    {:name name :state :unknown :cleared false}))
+  (let [call-entry (@active-calls name)
+        parked-entry (@parked name)]
+    (when call-entry
+      (when-let [timer (:timer call-entry)]
+        (js/clearTimeout timer))
+      (.kill (:child call-entry) "SIGKILL")
+      ((:reject call-entry) (ex-info "call abandoned" {:code :ABANDONED :name name}))
+      (unregister-call! name))
+    (when parked-entry
+      ((:reject parked-entry) (ex-info "program abandoned" {:code :ABANDONED :name name}))
+      (forget-park! name))
+    (if (or call-entry parked-entry)
+      {:name name :state :abandoned :cleared true}
+      {:name name :state :unknown :cleared false})))
 
 (def ^:private max-inline-bytes (* 1024 1024))
 
@@ -359,33 +374,42 @@
       (swap! state assoc :truncated true))))
 
 (defn call
-  [{:keys [argv cwd] :or {cwd "."}} timeout-ms]
-  (with-lock
-    (fn []
-      (js/Promise.
-        (fn [resolve reject]
-          (let [argv (vec argv)
-                _ (when (zero? (count argv))
-                    (throw (ex-info "argv must not be empty" {:code :INVALID_ARGUMENT})))
-                log-path (call-log-path)
-                child (cp/spawn (first argv) (clj->js (rest argv))
-                                #js {:cwd cwd :stdio #js ["ignore" "pipe" "pipe"]})
-                state (atom {:out "" :err "" :truncated false})
-                timer (js/setTimeout
-                        (fn []
-                          (.kill child "SIGKILL")
-                          (reject (ex-info "call timed out" {:code :STALLED})))
-                        (or timeout-ms 30000))]
-            (.on (.-stdout child) "data" #(append-capped state :out (str %) log-path))
-            (.on (.-stderr child) "data" #(append-capped state :err (str %) log-path))
-            (.on child "error" (fn [e]
-                                 (js/clearTimeout timer)
-                                 (reject e)))
-            (.on child "close"
-                 (fn [code]
-                   (js/clearTimeout timer)
-                   (resolve {:exit code
-                             :stdout (:out @state)
-                             :stderr (:err @state)
-                             :output-truncated (:truncated @state)
-                             :log log-path})))))))))
+  [{:keys [argv cwd name] :or {cwd "."}} timeout-ms]
+  (let [program-name (or name @current-name)]
+    (with-lock
+      (fn []
+        (js/Promise.
+          (fn [resolve reject]
+            (let [argv (vec argv)
+                  _ (when (zero? (count argv))
+                      (throw (ex-info "argv must not be empty" {:code :INVALID_ARGUMENT})))
+                  log-path (call-log-path)
+                  child (cp/spawn (first argv) (clj->js (rest argv))
+                                  #js {:cwd cwd :stdio #js ["ignore" "pipe" "pipe"]})
+                  state (atom {:out "" :err "" :truncated false})
+                  timer (js/setTimeout
+                          (fn []
+                            (.kill child "SIGKILL")
+                            (unregister-call! program-name)
+                            (reject (ex-info "call timed out" {:code :STALLED})))
+                          (or timeout-ms 30000))]
+              (register-call! program-name {:child child :reject reject :timer timer})
+              (.on (.-stdout child) "data" #(append-capped state :out (str %) log-path))
+              (.on (.-stderr child) "data" #(append-capped state :err (str %) log-path))
+              (.on child "error"
+                   (fn [e]
+                     (js/clearTimeout timer)
+                     (unregister-call! program-name)
+                     (reject e)))
+              (.on child "close"
+                   (fn [code]
+                     (js/clearTimeout timer)
+                     (unregister-call! program-name)
+                     (resolve {:exit code
+                               :stdout (:out @state)
+                               :stderr (:err @state)
+                               :output-truncated (:truncated @state)
+                               :log log-path}))))))))))
+
+(defn call-with-name [name request timeout-ms]
+  (call (assoc request :name name) timeout-ms))

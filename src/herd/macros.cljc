@@ -21,4 +21,5 @@
 (defmacro rm [& args] (list 'await (cons 'herd.sandbox/rm args)))
 (defmacro mv [& args] (list 'await (cons 'herd.sandbox/mv args)))
 (defmacro glob [& args] (list 'await (cons 'herd.sandbox/glob args)))
-(defmacro call [& args] (list 'await (cons 'herd.sandbox/call args)))
+(defmacro call [& args]
+  (list 'await (list 'herd.sandbox/call-with-name '__herd-program-name (first args) (second args))))

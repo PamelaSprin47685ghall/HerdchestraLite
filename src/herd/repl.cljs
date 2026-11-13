@@ -64,10 +64,12 @@
 (defn- mark-completed! [name value]
   (remember! name {:state :completed :value value}))
 
+(defn- error-summary [error]
+  {:message (or (ex-message error) (.-message error) (str error))
+   :code (or (:code (ex-data error)) :INTERNAL)})
+
 (defn- mark-failed! [name error]
-  (remember! name {:state :failed
-                   :error {:message (str error)
-                           :code (or (:code (ex-data error)) :INTERNAL)}}))
+  (remember! name {:state :failed :error (error-summary error)}))
 
 (defn- mark-parked! [name value]
   (remember! name (merge value {:state :parked})))
@@ -80,10 +82,7 @@
 
 (defn- failed-receipt [name error]
   (mark-failed! name error)
-  {:name name
-   :state :failed
-   :error {:message (str error)
-           :code (or (:code (ex-data error)) :INTERNAL)}})
+  {:name name :state :failed :error (error-summary error)})
 
 (defn- receipt [name value]
   (if (parked? value)
