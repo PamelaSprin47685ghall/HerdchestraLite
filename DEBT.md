@@ -75,9 +75,3 @@
 - **影响**：`__expectedStamp` 的冲突检测弱于旧 mjs；默认面 LLM 不传该字段，影响面小。
 - **下一步**：改用 `fs.statSync(path, #js {:bigint true})` 的 `mtimeNs`，按 bigint 拆分秒与纳秒。
 
-## D30 `before_agent_start` 的工具面更新未 await
-
-- **缺口**：`apply-tool-surface!` 调 `setActiveTools` 后只挂 `.catch`，`before_agent_start` 不等待其完成。尝试把 handler 改成 `^:async` 后，SCI 在 nbb 中把 handler 注册成不可调用的对象，真实宿主会拿不到函数，因此已回退为同步 handler。
-- **影响**：工具面变更可能在当前请求之后才生效；真实 `omp -p` smoke 通过。
-- **下一步**：在保持 handler 可调用的前提下，用 `setActiveTools` 的同步副作用或宿主承诺的初始化顺序解决；不要在 nbb/SCI 中用 `^:async` 包装注册给宿主的 handler。
-
