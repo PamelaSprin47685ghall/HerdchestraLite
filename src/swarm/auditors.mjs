@@ -33,10 +33,10 @@
  * change them without creating an import cycle here.
  *
  * Submission order fixed by this module: the auditor calls
- * `submit_case_audit` exactly once with the full object, then yields only a
+ * `attach_case_audit` exactly once with the full object, then yields only a
  * minimal completion confirmation. The full content comes from the injected
  * durable `collectSubmission`/`readSubmission` port or from the real
- * `submit_case_audit` tool input; the yield and output artifacts are never
+ * `attach_case_audit` tool input; the yield and output artifacts are never
  * treated as a submission. Every structured receipt is retained; a second one
  * is rejected instead of overwriting the first. If a timed-out or cancelled
  * runtime does not confirm exit, the whole batch is marked uncertain: no after
@@ -80,30 +80,25 @@ const IGNORED_ANYWHERE = new Set([".cache", ".git", ".herd-worktrees", "node_mod
 const IGNORED_ROOT = new Set([".audit-tmp", ".pi", ".tmp", "build", "coverage", "dist", "tmp"]);
 
 /**
- * The JSON schema the auditor's `submit_case_audit` tool and final yield use.
+ * The JSON schema the auditor's `attach_case_audit` tool and final yield use.
  * `startAuditBatch` narrows `case_id` to one value for each auditor.
  */
 export const AUDIT_SUBMISSION_SCHEMA = Object.freeze({
 	type: "object",
 	additionalProperties: false,
-	required: ["case_id", "user_score", "developer_score", "report_markdown", "evidence_paths"],
+	required: ["case_id", "user_score", "developer_score", "report_markdown"],
 	properties: {
 		case_id: { type: "string", minLength: 1 },
 		user_score: { type: "number", minimum: 0, maximum: 100 },
 		developer_score: { type: "number", minimum: 0, maximum: 100 },
 		report_markdown: { type: "string", minLength: 1 },
-		evidence_paths: {
-			type: "array",
-			minItems: 1,
-			items: { type: "string", minLength: 1 },
-		},
 	},
 });
 
 /**
  * Strict completion schema for the auditor's final yield.
  *
- * The durable submission is `submit_case_audit`'s real payload. The yield is
+ * The durable submission is `attach_case_audit`'s real payload. The yield is
  * only a completion signal: no field is required, and extra fields are allowed,
  * so a minimal `{ok:true}` is valid and the model is never asked to duplicate
  * the full audit object.
@@ -603,171 +598,10 @@ function isInside(parent, child) {
  * Existence is checked under `root`. A symlink whose real target leaves the
  * evidence directory is rejected even when its lexical path looks valid.
  */
-function verifyEvidencePaths({ root, slug, caseId, paths }) {
-	const errors = [];
-	if (!Array.isArray(paths) || paths.length === 0) {
-		errors.push(
-			failure("AUDIT_EVIDENCE_MISSING", `${caseId}: evidence_paths must be a non-empty array of paths`, {
-				caseId,
-				field: "evidence_paths",
-			}),
-		);
-		return { ok: false, errors, resolved: [] };
-	}
-	if (!isText(root)) {
-		errors.push(
-			failure("AUDIT_EVIDENCE_MISSING", `${caseId}: root is required to verify evidence paths`, {
-				caseId,
-				field: "evidence_paths",
-			}),
-		);
-		return { ok: false, errors, resolved: [] };
-	}
-	const absoluteRoot = resolve(root);
-	let realRoot;
-	try {
-		realRoot = realpathSync(absoluteRoot);
-	} catch {
-		realRoot = absoluteRoot;
-	}
-	const resolved = [];
-	const checkedRoots = new Map();
 
-	for (let index = 0; index < paths.length; index += 1) {
-		const raw = paths[index];
-		if (!isText(raw)) {
-			errors.push(
-				failure("AUDIT_EVIDENCE_MISSING", `${caseId}: evidence_paths[${index}] must be a non-empty string`, {
-					caseId,
-					field: "evidence_paths",
-					index,
-				}),
-			);
-			continue;
-		}
-		if (raw.includes("\u0000")) {
-			errors.push(
-				failure("AUDIT_EVIDENCE_MISSING", `${caseId}: evidence path contains a NUL byte`, {
-					caseId,
-					field: "evidence_paths",
-					index,
-				}),
-			);
-			continue;
-		}
-		const candidate = isAbsolute(raw) ? resolve(raw) : resolve(absoluteRoot, raw);
-		if (!isInside(absoluteRoot, candidate)) {
-			errors.push(
-				failure("PATH_ESCAPE", `${caseId}: evidence path escapes the repository: ${raw}`, {
-					caseId,
-					field: "evidence_paths",
-					index,
-					path: raw,
-				}),
-			);
-			continue;
-		}
-		const rootRelative = relative(absoluteRoot, candidate).split(sep).join("/");
-		const segments = rootRelative.split("/");
-		if (
-			segments.length < 5 ||
-			segments[0] !== "plans" ||
-			segments[2] !== "evidence" ||
-			segments[3] !== caseId ||
-			!SLUG_PATTERN.test(segments[1] ?? "") ||
-			(slug !== undefined && slug !== null && segments[1] !== slug)
-		) {
-			errors.push(
-				failure(
-					"AUDIT_EVIDENCE_MISSING",
-					`${caseId}: evidence path must stay inside plans/${slug ?? "<slug>"}/evidence/${caseId}/`,
-					{ caseId, field: "evidence_paths", index, path: raw },
-				),
-			);
-			continue;
-		}
-		const allowedDir = join(absoluteRoot, "plans", segments[1], "evidence", caseId);
-		let realAllowed = checkedRoots.get(allowedDir);
-		if (realAllowed === undefined) {
-			try {
-				realAllowed = realpathSync(allowedDir);
-			} catch {
-				realAllowed = null;
-			}
-			checkedRoots.set(allowedDir, realAllowed);
-		}
-		if (realAllowed !== null && !isInside(realRoot, realAllowed)) {
-			errors.push(
-				failure("PATH_ESCAPE", `${caseId}: the evidence directory is a symlink that leaves the repository`, {
-					caseId,
-					field: "evidence_paths",
-					index,
-					path: raw,
-				}),
-			);
-			continue;
-		}
-		let stats;
-		try {
-			stats = statSync(candidate);
-		} catch (error) {
-			errors.push(
-				failure("AUDIT_EVIDENCE_MISSING", `${caseId}: evidence path does not exist: ${raw}`, {
-					caseId,
-					field: "evidence_paths",
-					index,
-					path: raw,
-					cause: messageOf(error),
-				}),
-			);
-			continue;
-		}
-		try {
-			const realCandidate = realpathSync(candidate);
-			const lexicalInside = isInside(allowedDir, candidate);
-			const realInside = realAllowed !== null ? isInside(realAllowed, realCandidate) : lexicalInside;
-			if (!lexicalInside || !realInside) {
-				errors.push(
-					failure("PATH_ESCAPE", `${caseId}: evidence symlink leaves its evidence directory: ${raw}`, {
-						caseId,
-						field: "evidence_paths",
-						index,
-						path: raw,
-					}),
-				);
-				continue;
-			}
-		} catch (error) {
-			errors.push(
-				failure("AUDIT_EVIDENCE_MISSING", `${caseId}: evidence path is not readable: ${raw}`, {
-					caseId,
-					field: "evidence_paths",
-					index,
-					path: raw,
-					cause: messageOf(error),
-				}),
-			);
-			continue;
-		}
-		if (!stats.isFile() && !stats.isDirectory()) {
-			errors.push(
-				failure("AUDIT_EVIDENCE_MISSING", `${caseId}: evidence path is not a file or directory: ${raw}`, {
-					caseId,
-					field: "evidence_paths",
-					index,
-					path: raw,
-				}),
-			);
-			continue;
-		}
-		resolved.push(candidate);
-	}
-
-	return { ok: errors.length === 0, errors, resolved };
-}
 
 /**
- * Read the durable EDN receipt written by the real `submit_case_audit` tool.
+ * Read the durable EDN receipt written by the real `attach_case_audit` tool.
  *
  * Contract with the main assembly: the tool reads its parent-assigned
  * `<artifactsDir>/audit-context.edn`, then writes the complete submission to
@@ -782,29 +616,19 @@ function verifyEvidencePaths({ root, slug, caseId, paths }) {
  * The returned port has the `collectSubmission` shape:
  * `({caseId}) -> {ok:true, submission, path} | {ok:false, error}`.
  */
-export function createFileSubmissionReader({ root, slug, batchId, directory } = {}) {
+export function createFileSubmissionReader({ root, slug, directory } = {}) {
 	let baseDir = null;
 	if (isText(directory)) {
 		baseDir = resolve(directory);
 	} else if (isText(root) && isText(slug) && SLUG_PATTERN.test(slug)) {
 		baseDir = join(resolve(root), ".herd", "missions", slug, "audit");
 	}
-	const batchValid = typeof batchId === "string" && BATCH_ID_PATTERN.test(batchId) && !batchId.includes("..");
 	return ({ caseId } = {}) => {
 		if (baseDir === null) {
 			return {
 				ok: false,
 				error: failure("INVALID_ARGUMENT", "submission reader needs a valid root/slug or directory", {
 					field: "root/slug",
-				}),
-			};
-		}
-		if (!batchValid) {
-			return {
-				ok: false,
-				error: failure("INVALID_ARGUMENT", "submission reader needs a valid batch id", {
-					field: "batchId",
-					actual: describe(batchId),
 				}),
 			};
 		}
@@ -817,7 +641,7 @@ export function createFileSubmissionReader({ root, slug, batchId, directory } = 
 				}),
 			};
 		}
-		const path = join(baseDir, batchId, `${caseId}.submit.edn`);
+		const path = join(baseDir, `${caseId}.submit.edn`);
 		try {
 			const parsed = contractCodec.parseEdn(readFileSync(path, "utf8"));
 			if (!isPlainObject(parsed)) {
@@ -829,19 +653,7 @@ export function createFileSubmissionReader({ root, slug, batchId, directory } = 
 					}),
 				};
 			}
-			const fileBatch = parsed["batch-id"] ?? parsed.batch_id;
 			const fileCase = parsed["case-id"] ?? parsed.case_id;
-			if (fileBatch !== batchId) {
-				return {
-					ok: false,
-					error: failure("AUDIT_MISSING", `${caseId}: durable submission belongs to another audit batch`, {
-						caseId,
-						path,
-						expectedBatchId: batchId,
-						actualBatchId: fileBatch ?? null,
-					}),
-				};
-			}
 			if (fileCase !== caseId) {
 				return {
 					ok: false,
@@ -857,7 +669,6 @@ export function createFileSubmissionReader({ root, slug, batchId, directory } = 
 				user_score: parsed["user-score"] ?? parsed.user_score,
 				developer_score: parsed["developer-score"] ?? parsed.developer_score,
 				report_markdown: parsed["report-markdown"] ?? parsed.report_markdown,
-				evidence_paths: parsed["evidence-paths"] ?? parsed.evidence_paths,
 			};
 			if (!isCompleteSubmission(submission)) {
 				return {
@@ -883,7 +694,7 @@ export function createFileSubmissionReader({ root, slug, batchId, directory } = 
 }
 
 /**
- * Persist one real `submit_case_audit` payload exactly once per batch/CASE.
+ * Persist one real `attach_case_audit` payload exactly once per CASE.
  *
  * The tool calls this after reading its parent-assigned
  * `<artifactsDir>/audit-context.edn`. The file is created with `wx`, so a second
@@ -891,7 +702,7 @@ export function createFileSubmissionReader({ root, slug, batchId, directory } = 
  * the first file byte-for-byte untouched. A different batch gets a different
  * directory, so old evidence is never overwritten.
  */
-export function writeSubmissionOnce({ root, slug, batchId, caseId, submission, directory } = {}) {
+export function writeSubmissionOnce({ root, slug, caseId, submission, directory } = {}) {
 	let baseDir = null;
 	if (isText(directory)) {
 		baseDir = resolve(directory);
@@ -903,13 +714,6 @@ export function writeSubmissionOnce({ root, slug, batchId, caseId, submission, d
 			ok: false,
 			code: ERROR_CODES.INVALID_ARGUMENT,
 			message: "submission writer needs a valid root/slug or directory",
-		};
-	}
-	if (typeof batchId !== "string" || !BATCH_ID_PATTERN.test(batchId) || batchId.includes("..")) {
-		return {
-			ok: false,
-			code: ERROR_CODES.INVALID_ARGUMENT,
-			message: "submission writer needs a valid batch id",
 		};
 	}
 	if (typeof caseId !== "string" || !CASE_ID_PATTERN.test(caseId)) {
@@ -933,14 +737,12 @@ export function writeSubmissionOnce({ root, slug, batchId, caseId, submission, d
 			message: `${caseId}: submission names another CASE`,
 		};
 	}
-	const path = join(baseDir, batchId, `${caseId}.submit.edn`);
+	const path = join(baseDir, `${caseId}.submit.edn`);
 	const text = `${printEdn({
-		"batch-id": batchId,
 		"case-id": caseId,
 		"user-score": submission.user_score,
 		"developer-score": submission.developer_score,
 		"report-markdown": submission.report_markdown,
-		"evidence-paths": submission.evidence_paths,
 	})}\n`;
 	let fd = -1;
 	let created = false;
@@ -1066,7 +868,7 @@ export function validateSubmissions({ caseSpecs, submissions, snapshotBefore, sn
 			if (!isText(entry.report_markdown)) {
 				submissionErrors.push(
 					failure(
-						"AUDIT_EVIDENCE_MISSING",
+						"AUDIT_MISSING",
 						`${caseId || `submissions[${index}]`}: report_markdown must be a non-empty string`,
 						{
 							caseId: caseId || undefined,
@@ -1075,18 +877,6 @@ export function validateSubmissions({ caseSpecs, submissions, snapshotBefore, sn
 						},
 					),
 				);
-			}
-
-			if (caseId === "") {
-				submissionErrors.push(
-					failure("AUDIT_EVIDENCE_MISSING", "evidence paths cannot be checked without a case_id", {
-						field: "evidence_paths",
-						index,
-					}),
-				);
-			} else {
-				const evidence = verifyEvidencePaths({ root, slug, caseId, paths: entry.evidence_paths });
-				submissionErrors.push(...evidence.errors);
 			}
 
 			if (snapshot.mutated) {
@@ -1151,9 +941,9 @@ function defaultSystemPrompt() {
 		"You observe the real host and capture real screens.",
 		"The main workspace is shared and read-only for you: never create, edit, delete, or move anything there.",
 		"There is no worktree and no temporary copy of the project; do not look for one and do not create one.",
-		"You write only your evidence directory and your own artifacts directory.",
+		"You write only your scratch capture directory and your own artifacts directory.",
 		"You never spawn subagents.",
-		`When you finish, call submit_case_audit exactly once and then yield a minimal confirmation such as {"ok": true}. Do not repeat the submission in the yield.`,
+		`When you finish, call attach_case_audit exactly once and then yield a minimal confirmation such as {"ok": true}. Do not repeat the submission in the yield.`,
 	].join("\n");
 }
 
@@ -1165,7 +955,7 @@ function ensureYieldConfirmation(prompt) {
 		"",
 		"## Completion",
 		"",
-		'After submit_case_audit succeeds, yield a minimal confirmation object such as {"ok": true}. The framework reads the durable tool submission, not the yield; do not duplicate the audit fields in the yield.',
+		'After attach_case_audit succeeds, yield a minimal confirmation object such as {"ok": true}. The framework reads the durable tool submission, not the yield; do not duplicate the audit fields in the yield.',
 	]
 		.join("\n")
 		.trim();
@@ -1245,7 +1035,7 @@ function looksLikeSubmission(value) {
 	// A tool result such as {ok, case_id} is not a submission. An actual
 	// attempt carries at least one audit field; validation then reports every
 	// missing field instead of silently treating the attempt as absent.
-	return "user_score" in value || "developer_score" in value || "report_markdown" in value || "evidence_paths" in value;
+	return "user_score" in value || "developer_score" in value || "report_markdown" in value;
 }
 
 function isCompleteSubmission(value) {
@@ -1255,11 +1045,7 @@ function isCompleteSubmission(value) {
 		if (typeof score !== "number" || !Number.isFinite(score) || score < 0 || score > 100) return false;
 	}
 	if (typeof value.report_markdown !== "string" || value.report_markdown.trim() === "") return false;
-	return (
-		Array.isArray(value.evidence_paths) &&
-		value.evidence_paths.length > 0 &&
-		value.evidence_paths.every((path) => isText(path))
-	);
+	return true;
 }
 
 function toolDataContainers(outcome) {
@@ -1273,7 +1059,7 @@ function toolDataContainers(outcome) {
 }
 
 /**
- * Collect every successful `submit_case_audit` receipt in the result graph.
+ * Collect every successful `attach_case_audit` receipt in the result graph.
  *
  * The audit rule forbids a second write for the same CASE. Returning only
  * the last receipt would hide exactly that violation, so the receipt count, not
@@ -1284,10 +1070,10 @@ function collectToolSubmissions(outcome) {
 	const receipts = [];
 	const seenEntries = new Set();
 	for (const container of toolDataContainers(outcome)) {
-		if (!("submit_case_audit" in container)) continue;
-		const entries = Array.isArray(container.submit_case_audit)
-			? container.submit_case_audit
-			: [container.submit_case_audit];
+		if (!("attach_case_audit" in container)) continue;
+		const entries = Array.isArray(container.attach_case_audit)
+			? container.attach_case_audit
+			: [container.attach_case_audit];
 		for (const entry of entries) {
 			if (!isPlainObject(entry) || seenEntries.has(entry)) continue;
 			seenEntries.add(entry);
@@ -1433,7 +1219,7 @@ async function collectAuditorSubmission({ caseId, auditor, outcome, deps, batchI
 		receipts: toolReceipts,
 		error:
 			portError ??
-			failure("AUDIT_MISSING", `${caseId}: no durable full submit_case_audit submission was found`, {
+			failure("AUDIT_MISSING", `${caseId}: no durable full attach_case_audit submission was found`, {
 				caseId,
 				next: "persist the tool parameters in the real submission file and inject deps.collectSubmission/readSubmission",
 			}),
@@ -1617,7 +1403,7 @@ function auditorName(slug, caseId) {
  * `systemPrompt`, `buildPrompt`, `collectSubmission` or `readSubmission`,
  * `signal`, `timeoutMs`, `maxRuntimeMs`, `now`, `randomUUID`, and
  * `submissionDirectory` are optional. When no collection port is injected,
- * only the real `submit_case_audit` tool input/arguments count; yield data and
+ * only the real `attach_case_audit` tool input/arguments count; yield data and
  * output artifacts are never accepted as the submission.
  *
  * Output: `{ok, state, uncertain, closureBlocked, uncertainCases,
@@ -1732,7 +1518,7 @@ export async function startAuditBatch({ root, slug, caseSpecs, deps } = {}) {
 	const tools =
 		Array.isArray(depsSet.tools) && depsSet.tools.length > 0
 			? depsSet.tools.map(String)
-			: ["clj_auditor", "submit_case_audit", "yield"];
+			: ["clj_auditor", "attach_case_audit", "yield"];
 	const submissionPort =
 		typeof depsSet.collectSubmission === "function"
 			? depsSet.collectSubmission
@@ -1845,7 +1631,7 @@ export async function startAuditBatch({ root, slug, caseSpecs, deps } = {}) {
 					const problem = prepareDirectory(directory, { root: absoluteRoot });
 					if (problem !== null) setupErrors.push(problem);
 				}
-				const submissionRelative = `.herd/missions/${slug}/audit/${batchId}/${spec.case_id}.submit.edn`;
+				const submissionRelative = `.herd/missions/${slug}/audit/${spec.case_id}.submit.edn`;
 				try {
 					await writeEdnAtomic(join(artifactsDir, "audit-context.edn"), {
 						"batch-id": batchId,
@@ -2502,7 +2288,6 @@ function normalizeRepairCase(raw, index, invalidByCase) {
 	const userScore = raw.userScore ?? raw.user_score;
 	const developerScore = raw.developerScore ?? raw.developer_score;
 	const score = raw.score ?? raw.final;
-	const evidencePaths = raw.evidencePaths ?? raw.evidence_paths;
 	return {
 		caseId,
 		case_id: caseId,
@@ -2514,8 +2299,6 @@ function normalizeRepairCase(raw, index, invalidByCase) {
 		developer_score: typeof developerScore === "number" && Number.isFinite(developerScore) ? developerScore : null,
 		score: typeof score === "number" && Number.isFinite(score) ? score : null,
 		final: typeof score === "number" && Number.isFinite(score) ? score : null,
-		evidencePaths: Array.isArray(evidencePaths) ? evidencePaths.filter((path) => isText(path)) : [],
-		evidence_paths: Array.isArray(evidencePaths) ? evidencePaths.filter((path) => isText(path)) : [],
 		defects: defects.length > 0 ? [...new Set(defects)] : ["the CASE did not pass its audit"],
 		index,
 	};
@@ -2662,7 +2445,6 @@ export function deriveRepairSlices({ aggregateResult } = {}) {
 						userScore: row.userScore,
 						developerScore: row.developerScore,
 						score: row.score,
-						evidencePaths: row.evidencePaths,
 						defects: [],
 					},
 					index,
@@ -2696,12 +2478,7 @@ export function deriveRepairSlices({ aggregateResult } = {}) {
 				: null;
 	const usedIds = new Set();
 	const repairSlices = cases.map((entry) => {
-		const inputs =
-			entry.evidencePaths.length > 0
-				? entry.evidencePaths
-				: missionSlug === null
-					? []
-					: [`.herd/missions/${missionSlug}/s2-cases.edn`];
+		const inputs = missionSlug === null ? [] : [`.herd/missions/${missionSlug}/s2-cases.edn`];
 		const defectText = entry.defects.join("; ");
 		return {
 			slice_id: repairSliceId(entry.caseId, nextRevision, usedIds),
@@ -2710,8 +2487,8 @@ export function deriveRepairSlices({ aggregateResult } = {}) {
 			depends_on: [],
 			done_when:
 				entry.threshold === null
-					? `A fresh independent re-audit of ${entry.caseId} passes every defect and evidence check.`
-					: `A fresh independent re-audit of ${entry.caseId} reaches at least ${entry.threshold}/100 for both user_score and developer_score with valid evidence and an unchanged workspace.`,
+					? `A fresh independent re-audit of ${entry.caseId} passes every defect and leaves the workspace unchanged.`
+					: `A fresh independent re-audit of ${entry.caseId} reaches at least ${entry.threshold}/100 for both user_score and developer_score and leaves the workspace unchanged.`,
 			mapped_cases: [entry.caseId],
 			source: "audit-repair",
 			derived: true,
@@ -2721,7 +2498,6 @@ export function deriveRepairSlices({ aggregateResult } = {}) {
 			user_score: entry.userScore,
 			developer_score: entry.developerScore,
 			final_score: entry.score,
-			evidence_paths: entry.evidencePaths,
 		};
 	});
 	const mappedCases = repairSlices.map((slice) => slice.mapped_cases[0]);

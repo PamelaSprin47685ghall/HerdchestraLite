@@ -402,63 +402,7 @@ function readValidation(caseId, index, value, invalid) {
 	return { valid: false, provided: true };
 }
 
-function readEvidence(caseId, value, invalid, checkEvidence) {
-	if (!Array.isArray(value) || value.length === 0) {
-		invalid.push(
-			rejection("AUDIT_EVIDENCE_MISSING", `${caseId}: evidence_paths must be a non-empty array`, {
-				caseId,
-				field: "evidence_paths",
-				actual: describe(value),
-			}),
-		);
-		return null;
-	}
 
-	const paths = [];
-	for (let index = 0; index < value.length; index += 1) {
-		const path = value[index];
-		if (typeof path !== "string" || path.trim() === "") {
-			invalid.push(
-				rejection("AUDIT_EVIDENCE_MISSING", `${caseId}: evidence_paths[${index}] must be a non-empty string`, {
-					caseId,
-					field: "evidence_paths",
-					index,
-					actual: describe(path),
-				}),
-			);
-			continue;
-		}
-		paths.push(path);
-	}
-	if (paths.length !== value.length || paths.length === 0) return null;
-
-	if (typeof checkEvidence === "function") {
-		try {
-			const checked = checkEvidence({ caseId, paths });
-			if (checked?.ok !== true) {
-				invalid.push(
-					rejection("AUDIT_EVIDENCE_MISSING", `${caseId}: evidence paths were rejected${detailOf(checked)}`, {
-						caseId,
-						field: "evidence_paths",
-						missing: isPlainObject(checked) && Array.isArray(checked.missing) ? checked.missing : [],
-						outside: isPlainObject(checked) && Array.isArray(checked.outside) ? checked.outside : [],
-					}),
-				);
-				return null;
-			}
-		} catch (error) {
-			invalid.push(
-				rejection("AUDIT_EVIDENCE_MISSING", `${caseId}: evidence check failed: ${messageOf(error)}`, {
-					caseId,
-					field: "evidence_paths",
-				}),
-			);
-			return null;
-		}
-	}
-
-	return paths;
-}
 
 function emptyRow(spec) {
 	return {
@@ -470,7 +414,6 @@ function emptyRow(spec) {
 		score: null,
 		valid: false,
 		passed: false,
-		evidencePaths: [],
 		reportMarkdown: null,
 	};
 }
@@ -513,20 +456,13 @@ function deriveRepairSpec(rows, invalid, contractInfo) {
 			user_score: row.userScore,
 			developer_score: row.developerScore,
 			final: row.score,
-			evidence_paths: row.evidencePaths,
 			defects: [...new Set(defects)],
 		});
 	}
 
 	if (failed.length === 0) return null;
 	const failedCases = failed.map((entry) => entry.case_id);
-	const inputs = [];
-	for (const entry of failed) {
-		for (const path of entry.evidence_paths) {
-			if (!inputs.includes(path)) inputs.push(path);
-		}
-	}
-	if (inputs.length === 0) inputs.push(...failedCases.map((caseId) => `case:${caseId}`));
+	const inputs = failedCases.map((caseId) => `case:${caseId}`);
 	return {
 		repair_id: repairIdFor(contractInfo, failedCases),
 		failed_cases: failedCases,
@@ -580,9 +516,9 @@ function buildResult({ rows, missing, unknown, duplicates, invalid, contractInfo
  *   `.herd/missions/<slug>/s2-cases.edn` order. That order is the order of
  *   `rows`, `caseIds`, and the sections of the final report.
  * - `submissions`: raw auditor fields
- *   `{case_id, user_score, developer_score, report_markdown, evidence_paths}`;
+ *   `{case_id, user_score, developer_score, report_markdown}`;
  *   an optional `validation: {ok, errors?}` carries B3's single-submission
- *   result, so a failed evidence or snapshot check can never be masked by
+ *   result, so a failed snapshot check can never be masked by
  *   high scores.
  * - `contract`: `{missionId, revision}`. Exactly these two fields bind the
  *   final approval; there is no contract-line and no frozen hash to recheck.
@@ -591,8 +527,6 @@ function buildResult({ rows, missing, unknown, duplicates, invalid, contractInfo
  * - `audit`: `{environment, limitations?, lessons?}` for the final report;
  *   `environment` may instead live on `contract.environment`, but a clean
  *   PASS requires one of them.
- * - `ports.checkEvidence({caseId, paths})`: optional synchronous evidence
- *   existence/containment check. B3's `validation` field remains authoritative.
  *   A `ports.verifyContract` value is ignored: contract hashes are gone.
  *
  * Output: `{ok, verdict, contract, audit, rows, missing, unknown, duplicates,
@@ -681,7 +615,6 @@ export function aggregate({ caseSpecs, submissions, contract, snapshotBefore, sn
 		}
 	}
 
-	const checkEvidence = typeof portSet.checkEvidence === "function" ? portSet.checkEvidence : null;
 
 	for (const spec of specs) {
 		const entries = byCase.get(spec.case_id) ?? [];
@@ -715,7 +648,7 @@ export function aggregate({ caseSpecs, submissions, contract, snapshotBefore, sn
 		const reportMarkdown = typeof entry.report_markdown === "string" ? entry.report_markdown : "";
 		if (reportMarkdown.trim() === "") {
 			invalid.push(
-				rejection("AUDIT_EVIDENCE_MISSING", `${spec.case_id}: report_markdown must be a non-empty string`, {
+				rejection("AUDIT_MISSING", `${spec.case_id}: report_markdown must be a non-empty string`, {
 					caseId: spec.case_id,
 					field: "report_markdown",
 					index,
@@ -723,24 +656,12 @@ export function aggregate({ caseSpecs, submissions, contract, snapshotBefore, sn
 				}),
 			);
 		}
-		const evidencePaths = readEvidence(spec.case_id, entry.evidence_paths, invalid, checkEvidence);
-		if (validation.provided === false && checkEvidence === null) {
-			invalid.push(
-				rejection(
-					"AUDIT_EVIDENCE_MISSING",
-					`${spec.case_id}: evidence_paths were not validated by B3 or a checkEvidence port`,
-					{ caseId: spec.case_id, field: "validation", index },
-				),
-			);
-		}
-		const evidenceValidated =
-			validation.valid || (validation.provided === false && checkEvidence !== null && evidencePaths !== null);
+		const validationOk = validation.valid || validation.provided === false;
 		const valid =
-			evidenceValidated &&
+			validationOk &&
 			userScore !== null &&
 			developerScore !== null &&
-			reportMarkdown.trim() !== "" &&
-			evidencePaths !== null;
+			reportMarkdown.trim() !== "";
 		const score = userScore !== null && developerScore !== null ? Math.min(userScore, developerScore) : null;
 
 		rows.push({
@@ -752,7 +673,6 @@ export function aggregate({ caseSpecs, submissions, contract, snapshotBefore, sn
 			score,
 			valid,
 			passed: valid && score >= spec.threshold,
-			evidencePaths: evidencePaths ?? [],
 			reportMarkdown: reportMarkdown === "" ? null : reportMarkdown,
 		});
 	}
@@ -804,13 +724,6 @@ function composeReport(result, slug) {
 		lines.push(
 			`| ${cell(row.caseId)} | ${cell(row.path)} | ${row.userScore} | ${row.developerScore} | ${row.score} | ${row.threshold} | ${row.passed ? "PASS" : "FAIL"} |`,
 		);
-	}
-
-	lines.push("", "## 证据路径", "");
-	for (const row of rows) {
-		lines.push(`### ${row.caseId}`, "");
-		for (const path of row.evidencePaths) lines.push(`- \`${String(path).replace(/`/g, "\\`")}\``);
-		lines.push("");
 	}
 
 	lines.push("## 审计员报告", "");

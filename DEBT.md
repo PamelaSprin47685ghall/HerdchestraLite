@@ -8,14 +8,9 @@
 - **影响**：当前产品只能验证执行器，不能执行 S1–S5 使命。
 - **下一步**：按 §2.3 落地 `review` + `attach_*`，再恢复完整入口。
 
-## D1 review + attach 生命周期收尾
-
-- **剩余缺口**：`main.mjs` 仍保留临时 `verifyContract()` stub 与审计端口调用点；旧测试仍可能断言 `advance_*` / frozen；`attach_*` 的 barrier、hackContext 分支切换与 successor 简报注入尚未跑通完整窄测试。
-- **下一步**：删除 `verifyContract` stub 与审计端口调用点；重写 `stages-gate-tools` / `stages-contract` / `main-bootstrap` 测试到 review/attach 合同；跑 `attach-lifecycle`、`tenure`、`stages-gate-tools`、`stages-contract`。
-
 ## D2 S5 单工作区编排尚未落地
 
-- **缺口**：`main.mjs` 已移除 `fork_slices` 调用并写入 review/attach 的 `STAGE_SURFACES`，但单工作区 S5 的 runner 接力、board 工具面与 quiescence 屏障尚未接线验证；静止条件不含 `--ff-only`；`src/swarm/worktree.mjs` 仍是休眠代码。
+- **缺口**：`main.mjs` 已移除 `fork_slices` 调用并写入 review/attach 的 `STAGE_SURFACES`，ff-only 已改为 `wantsFf` 显式 opt-in；但单工作区 S5 的 runner 接力、board 工具面与 quiescence 屏障尚未接线验证；`src/swarm/worktree.mjs` 仍是休眠代码。
 - **影响**：S5 工具面与提示词按新设计存在，但不能端到端运行。
 - **下一步**：接 `swarm/runner.mjs` 的单工作区 Reviewer ⇄ Swarm 路径；不接线 worktree。
 
@@ -55,8 +50,3 @@
 
 - **现状**：`attach-lifecycle`、`audit`、`board`、`dashboard`、`evaluator`、`host`、`main-bootstrap`、`main-consumer`、`runner`、`s5-wiring`、`stages-parsers`、`stages-scores`、`tenure`、`worktree` 共 14 个文件为 `*.test.mjs.disabled`；`bun test tests` 只跑 dogfood 面启用的测试文件。
 - **影响**：完整装配与审计路径暂时没有自动化回归；接回时必须按单工作区语义重写，不得直接恢复旧断言。
-
-## D17 逻辑接力与 attach_case_audit 尚未实现
-
-- **缺口**：根规格已裁决 attach 接力用 hackContext 逻辑切分支、审计结果改用 `attach_case_audit`、attach 面板三态含 deny→ask_user；源码仍用旧 `advance_s1` 面板与 `submit_case_audit`/evidence 语义。
-- **下一步**：按 §2.3.4、§2.3.5、§2.6、§8.4、§9.5 实现；删除 `:AUDIT_EVIDENCE_MISSING` 与 evidence 目录要求。

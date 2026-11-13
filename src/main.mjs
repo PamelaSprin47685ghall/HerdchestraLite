@@ -127,8 +127,8 @@ const ROLE_SURFACES = Object.freeze({
 	]),
 	"Manual Auditor": Object.freeze(
 		AUDITOR_SANDBOX.available
-			? ["clj_auditor", "submit_case_audit", "yield"]
-			: ["submit_case_audit", "yield"],
+			? ["clj_auditor", "attach_case_audit", "yield"]
+			: ["attach_case_audit", "yield"],
 	),
 	"Blocker Oracle": Object.freeze(["clj_review", "submit_oracle_advice", "yield"]),
 });
@@ -154,7 +154,7 @@ export const ROLE_EXIT_TOOLS = Object.freeze({
 	Reviewer: "review",
 	"Swarm Worker": "board_finish",
 	"Swarm Holder": "board_finish",
-	"Manual Auditor": "submit_case_audit",
+	"Manual Auditor": "attach_case_audit",
 	"Blocker Oracle": "submit_oracle_advice",
 });
 
@@ -1021,14 +1021,12 @@ export function writeAuditSubmission(state, binding, params) {
 	const result = writeSubmissionOnce({
 		root: state.root,
 		slug: binding.slug,
-		batchId: binding.batchId,
 		caseId: binding.caseId,
 		submission: params,
 	});
 	if (result?.ok !== true) {
 		throw herdError(result.code ?? ":INVALID_ARGUMENT", result.message ?? "submission write failed", {
 			caseId: binding.caseId,
-			batchId: binding.batchId,
 			path: result.path,
 		});
 	}
@@ -1497,9 +1495,9 @@ function registerBoardTools(pi) {
 
 function registerScopeAndAuditTools(pi) {
 	pi.registerTool({
-		name: "submit_case_audit",
-		label: "Submit Case Audit",
-		description: "Submit one Manual Auditor's CASE verdict and evidence paths.",
+		name: "attach_case_audit",
+		label: "Attach Case Audit",
+		description: "Attach one Manual Auditor's CASE verdict and report.",
 		parameters: gatedPlainSchema(AUDIT_SUBMISSION_SCHEMA),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			if (!AUDITOR_SANDBOX.available) {
@@ -1521,7 +1519,7 @@ function registerScopeAndAuditTools(pi) {
 			}
 			try {
 				writeAuditSubmission(state, binding, params);
-				return toolOk({ ok: true, case_id: binding.caseId, batch_id: binding.batchId });
+				return toolOk({ ok: true, case_id: binding.caseId });
 			} catch (error) {
 				return toolFail(error);
 			}
