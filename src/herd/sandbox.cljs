@@ -66,13 +66,17 @@
   (-> (acquire-lock 0)
       (.then
         (fn [{:keys [fd]}]
-          (chain (f)
-                 (fn [value]
-                   (release-lock fd)
-                   value)
-                 (fn [error]
-                   (release-lock fd)
-                   (throw error)))))))
+          (try
+            (chain (f)
+                   (fn [value]
+                     (release-lock fd)
+                     value)
+                   (fn [error]
+                     (release-lock fd)
+                     (throw error)))
+            (catch :default error
+              (release-lock fd)
+              (throw error)))))))
 
 (defn cat [{:keys [path]}]
   (.readFile fs-promises (resolve-path path) "utf8"))
@@ -120,14 +124,22 @@
     (swap! budgets assoc name {:used-bytes next-bytes :used-ops next-ops
                                :max-bytes max-bytes :max-ops max-ops})))
 
+(defn- bigint-parts [value]
+  (let [text (str value)
+        width (max 10 (count text))
+        padded (str (apply str (repeat (- width (count text)) "0")) text)]
+    [(js/parseInt (subs padded 0 (- width 9)) 10)
+     (js/parseInt (subs padded (- width 9)) 10)]))
+
 (defn- stamp-of [stats]
-  {:mtimeSec (Math/floor (/ (.-mtimeMs stats) 1000))
-   :mtimeNsec (Math/floor (* (mod (.-mtimeMs stats) 1000) 1000000))
-   :size (.-size stats)})
+  (let [[secs nsecs] (bigint-parts (.-mtimeNs stats))]
+    {:mtimeSec secs
+     :mtimeNsec nsecs
+     :size (js/parseInt (str (.-size stats)) 10)}))
 
 (defn- check-stamp! [path expected]
   (when expected
-    (let [stats (try (.statSync fs-native path) (catch :default _ nil))
+    (let [stats (try (.statSync fs-native path #js {:bigint true}) (catch :default _ nil))
           actual (when stats (stamp-of stats))]
       (when (or (nil? actual)
                 (not= (:mtimeSec actual) (:mtimeSec expected))
