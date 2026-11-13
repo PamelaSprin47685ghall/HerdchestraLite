@@ -189,7 +189,7 @@ export async function relay(args = {}) {
 		if (runtime.cancelled) return cancelledTree(runtime);
 		const board = await readBoardState(runtime);
 		if (!board) return missingBoard(runtime);
-		const quiescence = await checkQuiescence(runtime, board, { ff: true });
+		const quiescence = await checkQuiescence(runtime, board, { ff: wantsFf(runtime) });
 		if (!quiescence.ok) {
 			scheduleRelayRetryOnFailure(runtime, quiescence);
 			return quiescence;
@@ -329,7 +329,7 @@ export async function finishTask(args = {}) {
 		const potentialRelay = Boolean(finishing?.["ledger-key"]) && otherOpen === 0 && pre.tenure?.phase === "swarm";
 		const quiescence =
 			potentialRelay && !callerHoldsW
-				? await checkQuiescence(runtime, pre, { ff: true })
+				? await checkQuiescence(runtime, pre, { ff: wantsFf(runtime) })
 				: {
 						ok: false,
 						error: herdError("RESOURCES_NOT_QUIESCENT", "caller holds the write lock", {
@@ -1346,7 +1346,7 @@ async function openFindings(runtime, termId, findings) {
 async function completeTenure(runtime, termId) {
 	let board = await readBoardState(runtime);
 	if (!board) return missingBoard(runtime);
-	const quiescence = await checkQuiescence(runtime, board, { ff: true });
+	const quiescence = await checkQuiescence(runtime, board, { ff: wantsFf(runtime) });
 	if (!quiescence.ok) return quiescence;
 
 	const isInitialEmpty =
@@ -1732,6 +1732,14 @@ function checkBoardQuiescence(board) {
 		};
 	}
 	return { ok: true };
+}
+
+/**
+ * Only multi-worktree assemblies opt into the ff dry-run. The single-workspace
+ * S5 path has no ff port, so requiring one there would deadlock quiescence.
+ */
+function wantsFf(runtime) {
+	return runtime?.deps?.ffOnly === true || runtime?.slice?.ffOnly === true;
 }
 
 async function checkQuiescence(runtime, board, { ff }) {
