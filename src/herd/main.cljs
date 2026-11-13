@@ -52,7 +52,10 @@
      :content [(text-block (:text cached))]}
     (tool-result (:text cached))))
 
-(defn- execute [tool-call-id params _signal]
+(defn- session-key [ctx]
+  (or (some-> ctx .-agent .-id) "main"))
+
+(defn- execute [tool-call-id params _signal _on-update ctx]
   (let [request-digest (digest params)]
     (if-let [cached (and tool-call-id (@receipts tool-call-id))]
       (if (= request-digest (:digest cached))
@@ -60,7 +63,7 @@
         (clj->js (tool-error (replay-mismatch))))
       (let [name (.-name params)
             code (.-code params)]
-        (ariadne/record-anchor! name tool-call-id)
+        (ariadne/record-anchor! (session-key ctx) name tool-call-id)
         (-> (repl/run name code (sandbox-deadline code))
             (.then (fn [result]
                      (let [text (ufss/print result)]
@@ -75,26 +78,55 @@
                                  {:digest request-digest :text text :error? true}))
                         (clj->js {:isError true
                                   :content [(text-block text)]})))))))))
-(defn- wait-execute
-  [_tool-call-id params _signal]
+(defn- host-text [result]
+  (cond
+    (string? result) result
+    (and result (.-content result))
+    (->> (array-seq (.-content result))
+         (keep (fn [block] (when (= "text" (.-type block)) (.-text block))))
+         (clojure.string/join ""))
+    :else (str result)))
+
+(defn- host-wait []
+  (let [native (.-__herdNative js/globalThis)
+        runner (when native ((.-getRunner native)))]
+    (when (and runner (.hasNativeTool runner "wait"))
+      (.invokeNativeTool runner "wait" #js {} #js {}))))
+
+(defn- wait-execute [_tool-call-id params _signal _on-update ctx]
   (let [work (.-otherwise_independent_work params)]
     (-> (repl/wait-for-result (sandbox-deadline work))
-        (.then (fn [result] (clj->js (tool-result (ufss/print result)))))
+        (.then (fn [result]
+                 (if (= :idle (:state result))
+                   (if-let [host (host-wait)]
+                     (-> host
+                         (.then (fn [host-result]
+                                  (clj->js
+                                    (tool-result
+                                      (ufss/print {:state :host-wait
+                                                   :message (host-text host-result)})))))
+                         (.catch (fn [error]
+                                   (clj->js
+                                     (tool-result
+                                       (ufss/print (assoc result
+                                                          :host-error (error-text error))))))))
+                     (clj->js (tool-result (ufss/print result))))
+                   (clj->js (tool-result (ufss/print result))))))
         (.catch (fn [error]
                   (clj->js
                     (tool-result
                       (ufss/print {:state :waiting
                                    :reason :deadline
                                    :message (str error)}))))))))
-
-(defn- time-leap-execute [_tool-call-id params _signal]
+(defn- time-leap-execute [_tool-call-id params _signal _on-update ctx]
   (clj->js
     (tool-result
-      (ufss/print (ariadne/time-leap! (js->clj params :keywordize-keys true))))))
+      (ufss/print (ariadne/time-leap! (session-key ctx)
+                    (js->clj params :keywordize-keys true))))))
 
 (defn- ask-beacon-execute [_tool-call-id params _signal _on-update ctx]
   (let [request (js->clj params :keywordize-keys true)
-        beacon (ariadne/ask-beacon request)
+        beacon (ariadne/ask-beacon (session-key ctx) request)
         prompt (str """
 You are querying a read-only pruned branch (beacon).
 
@@ -103,7 +135,13 @@ You are querying a read-only pruned branch (beacon).
                     """
 Description:
 
-""" (:description beacon) "\n\n"
+""" (:description beacon) """
+
+
+Experience:
+
+
+""" (:experience beacon) "\n\n"
                     """
 Question:
 
@@ -256,10 +294,10 @@ Time leap experience:
 
 """ experience)})
 
-(defn- context-handler [event _ctx]
+(defn- context-handler [event ctx]
   (let [messages (.-messages event)]
-    (if-let [jump (ariadne/consume-jump!)]
-      (let [target (ariadne/tool-call-id (:target jump))
+    (if-let [jump (ariadne/consume-jump! (session-key ctx))]
+      (let [target (ariadne/tool-call-id (session-key ctx) (:target jump))
             idx (anchor-index messages target)]
         (if (>= idx 0)
           #js {:messages (.concat (.slice messages (inc idx))

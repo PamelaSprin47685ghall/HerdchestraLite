@@ -1,40 +1,38 @@
 (ns herd.ariadne)
 
-(defonce anchors (atom {}))
-(defonce beacons (atom {}))
-(defonce pending-jump (atom nil))
+(defonce state (atom {:anchors {} :beacons {} :pending {}}))
 
-(defn record-anchor! [name tool-call-id]
-  (swap! anchors assoc name tool-call-id))
+(defn record-anchor! [session name tool-call-id]
+  (swap! state update-in [session :anchors] assoc name tool-call-id))
 
-(defn beacon! [name description]
-  (swap! beacons assoc name description))
+(defn beacon! [session name description experience]
+  (swap! state update-in [session :beacons] assoc name
+         {:description description :experience experience}))
 
-(defn tool-call-id [name]
-  (get @anchors name))
+(defn tool-call-id [session name]
+  (get-in @state [session :anchors name]))
 
-(defn time-leap! [{:keys [target experience beacon_name beacon_description]}]
-  (when-not (contains? @anchors target)
-    (throw (ex-info "unknown ariadne target"
-                    {:code :STALE_CONTROL :target target})))
-  (when (contains? @beacons beacon_name)
-    (throw (ex-info "beacon name is already taken"
-                    {:code :NAME_TAKEN :name beacon_name})))
+(defn time-leap! [session {:keys [target experience beacon_name beacon_description]}]
+  (when-not (contains? (get-in @state [session :anchors]) target)
+    (throw (ex-info "unknown ariadne target" {:code :STALE_CONTROL :target target})))
+  (when (and beacon_name (contains? (get-in @state [session :beacons]) beacon_name))
+    (throw (ex-info "beacon name is already taken" {:code :NAME_TAKEN :name beacon_name})))
   (when beacon_name
-    (beacon! beacon_name beacon_description))
-  (reset! pending-jump {:target target :experience experience})
-  {:state :leaped
-   :target target
-   :experience experience
-   :beacon beacon_name})
+    (beacon! session beacon_name beacon_description experience))
+  (swap! state assoc-in [session :pending] {:target target :experience experience})
+  {:state :leaped :target target :experience experience :beacon beacon_name})
 
-(defn ask-beacon [{:keys [target question]}]
-  (let [description (get @beacons target)]
-    (if description
-      {:state :beacon :target target :question question :description description}
+(defn ask-beacon [session {:keys [target question]}]
+  (let [beacon (get-in @state [session :beacons target])]
+    (if beacon
+      {:state :beacon
+       :target target
+       :question question
+       :description (:description beacon)
+       :experience (:experience beacon)}
       (throw (ex-info "unknown beacon" {:code :INVALID_ARGUMENT :target target})))))
 
-(defn consume-jump! []
-  (let [jump @pending-jump]
-    (reset! pending-jump nil)
+(defn consume-jump! [session]
+  (let [jump (get-in @state [session :pending])]
+    (swap! state assoc-in [session :pending] nil)
     jump))
