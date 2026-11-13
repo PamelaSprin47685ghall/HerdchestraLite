@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { buildSandboxTools, describeSandboxTool } from "./clj-sandbox/tools.mjs";
 import { EdnKeyword, printUfss, readUfss } from "./clj-sandbox/ufss.mjs";
+import { applyHistoryBarrier } from "./host/hack-context.mjs";
 import { readHealth, recordHealth } from "./host/health.mjs";
 import { COMMON_RULES_TEXT } from "./prompts/common.mjs";
 import { buildCaseAuditorPrompt, ROLE_PROMPTS_EARLY, ROLE_PROMPTS_LATE } from "./prompts/roles.mjs";
@@ -1747,7 +1748,7 @@ export function createS1ApprovalComponent({ markdown, title, keybindings, rows =
 				return;
 			}
 			if (matches(data, "tui.select.confirm")) {
-				finish(choice === "reject" ? "pending" : choice);
+				finish(choice === "reject" ? "deny" : choice);
 				return;
 			}
 			if (matches(data, "tui.editor.cursorLeft")) {
@@ -1837,6 +1838,7 @@ function gateHost(pi) {
 					...(args.signal ? { signal: args.signal } : {}),
 				},
 			);
+			if (result?.decision === "deny") return { decision: "deny" };
 			if (result?.decision === "approve") return { decision: "approve" };
 			if (result?.decision === "revise") {
 				const feedback =
@@ -2009,10 +2011,19 @@ function gateHost(pi) {
 			publishMission(state);
 			await applyStageSurface(pi, stage);
 			await refreshDashboard(state);
+			const sessionManager = state.lastContext?.sessionManager;
+			let barrier = { persisted: false, branched: false, appended: 0 };
+			if (sessionManager) {
+				const entries = typeof sessionManager.getBranch === "function" ? sessionManager.getBranch() : [];
+				const seed = entries.find(
+					(entry) => entry?.type === "message" && entry?.message?.role === "user",
+				);
+				barrier = applyHistoryBarrier(sessionManager, { parentId: seed?.id ?? null, briefing: null });
+			}
 			if (typeof briefing === "string" && briefing.trim().length > 0) {
 				pi.sendUserMessage?.(briefing, { customType: "herd-stage-briefing" });
 			}
-			return { ok: true, stage };
+			return { ok: true, stage, barrier };
 		},
 	});
 }
