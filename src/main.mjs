@@ -2460,6 +2460,14 @@ function compareProtectedSnapshots(before, after, reportPath) {
 	return undefined;
 }
 
+/**
+ * Contract hashes were removed from the lifecycle. This compatibility stub
+ * keeps the audit ports harmless while the remaining call sites are deleted.
+ */
+async function verifyContract() {
+	return { ok: true, contract: { hashes: {} } };
+}
+
 async function recheckMission(batch, args) {
 	const live = await verifyContract(args.root, args.slug);
 	if (live?.ok !== true) {

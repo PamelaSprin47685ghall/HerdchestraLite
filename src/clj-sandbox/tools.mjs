@@ -851,12 +851,19 @@ function makeCapabilityTable(context, ports, execution) {
 				const result = vfsWrite(target.batch, target.path, requireArgumentString(args, "content"));
 				return operationPath(result, ["path", "bytes", "replaced"]);
 			}
-			const result = await ports.hostWrite(ednArgsToObject(args));
-			return new Map([
-				[kw("path"), requested],
-				[kw("content"), hostResultText(result)],
-				[kw("host"), true],
-			]);
+			try {
+				const result = await ports.hostWrite(ednArgsToObject(args));
+				return new Map([
+					[kw("path"), requested],
+					[kw("content"), hostResultText(result)],
+					[kw("host"), true],
+				]);
+			} catch (error) {
+				if (!String(error?.code ?? "").includes("HOST_API_MISMATCH")) throw error;
+				const target = classifyWrite(context, requested);
+				const result = vfsWrite(target.batch, target.path, requireArgumentString(args, "content"));
+				return operationPath(result, ["path", "bytes", "replaced"]);
+			}
 		};
 	}
 	if (capabilities.has("mkdir")) {
