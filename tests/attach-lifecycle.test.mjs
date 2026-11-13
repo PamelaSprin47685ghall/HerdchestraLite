@@ -522,5 +522,6 @@ describe.skipIf(gateTools === null)("gate tool attach lifecycle", () => {
 		);
 		expect(await stageOf(ctx)).toBe("s5");
 		expect(readFileSync(join(ctx.root, "plans", SLUG, "s4-coordination.md"), "utf8")).toBe(S4_DOC);
+		expect(readFileSync(join(ctx.root, "plans", SLUG, "s4-coordination.pml"), "utf8")).toBe("never { false }");
 	});
 });
