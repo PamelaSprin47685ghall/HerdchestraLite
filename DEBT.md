@@ -69,12 +69,6 @@
 - **影响**：默认面通常串行，但宿主并行工具调用下可能串名、串停靠点。
 - **下一步**：为每个程序创建独立 SCI ctx（或至少独立 `__run` 命名空间），把 `current-name`/notifier 改为按 `agent_id` 或程序名分区。
 
-## D21 `ask_beacon` 只回显描述
-
-- **缺口**：`ariadne/ask-beacon` 直接返回 `beacon_description`，没有启动只读模型查询被封存枝桠的细节；规格要求向灯塔提问并得到回答。
-- **影响**：`time_leap` 后的细节检索退化为回显，灯塔内容不会参与推理。
-- **下一步**：接入一次只读子会话或 `ctx.runEphemeralTurn`，把 beacon 摘要与问题交给模型，返回回答；失败时保留回显降级并标 health。
-
 ## D22 `wait` 超时的 runtime-parked 无法 `unpark`
 
 - **缺口**：`wait` 超时的 `park-all!` 只把运行中程序在 `programs` 表标为 `:parked :deadline`，这些程序没有 `sandbox/parked` 的 `:resolve`；`unpark` 对它们抛 `:PROGRAM_UNKNOWN`，程序实际继续运行，只能等它完成或 `abandon`。
