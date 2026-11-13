@@ -331,32 +331,32 @@ Time leap experience:
            :b (subs b (max 0 (- i 40)) (min (count b) (+ i 40)))})))))
 
 (defn- probe-request [event]
-  (try
-    (let [payload (or (.-payload event) event)
-          system (str (.-system payload))
-          tools (try (js/JSON.stringify (or (.-tools payload) #js []))
-                     (catch :default _ "unserializable"))
-          system-hash (sha256-text system)
-          tools-hash (sha256-text tools)
-          prev @cache-probe]
-      (when (or (nil? prev)
-                (not= system-hash (:system-hash prev))
-                (not= tools-hash (:tools-hash prev)))
-        (let [fs (js/require "node:fs")
-              entry {:at (js/Date.now)
-                     :system-hash system-hash
-                     :tools-hash tools-hash
-                     :system-len (count system)
-                     :tools-len (count tools)
-                     :system-diff (when prev (first-diff (:system prev) system))
-                     :tools-diff (when prev (first-diff (:tools prev) tools))}]
-          (.mkdirSync fs ".herd" #js {:recursive true})
-          (.appendFileSync fs ".herd/cache-probe.jsonl"
-                           (str (js/JSON.stringify (clj->js entry)) "\n"))))
-      (reset! cache-probe {:system system :tools tools
-                           :system-hash system-hash :tools-hash tools-hash})
-      nil)
-    (catch :default _ nil)))
+  (let [payload (or (.-payload event) event)]
+    (try
+      (let [system (str (.-system payload))
+            tools (try (js/JSON.stringify (or (.-tools payload) #js []))
+                       (catch :default _ "unserializable"))
+            system-hash (sha256-text system)
+            tools-hash (sha256-text tools)
+            prev @cache-probe]
+        (when (or (nil? prev)
+                  (not= system-hash (:system-hash prev))
+                  (not= tools-hash (:tools-hash prev)))
+          (let [fs (js/require "node:fs")
+                entry {:at (js/Date.now)
+                       :system-hash system-hash
+                       :tools-hash tools-hash
+                       :system-len (count system)
+                       :tools-len (count tools)
+                       :system-diff (when prev (first-diff (:system prev) system))
+                       :tools-diff (when prev (first-diff (:tools prev) tools))}]
+            (.mkdirSync fs ".herd" #js {:recursive true})
+            (.appendFileSync fs ".herd/cache-probe.jsonl"
+                             (str (js/JSON.stringify (clj->js entry)) "\n"))))
+        (reset! cache-probe {:system system :tools tools
+                             :system-hash system-hash :tools-hash tools-hash})
+        payload)
+      (catch :default _ payload))))
 (defn install-hooks! []
   (.on js/globalThis.__pi "before_agent_start" before-agent-start)
   (.on js/globalThis.__pi "session_start"
