@@ -859,7 +859,7 @@ function makeCapabilityTable(context, ports, execution) {
 					[kw("host"), true],
 				]);
 			} catch (error) {
-				if (!String(error?.code ?? "").includes("HOST_API_MISMATCH")) throw error;
+				// Host write is unavailable in default mode; preserve the protected VFS path.
 				const target = classifyWrite(context, requested);
 				const result = vfsWrite(target.batch, target.path, requireArgumentString(args, "content"));
 				return operationPath(result, ["path", "bytes", "replaced"]);

@@ -167,31 +167,6 @@ function normalizeSlicesForDigest(slices) {
 
 function digestPayload(op, params) {
 	switch (op) {
-		case "advance_s1":
-			return {
-				slug: params.slug,
-				brainstorm_markdown: params.brainstorm_markdown,
-				summary: params.summary,
-				non_goals: params.non_goals,
-			};
-		case "advance_s2":
-			return {
-				slug: params.slug,
-				manual_tests_markdown: params.manual_tests_markdown,
-				cases: normalizeCasesForDigest(params.cases),
-			};
-		case "advance_s3":
-			return {
-				slug: params.slug,
-				dev_guide_markdown: params.dev_guide_markdown,
-				modules: normalizeModulesForDigest(params.modules),
-			};
-		case "advance_s4":
-			return {
-				slug: params.slug,
-				coordination_markdown: params.coordination_markdown,
-				slices: normalizeSlicesForDigest(params.slices),
-			};
 		default:
 			return params;
 	}
