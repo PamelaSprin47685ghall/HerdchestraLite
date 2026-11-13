@@ -90,11 +90,41 @@
     (tool-result
       (ufss/print (ariadne/time-leap! (js->clj params :keywordize-keys true))))))
 
-(defn- ask-beacon-execute [_tool-call-id params _signal]
-  (clj->js
-    (tool-result
-      (ufss/print (ariadne/ask-beacon (js->clj params :keywordize-keys true))))))
+(defn- ask-beacon-execute [_tool-call-id params _signal _on-update ctx]
+  (let [request (js->clj params :keywordize-keys true)
+        beacon (ariadne/ask-beacon request)
+        prompt (str """
+You are querying a read-only pruned branch (beacon).
 
+"""
+                    "Beacon: " (:target request) "\n"
+                    """
+Description:
+
+""" (:description beacon) "\n\n"
+                    """
+Question:
+
+""" (:question request) "\n\n"
+                    "Answer only from the beacon description and general reasoning. "
+                    "Never claim access to files, tools, or the old conversation.")]
+    (if-let [turn (and ctx (.-runEphemeralTurn ctx))]
+      (-> (.runEphemeralTurn ctx #js {:promptText prompt :tools false})
+          (.then (fn [result]
+                   (clj->js
+                     (tool-result
+                       (ufss/print (assoc beacon :answer (.-replyText result)))))))
+          (.catch (fn [error]
+                    (clj->js
+                      (tool-result
+                        (ufss/print (assoc beacon
+                                           :answer nil
+                                           :degraded (str error))))))))
+      (clj->js
+        (tool-result
+          (ufss/print (assoc beacon
+                             :answer nil
+                             :degraded "runEphemeralTurn is unavailable in this host")))))))
 (defn- code-schema [] {:type "string"})
 (defn- name-schema [] {:type "string"})
 (defn- budget-schema [] {:type "integer" :minimum 1})
