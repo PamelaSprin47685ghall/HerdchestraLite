@@ -232,6 +232,7 @@
           verdict (cond rejected? :INCOMPLETE all-passed? :PASS :else :FAIL)]
       {:ok (= verdict :PASS)
        :verdict verdict
+       :contract contract
        :rows @rows
        :case-ids (mapv :case-id @rows)
        :missing @missing
