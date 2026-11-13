@@ -1,6 +1,7 @@
 (ns herd.sandbox
   (:require
    ["node:child_process" :as cp]
+   ["node:fs" :as fs-sync]
    ["node:fs/promises" :as fs]
    ["node:path" :as path]
    [clojure.string :as str]))
@@ -90,25 +91,46 @@
   (forget-park! name)
   nil)
 
+(def ^:private max-inline-bytes (* 1024 1024))
+
+(defn- call-log-path []
+  (let [dir (path/join (js/process.cwd) ".herd" "artifacts" "call")]
+    (fs-sync/mkdirSync dir #js {:recursive true})
+    (path/join dir (str "call-" (js/Date.now) ".log"))))
+
+(defn- append-capped [state key chunk log-path]
+  (fs-sync/appendFileSync log-path chunk)
+  (let [current (get @state key)
+        remaining (- max-inline-bytes (count current))]
+    (when (pos? remaining)
+      (swap! state assoc key (str current (subs chunk 0 (min (count chunk) remaining)))))
+    (when (> (count chunk) remaining)
+      (swap! state assoc :truncated true))))
+
 (defn call
   [{:keys [argv cwd] :or {cwd "."}} timeout-ms]
   (js/Promise.
     (fn [resolve reject]
       (let [argv (vec argv)
+            log-path (call-log-path)
             child (cp/spawn (first argv) (clj->js (rest argv))
                             #js {:cwd cwd :stdio #js ["ignore" "pipe" "pipe"]})
-            out (atom "")
-            err (atom "")
+            state (atom {:out "" :err "" :truncated false})
             timer (js/setTimeout
                     (fn []
                       (.kill child "SIGKILL")
                       (reject (ex-info "call timed out" {:code :STALLED})))
                     (or timeout-ms 30000))]
-        (.on (.-stdout child) "data" #(swap! out str %))
-        (.on (.-stderr child) "data" #(swap! err str %))
+        (.on (.-stdout child) "data" #(append-capped state :out (str %) log-path))
+        (.on (.-stderr child) "data" #(append-capped state :err (str %) log-path))
         (.on child "error" (fn [e]
                              (js/clearTimeout timer)
                              (reject e)))
-        (.on child "close" (fn [code]
-                             (js/clearTimeout timer)
-                             (resolve {:exit code :stdout @out :stderr @err})))))))
+        (.on child "close"
+             (fn [code]
+               (js/clearTimeout timer)
+               (resolve {:exit code
+                         :stdout (:out @state)
+                         :stderr (:err @state)
+                         :output-truncated (:truncated @state)
+                         :log log-path})))))))

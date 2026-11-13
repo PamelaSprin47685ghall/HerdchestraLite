@@ -16,7 +16,7 @@
 ### 1.2 能力
 - [x] `cat`、`read`、`write`、`mkdir`、`rm`、`mv`、`ls`、`stat`（基础 fs）。
 - [x] `where`、`whereAll`（精确切片；0/多匹配挂起，`unpark` 注入区间后继续）。
-- [~] `call`（spawn + 超时；缺输出上限、日志、写锁）。
+- [x] `call`（spawn、超时、1 MiB 内联上限、完整日志；缺写锁）。
 - [x] `park`、`unpark`、`abandon`（Promise 挂起；缺期限/多程序隔离）。
 - [ ] `glob`。
 - [ ] `write` 的 `stamp` 复核、写锁、失败保留已写部分语义。
