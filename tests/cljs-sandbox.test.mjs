@@ -1,11 +1,22 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { fileURLToPath } from "node:url";
+import { readFile, writeFile } from "node:fs/promises";
 import * as nbb from "nbb";
 
 let tool;
 let waitTool;
 
 beforeAll(async () => {
+	globalThis.__herdNative = {
+		getRunner: () => ({
+			hasNativeTool: (name) => name === "read" || name === "write",
+			invokeNativeTool: async (name, params) => {
+				if (name === "read") return { content: [{ type: "text", text: await readFile(params.path, "utf8") }] };
+				await writeFile(params.path, params.content, "utf8");
+				return { content: [] };
+			},
+		}),
+	};
 	globalThis.__pi = {
 		tools: new Map(),
 		hooks: new Map(),
