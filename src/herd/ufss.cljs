@@ -209,10 +209,13 @@
               (let [indent (string-column out)
                     rendered (format-string body indent)
                     multiline? (str/includes? rendered "\"\"\"\n")
+                    next-char (when (< end n) (subs text end (inc end)))
+                    comma? (and multiline? (= next-char ","))
                     suffix (if multiline?
-                             (str "\n" (apply str (repeat indent " ")))
+                             (str (if comma? "," "") "\n" (apply str (repeat indent " ")))
                              "")]
-                (recur end (conj out (str rendered suffix))))
+                (recur (if comma? (inc end) end)
+                       (conj out (str rendered suffix))))
               (recur (inc i) (conj out ch)))
             (recur (inc i) (conj out ch))))))))
 
