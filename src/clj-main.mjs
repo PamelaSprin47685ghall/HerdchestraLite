@@ -29,7 +29,7 @@ import { appendOutboundContextTail } from "./prompts/runtime-wires.mjs";
 import { printUfss } from "./clj-sandbox/ufss.mjs";
 import { ARIADNE_BUDGET_FIELD, ARIADNE_GOAL_FIELD, createAriadneStore } from "./scope/ariadne.mjs";
 import { queryBeacon } from "./scope/beacon-query.mjs";
-import { herdError } from "./util/errors.mjs";
+import { herdError, renderError } from "./util/errors.mjs";
 
 const VERSION = "1";
 const ENTRY = "clj.core";
@@ -236,7 +236,7 @@ function errorText(error) {
 function toolFailure(error) {
 	const code = error?.code ?? ":INVALID_ARGUMENT";
 	return {
-		content: [{ type: "text", text: `${code}: ${errorText(error)}` }],
+		content: [{ type: "text", text: renderError(error) }],
 		details: { code },
 		isError: true,
 	};

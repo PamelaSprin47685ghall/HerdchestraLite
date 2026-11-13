@@ -16,9 +16,10 @@ import { resolve } from "node:path";
 const POOL_SIZE = Math.min(8, Math.max(2, availableParallelism?.() ?? 4));
 const pool = { workers: [], nextIdx: 0, seq: 0, pending: new Map() };
 
-function ensurePool() {
+function ensurePool(requested = POOL_SIZE) {
 	if (pool.workers.length > 0) return pool.workers;
-	for (let i = 0; i < POOL_SIZE; i += 1) {
+	const count = Math.min(POOL_SIZE, Math.max(1, requested));
+	for (let i = 0; i < count; i += 1) {
 		const worker = new Worker(new URL("./glob-pool.mjs", import.meta.url), {
 			workerData: { __globPoolWorker: true },
 		});
@@ -52,7 +53,7 @@ function ensurePool() {
  * Returns `{ results: string[] (UFSS-encoded EDN), readEntries: Array }`.
  */
 export async function runGlobInPool({ writeRoot, fnDesc, paths }) {
-	const workers = ensurePool();
+	const workers = ensurePool(paths.length);
 	const chunkCount = Math.min(workers.length, paths.length);
 	const chunks = Array.from({ length: chunkCount }, () => []);
 	for (let i = 0; i < paths.length; i += 1) {

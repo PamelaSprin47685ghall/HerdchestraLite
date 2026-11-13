@@ -380,6 +380,12 @@ function waitForLockChange(target, timeoutMs, signal) {
 				if (filename === undefined || String(filename) === basename(target)) done();
 			});
 			watcher.on("error", done);
+			// Close the lost-wakeup race: the lock may have been released
+			// between the failed acquire and watcher installation.
+			void stat(target).then(
+				() => {},
+				() => done(),
+			);
 		} catch {
 			done();
 		}

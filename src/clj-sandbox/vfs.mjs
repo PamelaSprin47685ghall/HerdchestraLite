@@ -9,7 +9,7 @@
 
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { writeFileAtomic } from "../util/atomic-write.mjs";
 import { herdError, messageOf } from "../util/errors.mjs";
 
@@ -486,7 +486,7 @@ export async function runCall({
 		let logError = null;
 		if (logPath) {
 			try {
-				await writeLog(dirname(logPath), logPath.slice(dirname(logPath).length + 1), log.text);
+				await writeLog(dirname(logPath), basename(logPath), log.text);
 			} catch (error) {
 				logError = messageOf(error);
 				logPath = null;

@@ -877,3 +877,20 @@ done
 - `src/clj-sandbox/inline-worker.mjs` 提供 Worker 消息面，`clj-main` 支持 `workerFactory` 注入；clj-core 测试改用进程内 runtime，不再起 worker 线程。
 - `tests/clj-core-wait.test.mjs` 从 `clj-core.test.mjs` 拆出 4 个计时测试，Bun 可与其他文件并行；测试内 `baseWaitMs` 与 sleep 时长显式注入/缩短。
 - `package.json` 的 `test` 改为 `bun test tests --parallel`：18 个 dogfood 文件、203 tests、约 0.5s，按 CPU 核数并发；直接 `bun test tests` 仍可用但为串行调度。
+
+## 2026-11-13 dogfood 验收修复
+
+- `file-lock.waitForLockChange` 在安装 `fs.watch` 后立即 `stat` 锁文件，关闭“释放发生在 acquire 失败与 watcher 安装之间”的丢失唤醒竞态。
+- `glob-pool.ensurePool` 按实际路径数创建 worker（上限 8），不再为 2 个路径启动 8 个线程。
+- `vfs.runCall` 日志文件名改用 `basename`，避免根目录/尾随分隔符下的切片错误。
+- 验证：`bun run test` 203 pass / 0 fail。
+
+## 2026-11-13 dogfood 最终真实宿主验收
+
+- write/cat: dogfood-probe.txt 内容 dogfood-ok，10 bytes。
+- call: printf call-ok，exit 0，status completed，日志 .herd/artifacts/clj-core/。
+- wait: 无后台任务时返回空闲，不误挂起。
+- time_leap: 目标 dogfood-write-cat，target-call-id 生成；ask_beacon dogfood-beacon-1 返回正确内容，证明 pending 已解析并封存。
+- 名称唯一: 复用 dogfood-write-cat 返回 NAME_TAKEN。
+- toolFailure 改为 renderError 的 EDN+UFSS；dogfood 200 pass / 3 skip / 0 fail，约 630ms。
+- 未验收: 完整 S1-S5、审计、worktree；相关测试仍 disabled。
