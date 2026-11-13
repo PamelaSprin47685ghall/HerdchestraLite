@@ -366,9 +366,9 @@ describe("clj-only async dogfood surface (parallel shard)", () => {
 		expect(out.messages.at(-1).content.at(-1).text).not.toContain("doomed");
 	});
 
-	it("reads CLJS hash literals in program code but not in EDN data", async () => {
+	it("reads UFSS fences in program code and rejects Clojure reader macros in both shims", async () => {
 		expect(() => readUfss("#(+ % 1)")).toThrow("Unknown # dispatch");
-		expect(readCljs("#(+ % 1)")[0].name).toBe("fn");
+		expect(() => readCljs("#(+ % 1)")).toThrow("Unknown # dispatch");
 		const { tools } = fakeHost();
 		const result = await callTool(
 			tools,
@@ -376,15 +376,13 @@ describe("clj-only async dogfood surface (parallel shard)", () => {
 			"cljs-hash",
 			{
 				name: "cljs-hash",
-				code: `[(#(+ % 1) 41)
-   #?(:cljs 7 :clj 8)
-   (count ##"abc"##)
+				code: `[(count ##"abc"##)
    (+ 1 #_2 3)]`,
 			},
 			root,
 		);
 		expect(result.isError).not.toBe(true);
-		expect(result.content[0].text).toContain("[42 7 3 4]");
+		expect(result.content[0].text).toContain("[3 4]");
 	});
 
 		it("always injects language requirement in context tail even when nothing is parked", async () => {
