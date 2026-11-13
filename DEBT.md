@@ -71,9 +71,9 @@
 
 ## D22 `wait` 超时的 runtime-parked 无法 `unpark`
 
-- **缺口**：`wait` 超时的 `park-all!` 只把运行中程序在 `programs` 表标为 `:parked :deadline`，这些程序没有 `sandbox/parked` 的 `:resolve`；`unpark` 对它们抛 `:PROGRAM_UNKNOWN`，程序实际继续运行，只能等它完成或 `abandon`。
-- **影响**：模型收到 `:parked` 后可能尝试恢复而失败；`park-all` 不是真正的表达式级挂起。
-- **下一步**：在 Promise 模型内明确 `:deadline` 与显式 `park` 的区别（回执字段区分），或为超时程序注入可暂停的 await 点；在此之前不得把 deadline 标记宣传为可恢复挂起。
+- **缺口**：`wait` 超时的 `park-all!` 已把程序标为 `:parked :deadline :recoverable false`，但这些程序没有 `sandbox/parked` 的 `:resolve`；`unpark` 仍抛 `:PROGRAM_UNKNOWN`，程序继续运行，只能等它完成或 `abandon`。
+- **影响**：回执已明示不可恢复；`park-all` 仍不是真正的表达式级挂起。
+- **下一步**：为超时程序注入可暂停的 await 点，或明确文档化为“只降级为后台完成”。
 
 ## D24 `stamp` 的 nsec 由浮点 `mtimeMs` 推导
 
@@ -107,9 +107,9 @@
 
 ## D30 `before_agent_start` 的工具面更新未 await
 
-- **缺口**：`apply-tool-surface!` 调 `setActiveTools` 后只挂 `.catch`，`before_agent_start` 不等待其完成；工具面变更可能在当前请求之后才生效。
-- **影响**：真实 `omp -p` smoke 通过，但“本次 prompt 前已完成收窄”没有强保证。
-- **下一步**：让 `before-agent-start` 返回的 handler 等待 `setActiveTools`，或把工具面收窄固定在 `session_start` 后不再逐回合变更。
+- **缺口**：`apply-tool-surface!` 调 `setActiveTools` 后只挂 `.catch`，`before_agent_start` 不等待其完成。尝试把 handler 改成 `^:async` 后，SCI 在 nbb 中把 handler 注册成不可调用的对象，真实宿主会拿不到函数，因此已回退为同步 handler。
+- **影响**：工具面变更可能在当前请求之后才生效；真实 `omp -p` smoke 通过。
+- **下一步**：在保持 handler 可调用的前提下，用 `setActiveTools` 的同步副作用或宿主承诺的初始化顺序解决；不要在 nbb/SCI 中用 `^:async` 包装注册给宿主的 handler。
 
 ## D31 预算与批量上限未实现
 
