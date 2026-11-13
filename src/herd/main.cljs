@@ -128,8 +128,39 @@
     (catch :default _
       #js {:systemPrompt (.-systemPrompt event)})))
 
+(defn- message-anchor [message]
+  (or (.-toolCallId message) (.-tool_call_id message)))
+
+(defn- anchor-index [messages target]
+  (let [n (.-length messages)]
+    (loop [i 0]
+      (if (>= i n)
+        -1
+        (if (= target (message-anchor (aget messages i)))
+          i
+          (recur (inc i)))))))
+
+(defn- experience-message [experience]
+  #js {:role "user"
+       :content (str """
+Time leap experience:
+
+""" experience)})
+
+(defn- context-handler [event _ctx]
+  (let [messages (.-messages event)]
+    (if-let [jump (ariadne/consume-jump!)]
+      (let [target (ariadne/tool-call-id (:target jump))
+            idx (anchor-index messages target)]
+        (if (>= idx 0)
+          #js {:messages (.concat (.slice messages (inc idx))
+                                  #js [(experience-message (:experience jump))])}
+          #js {:messages messages}))
+      #js {:messages messages})))
+
 (defn install-hooks! []
-  (.on js/globalThis.__pi "before_agent_start" before-agent-start))
+  (.on js/globalThis.__pi "before_agent_start" before-agent-start)
+  (.on js/globalThis.__pi "context" context-handler))
 
 (register-all!)
 (install-hooks!)
