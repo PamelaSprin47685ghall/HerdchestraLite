@@ -120,10 +120,17 @@
   (with-lock (fn [] (.rename fs-promises (resolve-path source) (resolve-path target)))))
 
 (defn ls [{:keys [path]}]
-  (-> (.readdir fs-promises (resolve-path path))
-      (.then (fn [entries] {:exists true :entries (vec entries)}))
+  (-> (.readdir fs-promises (resolve-path path) #js {:withFileTypes true})
+      (.then (fn [entries]
+               {:exists true
+                :entries (vec
+                           (map (fn [entry]
+                                  {:name (.-name entry)
+                                   :is-dir (.isDirectory entry)
+                                   :is-file (.isFile entry)
+                                   :is-symlink (.isSymbolicLink entry)})
+                                (array-seq entries)))}))
       (.catch (fn [_] {:exists false :entries []}))))
-
 (defn- glob->regex [pattern]
   (-> pattern
       (string/replace #"[.+^${}()|\\]" #"\$&"#)
@@ -238,13 +245,13 @@
       (loop [i 1 prev (vec (range (inc m)))]
         (if (> i n)
           (peek prev)
-          (let [row (loop [j 0 curr [i]]
+          (let [row (loop [j 1 curr [i]]
                       (if (> j m)
                         curr
                         (let [cost (if (= (nth a (dec i)) (nth b (dec j))) 0 1)
-                              value (min (inc (nth curr j))
-                                         (inc (nth prev (inc j)))
-                                         (+ (nth prev j) cost))]
+                              value (min (inc (nth curr (dec j)))
+                                         (inc (nth prev j))
+                                         (+ (nth prev (dec j)) cost))]
                           (recur (inc j) (conj curr value)))))]
             (if (> (peek row) k)
               nil
