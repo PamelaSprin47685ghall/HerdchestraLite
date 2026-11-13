@@ -60,7 +60,8 @@
 ## D19 完整装配迁移未收口
 
 - **现状**：默认面已接通 `clj_devops`、`wait`、`time_leap`、`ask_beacon`、提示词注入与宿主工具黑名单。
-- **缺口**：完整装配（`review`/`attach_*`、看板、S5 runner、K 路审计、TUI）仍未迁移到 CLJS；旧 `src/*.mjs` 模块仍存在但不由默认入口加载。
+- **现状**：`stages/parsers`、`tenure`、`disclosures`、`scores`、`paths`、`mission`、`store`、`review`、`attach` 与 `util/atomic-write` 已迁移并在 canonical 测试中。
+- **缺口**：宿主工具注册（`review`/`attach_*`/`board_*`）、S1 确认面板、S5 runner、K 路审计、TUI 与 `writeS5Report` 未接线；旧 `src/*.mjs` 仍存在但不由默认入口加载。
 - **下一步**：按 `MIGRATION.md` 台账继续迁移完整装配，完成后删除旧模块。
 
 ## D22 `wait` 超时的 runtime-parked 无法 `unpark`
