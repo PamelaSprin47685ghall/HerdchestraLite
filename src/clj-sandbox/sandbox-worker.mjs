@@ -26,6 +26,8 @@ const state = {
 	callMeta: new Map(),
 	activeSignals: new Map(),
 	writeGateQueues: new Map(),
+	pendingHostTools: new Map(),
+	hostSeq: 0,
 };
 
 function errorText(error) {
@@ -123,12 +125,14 @@ function createControl() {
 	};
 }
 
-function createPorts(root, ownerId, withWriteGate, onCallActivity, onWaitLock) {
+function createPorts(root, ownerId, withWriteGate, onCallActivity, onWaitLock, sessionKey) {
 	return {
 		...(withWriteGate ? { writeGate: createWriteGate(root, ownerId, onWaitLock) } : {}),
 		control: createControl(),
 		identity: { agent_id: ownerId, status: "alive", term_id: "clj-core" },
 		claim: { claim_id: "clj-core", status: "active", term_id: "clj-core" },
+		hostRead: (args) => callHostTool(sessionKey, "read", args),
+		hostWrite: (args) => callHostTool(sessionKey, "write", args),
 		callMeta: (toolCallId) => state.callMeta.get(toolCallId),
 		agentId: ownerId,
 		sessionKey: ownerId,
@@ -136,7 +140,19 @@ function createPorts(root, ownerId, withWriteGate, onCallActivity, onWaitLock) {
 	};
 }
 
-function buildBundle(role, root, ownerId, onCallActivity, onWaitLock) {
+function callHostTool(sessionKey, name, params) {
+	const id = `host-${++state.hostSeq}`;
+	return new Promise((resolve, reject) => {
+		if (!parentPort) {
+			reject(herdError("HOST_API_MISMATCH", "host tool bridge is unavailable outside the sandbox worker"));
+			return;
+		}
+		state.pendingHostTools.set(id, { resolve, reject });
+		parentPort.postMessage({ type: "hostTool", id, sessionKey, name, params });
+	});
+}
+
+function buildBundle(role, root, ownerId, onCallActivity, onWaitLock, sessionKey) {
 	const callLogDir = role === "devops" ? join(root, ".herd", "artifacts", "clj-core") : undefined;
 	if (callLogDir !== undefined) mkdirSync(callLogDir, { recursive: true });
 	return buildSandboxTools({
@@ -145,7 +161,7 @@ function buildBundle(role, root, ownerId, onCallActivity, onWaitLock) {
 			writeRoot: root,
 			...(callLogDir !== undefined ? { callLogDir } : {}),
 		},
-		ports: createPorts(root, ownerId, role === "worker" || role === "devops", onCallActivity, onWaitLock),
+		ports: createPorts(root, ownerId, role === "worker" || role === "devops", onCallActivity, onWaitLock, sessionKey),
 	});
 }
 
@@ -166,6 +182,16 @@ function emitParkedList(sessionKey) {
 if (parentPort && workerData?.__sandboxWorker === true) {
 	parentPort.on("message", async (msg) => {
 		if (!msg || typeof msg !== "object") return;
+
+		if (msg.type === "hostToolDone") {
+			const pending = state.pendingHostTools.get(msg.id);
+			if (pending !== undefined) {
+				state.pendingHostTools.delete(msg.id);
+				if (msg.error) pending.reject(herdError("HOST_API_MISMATCH", msg.error));
+				else pending.resolve(msg.result);
+			}
+			return;
+		}
 
 		if (msg.type === "init") {
 			await loadCherry();
@@ -212,7 +238,7 @@ if (parentPort && workerData?.__sandboxWorker === true) {
 					const onWaitLock = (waiting = true) => {
 						parentPort.postMessage({ type: "waitLock", id, sessionKey, role, waiting });
 					};
-					built = buildBundle(role, root, `${ownerId}:${role}`, onCallActivity, onWaitLock);
+					built = buildBundle(role, root, `${ownerId}:${role}`, onCallActivity, onWaitLock, sessionKey);
 					state.bundles.set(bundleKey, built);
 				}
 			} catch (error) {

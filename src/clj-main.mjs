@@ -531,6 +531,21 @@ export function registerCljTools(pi, deps = {}) {
 			resolvePark({ ok: false, code: "HOST_API_MISMATCH" });
 		}
 	};
+	const invokeHostTool = async (ctx, name, params) => {
+		const holders = [ctx, ctx?.session, ctx?.sessionManager];
+		let tool = null;
+		for (const holder of holders) {
+			if (holder && typeof holder.getToolByName === "function") {
+				tool = holder.getToolByName(name);
+				if (tool) break;
+			}
+		}
+		if (!tool || typeof tool.execute !== "function") {
+			throw herdError("HOST_API_MISMATCH", `host tool is unavailable: ${name}`, { tool: name });
+		}
+		return await tool.execute(`host-${name}-${randomUUID()}`, params, undefined, undefined, ctx);
+	};
+
 	const handleWorkerMessage = (msg) => {
 		if (!msg || typeof msg !== "object") return;
 		if (msg.type === "initDone") {
@@ -556,6 +571,19 @@ export function registerCljTools(pi, deps = {}) {
 			return;
 		}
 		const pool = getPool(state, msg.sessionKey);
+		if (msg.type === "hostTool") {
+			const pool = getPool(state, msg.sessionKey);
+			const ctx = pool.hostToolContext;
+			const worker = shared.worker;
+			if (!ctx || !worker) {
+				worker?.postMessage({ type: "hostToolDone", id: msg.id, error: "host tool context unavailable" });
+				return;
+			}
+			void invokeHostTool(ctx, msg.name, msg.params)
+				.then((result) => worker.postMessage({ type: "hostToolDone", id: msg.id, result }))
+				.catch((error) => worker.postMessage({ type: "hostToolDone", id: msg.id, error: errorText(error) }));
+			return;
+		}
 		if (msg.type === "callActivity") {
 			const { id, active, program } = msg;
 			if (typeof program !== "string" || program.length === 0) return;
@@ -685,6 +713,7 @@ export function registerCljTools(pi, deps = {}) {
 					const root = rootFor(ctx);
 					const sessionKey = hostSessionKey(ctx);
 					const pool = getPool(state, sessionKey);
+					pool.hostToolContext = ctx;
 					if (ariadne) {
 						try {
 							recoverAriadneHistory(ariadne, sessionKey, ctx, callId);
@@ -834,6 +863,7 @@ export function registerCljTools(pi, deps = {}) {
 					})
 						.catch((error) => toolFailure(error))
 						.then((result) => {
+							if (pool.hostToolContext === ctx) pool.hostToolContext = null;
 							cleanupAbort();
 							clearGraceTimer();
 							pool.pendingForeground.delete(validated.programName);

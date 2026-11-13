@@ -154,10 +154,11 @@ afterEach(() => {
 describe("capability matrix", () => {
 	it("matches AGENTS.md §4.2 for all six roles", () => {
 		expect(Object.keys(CAPABILITY_MATRIX)).toEqual(["plan", "devops", "review", "worker", "holder", "auditor"]);
-		expect([...CAPABILITY_MATRIX.plan]).toEqual(["cat", "where", "whereAll", "park", "unpark", "abandon"]);
+		expect([...CAPABILITY_MATRIX.plan]).toEqual(["cat", "read", "where", "whereAll", "park", "unpark", "abandon"]);
 		expect([...CAPABILITY_MATRIX.devops]).toEqual([...CAPABILITY_MATRIX.worker, "call"]);
 		expect([...CAPABILITY_MATRIX.review]).toEqual([
 			"cat",
+			"read",
 			"stat",
 			"ls",
 			"glob",
@@ -168,6 +169,7 @@ describe("capability matrix", () => {
 		]);
 		expect([...CAPABILITY_MATRIX.worker]).toEqual([
 			"cat",
+			"read",
 			"stat",
 			"ls",
 			"glob",
@@ -317,7 +319,7 @@ describe("capability matrix", () => {
 
 	it("publishes per-tool descriptions that name the denied capabilities", () => {
 		const plan = describeSandboxTool("clj_plan");
-		expect(plan).toContain("Bound capabilities: cat, where, whereAll, park, unpark");
+		expect(plan).toContain("Bound capabilities: cat, read, where, whereAll, park, unpark");
 		expect(plan).toContain("No stat, ls, write, mkdir, rm, mv, or call");
 
 		const review = describeSandboxTool("clj_review");
@@ -1425,5 +1427,36 @@ describe("observed read facts", () => {
 		expect(verified.ok).toBe(false);
 		expect(verified.reason).toBe("term-id-required");
 		expect(bundle.retireActor().ok).toBe(false);
+	});
+});
+
+
+describe("host read/write proxies", () => {
+	it("delegates read and write to injected host ports", async () => {
+		const root = sandbox();
+		const calls = [];
+		const bundle = buildSandboxTools({
+			role: "devops",
+			roots: { writeRoot: root },
+			ports: {
+				...makePorts(),
+				hostRead: async (args) => {
+					calls.push(["read", args]);
+					return { content: [{ type: "text", text: "HOST-READ" }] };
+				},
+				hostWrite: async (args) => {
+					calls.push(["write", args]);
+					return { content: [{ type: "text", text: "HOST-WRITE" }] };
+				},
+			},
+		});
+		const read = await runTool(bundle, { name: "host-read", code: '(read {:path "README.md"})' });
+		expect(field(field(read.receipt, "value"), "content")).toBe("HOST-READ");
+		const write = await runTool(bundle, { name: "host-write", code: '(write {:path "out.txt" :content "hello"})' });
+		expect(field(field(write.receipt, "value"), "content")).toBe("HOST-WRITE");
+		expect(calls).toEqual([
+			["read", { path: "README.md" }],
+			["write", { path: "out.txt", content: "hello" }],
+		]);
 	});
 });

@@ -58,6 +58,7 @@ function ednField(map, name) {
 
 const WORKER_CAPABILITIES = Object.freeze([
 	"cat",
+	"read",
 	"stat",
 	"ls",
 	"glob",
@@ -80,9 +81,9 @@ const WORKER_CAPABILITIES = Object.freeze([
  * instead of an unbound-symbol error.
  */
 export const CAPABILITY_MATRIX = Object.freeze({
-	plan: Object.freeze(["cat", "where", "whereAll", "park", "unpark", "abandon"]),
+	plan: Object.freeze(["cat", "read", "where", "whereAll", "park", "unpark", "abandon"]),
 	devops: Object.freeze([...WORKER_CAPABILITIES, "call"]),
-	review: Object.freeze(["cat", "stat", "ls", "glob", "where", "whereAll", "unpark", "abandon"]),
+	review: Object.freeze(["cat", "read", "stat", "ls", "glob", "where", "whereAll", "unpark", "abandon"]),
 	worker: WORKER_CAPABILITIES,
 	holder: Object.freeze([...WORKER_CAPABILITIES, "call"]),
 	auditor: Object.freeze([...WORKER_CAPABILITIES, "call"]),
@@ -90,6 +91,7 @@ export const CAPABILITY_MATRIX = Object.freeze({
 
 const CAPABILITY_NAMES = new Set([
 	"cat",
+	"read",
 	"stat",
 	"ls",
 	"glob",
@@ -746,10 +748,53 @@ function auditorSandboxReady(context) {
 	return sandbox?.available === true && typeof sandbox.runCommand === "function" && runCommand === sandbox.runCommand;
 }
 
+function ednArgsToObject(args) {
+	if (args instanceof Map) {
+		const out = {};
+		for (const [key, value] of args) {
+			out[key instanceof EdnKeyword ? key.name : String(key)] = value;
+		}
+		return out;
+	}
+	if (args && typeof args === "object") return { ...args };
+	return {};
+}
+
+function hostResultText(result) {
+	if (result && Array.isArray(result.content)) {
+		return result.content
+			.filter((block) => block && typeof block.text === "string")
+			.map((block) => block.text)
+			.join("\n");
+	}
+	if (typeof result === "string") return result;
+	return "";
+}
+
 function makeCapabilityTable(context, ports, execution) {
 	const table = {};
 	const capabilities = new Set(CAPABILITY_MATRIX[context.role]);
 
+	if (capabilities.has("read")) {
+		table.read = async (args) => {
+			const requested = requireArgumentString(args, "path");
+			if (typeof ports.hostRead !== "function") {
+				const target = classifyRead(context, requested);
+				const result = vfsRead(target.batch, target.path);
+				return new Map([
+					[kw("content"), result.content],
+					[kw("stamp"), stampValue(result.stamp)],
+					[kw("virtual"), result.virtual],
+				]);
+			}
+			const result = await ports.hostRead(ednArgsToObject(args));
+			return new Map([
+				[kw("path"), requested],
+				[kw("content"), hostResultText(result)],
+				[kw("host"), true],
+			]);
+		};
+	}
 	if (capabilities.has("cat")) {
 		table.cat = (args) => {
 			const requested = requireArgumentString(args, "path");
@@ -799,10 +844,19 @@ function makeCapabilityTable(context, ports, execution) {
 		};
 	}
 	if (capabilities.has("write")) {
-		table.write = (args) => {
-			const target = classifyWrite(context, requireArgumentString(args, "path"));
-			const result = vfsWrite(target.batch, target.path, requireArgumentString(args, "content"));
-			return operationPath(result, ["path", "bytes", "replaced"]);
+		table.write = async (args) => {
+			const requested = requireArgumentString(args, "path");
+			if (typeof ports.hostWrite !== "function") {
+				const target = classifyWrite(context, requested);
+				const result = vfsWrite(target.batch, target.path, requireArgumentString(args, "content"));
+				return operationPath(result, ["path", "bytes", "replaced"]);
+			}
+			const result = await ports.hostWrite(ednArgsToObject(args));
+			return new Map([
+				[kw("path"), requested],
+				[kw("content"), hostResultText(result)],
+				[kw("host"), true],
+			]);
 		};
 	}
 	if (capabilities.has("mkdir")) {
@@ -1091,12 +1145,15 @@ const TOOL_DESCRIPTION_BY_NAME = Object.freeze({
  * text covers both Worker (call refused) and Holder (call granted) because the
  * same registered tool serves both sessions.
  */
+const HOST_READ_WRITE_NOTE =
+	"`cat` returns exact byte-for-byte content. `read` delegates to the host read tool and guarantees only readability, not exact fidelity. `write` delegates to the host write tool.";
+
 export function describeSandboxTool(toolName) {
 	const description = TOOL_DESCRIPTION_BY_NAME[toolName];
 	if (typeof description !== "string") {
 		throw invalidArgument(`unknown sandbox tool: ${toolName}`, { toolName });
 	}
-	return description;
+	return `${description}\n\n${HOST_READ_WRITE_NOTE}`;
 }
 
 function success(text, details = {}) {
