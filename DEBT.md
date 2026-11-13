@@ -8,12 +8,11 @@
 - **影响**：当前产品只能验证执行器，不能执行 S1–S5 使命。
 - **下一步**：按 §2.3 落地 `review` + `attach_*`，再恢复完整入口。
 
-## D1 review + attach 生命周期尚未实现
+## D1 review + attach 生命周期收尾
 
-- **缺口**：`src/stages/gate-tools.mjs` 仍是 `advance_s1..s4`；`submit_review` 只允许 S5；`normalizeFindings` 拒绝 `nil`；`finishStage` 把晋级、工具面切换与简报注入绑在一起。`src/stages/contract.mjs` 仍有 `freezeDocument`、`verifyContractPrefix`、`realign`。
-- **设计**：`review` 的 findings 与 board 合一；空账只置 attach-ready；`attach_brainstorm` / `attach_manual_tests` / `attach_dev_guide` / `attach_coordination` 才写交付物、退休 tenure、写 barrier、启动 successor 并注入下一阶段简报。S1 只提交一个 markdown；S2 落 `s2-cases.edn`；S3 无 modules；S4 只收 `markdown + promela`（pml 不校验）。
-- **影响**：当前源码与 SSOT 不一致，不能按新设计做真实 dogfood。
-- **下一步**：先改 `gate-tools`、`contract`、`main`、`board` 与提示词；删除 `advance_*`、`:frozen`、`contract-line`、`realign`。
+- **已完成**：`contract.mjs` 已提供 `readBoard` / `writeBoard` / `archiveBoard` / `advanceTenure`；`main.mjs` 的 `STAGE_SURFACES` 已改为 review/attach；`gate-tools.mjs` 的 `advance_s1..s4` digest 分支已删除；frozen 哈希、`realign` 与 `contract-line` 已移除。
+- **剩余缺口**：`main.mjs` 仍保留临时 `verifyContract()` stub 与审计端口调用点；旧测试仍可能断言 `advance_*` / frozen；`attach_*` 的 barrier、S1 人工确认与 successor 注入尚未跑通完整窄测试。
+- **下一步**：删除 `verifyContract` stub 与审计端口调用点；重写 `stages-gate-tools` / `stages-contract` / `main-bootstrap` 测试到 review/attach 合同；跑 `attach-lifecycle`、`tenure`、`stages-gate-tools`、`stages-contract`。
 
 ## D2 S5 单工作区编排尚未落地
 
