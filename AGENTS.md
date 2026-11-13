@@ -1525,7 +1525,7 @@ export function buildUnattendedNudge({ stage, expectedTool, openItems = [], park
 HerdchestraLite/
 ├── AGENTS.md                     # 本文件：Lite 最高规格说明书 (SSOT)
 ├── DEBT.md                       # 相对本规格的已知缺口队列（做完即删）
-├── HACK.md                       # omp 宿主深路径、cherry-cljs 与平台实测记录
+├── HACK.md                       # omp 宿主深路径、nbb 与平台实测记录
 ├── HISTORY.md                    # 可选：历史取舍与被拒方案
 ├── package.json                  # dependencies: { "nbb": "<exact>" }；声明清单入口
 ├── biome.json
@@ -1534,18 +1534,24 @@ HerdchestraLite/
 └── src/
     ├── AGENTS.md                 # 全局架构师装配笔记与模块单向依赖图
     ├── bootstrap-main.mjs        # 清单入口 1：惰性 import("./main.mjs")
-    ├── clj-main.mjs              # 当前清单入口：默认模式，只暴露 clj_devops + wait + time_leap + ask_beacon
+    ├── clj-main.mjs              # 薄引导：globalThis.__pi + addClassPath + loadFile("herd/main.cljs")
+    ├── herd/
+    │   ├── main.cljs             # 工具注册：clj_devops + wait；后续 time_leap/ask_beacon/命令
+    │   ├── sandbox.cljs          # 能力：fs、where、call、park/unpark/abandon
+    │   ├── macros.cljc           # park/where/unpark/abandon -> await
+    │   ├── repl.cljs             # 程序状态、超时、wait、park 通知
+    │   └── ufss.cljs             # EDN + UFSS 读取、UfssString 打印、prompt note
     ├── main.mjs                  # 主装配器：提示词、review/attach、沙箱、蜂群、TUI 与命令
     ├── host/
-    │   ├── imports.mjs           # 宿主与 cherry-cljs 的 eager 导入集中处；重导出 native-runner
+    │   ├── imports.mjs           # 宿主与 nbb 的 eager 导入集中处；重导出 native-runner
     │   ├── native-runner.mjs     # 唯一受控原型捕获：ExtensionRunner.createContext → live runner
     │   └── subprocess.mjs        # runSubprocess 封装（超时、递归 AbortSignal、Agent Hub 产物）
     ├── util/
     │   ├── atomic-write.mjs      # 同目录 .tmp + fsync + rename
     │   └── file-lock.mjs         # wx 排他锁、PID 存活检测、陈旧锁回收
     ├── clj-sandbox/
-    │   ├── ufss.mjs              # EDN + UFSS 读取器与确定性阶梯 Pretty Printer
-    │   ├── evaluator.mjs         # cherry-cljs 异步求值器、符号表隔离、park/unpark 续体表
+    │   ├── ufss.mjs              # 旧 EDN + UFSS 实现（迁移后删除，CLJS 版在 src/herd/ufss.cljs）
+    │   ├── evaluator.mjs         # 旧 CEK 解释器（迁移后删除，nbb 版在 src/herd/repl.cljs）
     │   ├── where.mjs             # UTF-16 精确匹配与 Ukkonen 带状 DP 诊断
     │   ├── sandbox-worker.mjs    # 独立 Worker 线程宿主（隔离 CEK/where 计算）
     │   ├── glob-pool.mjs         # 多核 Worker 池（glob :exec 并发求值）
@@ -1726,7 +1732,7 @@ scope → main
 | 维度 | 独立标准版 | Herdchestra Lite | 语义是否同构 |
 |---|---|---|---|
 | 运行底座 | Clojure/JVM 单机单例 + Datalevin + Missionary | `omp` 进程内 `.mjs` + 文件锁 + EDN/JSONL | 否（物理不同） |
-| 运行时依赖 | Clojure/Java 生态 | 仅 `cherry-cljs` | 否 |
+| 运行时依赖 | Clojure/Java 生态 | 仅 `nbb`（Node 上的 SCI） | 否 |
 | 仓库守望 | `Steward` + `Standing Sphinx` 常驻 | 无；人类 `/herd` 准入，使命结束即空闲 | 否（Lite 非目标） |
 | 规划阶段 | S1 → S2 → S3 → 待执行 | S1 → S2 → S3 → S4 → S5 | 是（Lite 把测试/协调显式化） |
 | 规划底稿 | 单文件 `plans/<name>.md` | 阶段文件 `plans/<slug>/s1..s4-*.md` + `s4-coordination.pml` + `.herd/missions/<slug>/s2-cases.edn` | 同构，外皮不同 |
@@ -1737,7 +1743,7 @@ scope → main
 | 多 worktree | Steward 按 Slice fork/join | 暂不进入 dogfood 面；`worktree.mjs` 休眠 | 否（当前裁剪） |
 | 令牌 | `take-or-die` | `board_take_or_die` | 是（T01–T13 共享） |
 | 文件提交 | 直通写入 + $W$ | 同构；两版都不做批内预演 | 是 |
-| 沙箱 | JVM Clojure | `cherry-cljs` + Promise-CPS | 是（EDN/UFSS/续体同构） |
+| 沙箱 | JVM Clojure | `nbb`（SCI）+ Promise 挂起 | 是（EDN/UFSS/续体同构） |
 | 工作台 | Fulcro + Framework7 Web | `@oh-my-pi/pi-tui` 双态看板 | 否 |
 | 终局审计 | 单一可见 auditor 全 CASE | K 名并发，一 CASE 一 auditor | 否（Lite 独有） |
 | 环境供应 | Pixi + MSYS2 | 宿主环境；`HACK.md` 记录 | 否 |
@@ -1753,7 +1759,7 @@ scope → main
 
 | 旧实现 | 新 Lite 规格 |
 |---|---|
-| `dependencies: { pi-context, pi-goal-x }` | 运行时只保留 `cherry-cljs`；删除两个旧依赖。 |
+| `dependencies: { pi-context, pi-goal-x }` | 运行时只保留 `nbb`；删除两个旧依赖。 |
 | 三个清单入口，含 `bootstrap-editor-theme` | 单一主入口（Ariadne 归属 `src/scope/`）；主题垫片与 `tool-gate` 删除。 |
 | `installLiveSessionCapture` 改写 `AgentSession.prototype.getContextUsage` | 禁止该猴子补丁；上下文用量只读宿主公开 API。除 §1.1 的受控 `ExtensionRunner.createContext` 捕获外，不允许其他原型改动。 |
 | `TUI.prototype` 主题 getter、`goalUi` Proxy | 删除；TUI 只使用公开组件接口。 |
@@ -1765,7 +1771,7 @@ scope → main
 | 无 Nudge 实现 | Nudge + 空转退避 + 上游退避是核心协议。 |
 | `tool-gate` 只注入两个字段，无 Scope/intent | 删除 tool-gate 与旧 Scope 注解；语言约束由 `context` 尾注承担，Ariadne 归属 `src/scope/`。 |
 | 无多 Worktree 编排 | 当前 dogfood 单工作区；`fork_slices`/`join_slice` 保留为后续完整装配。 |
-| 无 `cherry-cljs` 沙箱 | REPL、宿主写、call runner、`where`/`park`/`unpark`。 |
+| 无 ClojureScript 沙箱 | `nbb`/SCI 沙箱、宿主写、call runner、`where`/`park`/`unpark`。 |
 | 同目录多子代理无写锁 | `path` 令牌 + `global` 令牌 + 跨进程粗锁 + 宿主写 + `stamp` 复核；无批内 VFS。 |
 | 验收失败只写 FAIL 报告 | 未达标 CASE 自动转修复 Slice/根任务，循环到全 PASS。 |
 
@@ -1872,7 +1878,11 @@ scope → main
 | attach 接力 | 逻辑接力：attach 提交后切换 tenure，用 hackContext 切分支使旧对话不可见，不新开会话 | 主会话保持 Coordinator，避免每次 attach 重建上下文 | 每次 attach 启动新的 Plan 子会话 |
 | 单工作区静止 | 单工作区 S5 的 quiescence 不含 `--ff-only`；ff 仅多 worktree 装配适用 | 当前 dogfood 没有 worktree，保留 ff 会制造不存在的条件 | 在单工作区要求 ff dry-run |
 | 审计返回 | 新增 `attach_case_audit` 提交分数与报告；不要求 evidence 目录 | 能用流程解决的不用证据目录；避免与审计员路径边界冲突 | 强制 `plans/<slug>/evidence/<case_id>/` |
-| attach 面板 | 工具执行内阻塞：approve 解除并继续，revise 留下重做，deny 转 `ask_user`，面板不可用才 pending | 阻塞符合旧面板行为；deny 交回人类说明 | 全部走 pending 异步 |### 10.5 参考索引
+| attach 面板 | 工具执行内阻塞：approve 解除并继续，revise 留下重做，deny 转 `ask_user`，面板不可用才 pending | 阻塞符合旧面板行为；deny 交回人类说明 | 全部走 pending 异步 |
+| 运行时 | `nbb`（Node 上的 SCI）+ 薄 `.mjs` 引导 + `src/herd/*.cljs` | 官方 reader、真宏、`^:async`/`await`、CLJS 持久值；mjs 只做宿主注入 | `cherry-cljs` + 自建 CEK；scittle 浏览器发行版 |
+| UFSS 打印 | 先 UFSS（`UfssString` + `IPrintWithWriter`）再 `cljs.pprint`；多行 body 顶格，`""",` 同行 | pprint 在排版阶段看到最终 fence；宽容缩进与尾随闭合文本 | 先 pprint 后字符串替换；闭合围栏独占一行；缩进不足报错 |
+
+### 10.5 参考索引
 
 外部权威只用于支撑方法与工程判据，不替代本规格。实现时以本文件与宿主类型声明为准。
 
@@ -1907,7 +1917,7 @@ scope → main
 **协议与格式**
 
 - EDN 规范（Extensible Data Notation）。
-- ClojureScript 核心库与 `cherry-cljs`（不可变集合、Keyword/Symbol、结构相等）。
+- ClojureScript 核心库与 `nbb`/SCI（不可变集合、Keyword/Symbol、结构相等、真宏、`^:async`/`await`）。
 - Esko Ukkonen, “On approximate string matching”, 1985（带状 DP）。
 - Git worktree / rebase / fast-forward 官方文档。
 - `omp`（oh-my-pi）扩展、工具、子代理、TUI 与 Agent Hub 文档；以宿主当前版本类型声明为准，实测差异记入 `HACK.md`。
