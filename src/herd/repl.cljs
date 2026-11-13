@@ -102,6 +102,7 @@
 
 (defn run [name code deadline-ms]
   (already-running! name)
+  (sandbox/reset-budget! name)
   (swap! running conj name)
   (reset! sandbox/current-name name)
   (let [n (notifier name)

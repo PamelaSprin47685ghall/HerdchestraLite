@@ -80,6 +80,31 @@
 (defn read [{:keys [path]}]
   (.readFile fs-promises (resolve-path path) "utf8"))
 
+(defonce budgets (atom {}))
+
+(defn reset-budget!
+  ([name] (reset-budget! name {}))
+  ([name {:keys [max-bytes max-ops]
+          :or {max-bytes (* 16 1024 1024) max-ops 256}}]
+   (swap! budgets assoc name {:used-bytes 0 :used-ops 0
+                              :max-bytes max-bytes :max-ops max-ops})
+   nil))
+
+(defn- charge! [name bytes ops]
+  (let [{:keys [used-bytes used-ops max-bytes max-ops]}
+        (get @budgets name {:used-bytes 0 :used-ops 0
+                            :max-bytes (* 16 1024 1024) :max-ops 256})
+        next-bytes (+ used-bytes bytes)
+        next-ops (+ used-ops ops)]
+    (when (> next-bytes max-bytes)
+      (throw (ex-info "batch byte budget exceeded"
+                      {:code :LIMIT_EXCEEDED :bytes next-bytes :limit max-bytes})))
+    (when (> next-ops max-ops)
+      (throw (ex-info "batch operation budget exceeded"
+                      {:code :LIMIT_EXCEEDED :ops next-ops :limit max-ops})))
+    (swap! budgets assoc name {:used-bytes next-bytes :used-ops next-ops
+                               :max-bytes max-bytes :max-ops max-ops})))
+
 (defn- stamp-of [stats]
   {:mtimeSec (Math/floor (/ (.-mtimeMs stats) 1000))
    :mtimeNsec (Math/floor (* (mod (.-mtimeMs stats) 1000) 1000000))
@@ -118,6 +143,22 @@
 
 (defn mv [{:keys [source target]}]
   (with-lock (fn [] (.rename fs-promises (resolve-path source) (resolve-path target)))))
+
+(defn write-with-name [name request]
+  (charge! name (js/Buffer.byteLength (:content request) "utf8") 1)
+  (write request))
+
+(defn mkdir-with-name [name request]
+  (charge! name 0 1)
+  (mkdir request))
+
+(defn rm-with-name [name request]
+  (charge! name 0 1)
+  (rm request))
+
+(defn mv-with-name [name request]
+  (charge! name 0 1)
+  (mv request))
 
 (defn ls [{:keys [path]}]
   (-> (.readdir fs-promises (resolve-path path) #js {:withFileTypes true})
