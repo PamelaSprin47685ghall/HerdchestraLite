@@ -330,31 +330,51 @@ Time leap experience:
            :a (subs a (max 0 (- i 40)) (min (count a) (+ i 40)))
            :b (subs b (max 0 (- i 40)) (min (count b) (+ i 40)))})))))
 
+(defn- common-prefix-length [a b]
+  (let [n (min (count a) (count b))]
+    (loop [i 0]
+      (if (>= i n)
+        n
+        (if (= (nth a i) (nth b i))
+          (recur (inc i))
+          i)))))
+
 (defn- probe-request [event]
   (let [payload (or (.-payload event) event)]
     (try
-      (let [system (str (.-system payload))
+      (let [system (str (or (.-system payload) (.-systemPrompt payload) ""))
             tools (try (js/JSON.stringify (or (.-tools payload) #js []))
                        (catch :default _ "unserializable"))
+            messages (try (js/JSON.stringify (or (.-messages payload) #js []))
+                          (catch :default _ "unserializable"))
             system-hash (sha256-text system)
             tools-hash (sha256-text tools)
+            messages-hash (sha256-text messages)
             prev @cache-probe]
         (when (or (nil? prev)
                   (not= system-hash (:system-hash prev))
-                  (not= tools-hash (:tools-hash prev)))
+                  (not= tools-hash (:tools-hash prev))
+                  (not= messages-hash (:messages-hash prev)))
           (let [fs (js/require "node:fs")
                 entry {:at (js/Date.now)
+                       :payload-keys (vec (js/Object.keys payload))
                        :system-hash system-hash
                        :tools-hash tools-hash
+                       :messages-hash messages-hash
                        :system-len (count system)
                        :tools-len (count tools)
+                       :messages-len (count messages)
+                       :common-prefix (when prev
+                                        (common-prefix-length (:messages prev) messages))
                        :system-diff (when prev (first-diff (:system prev) system))
-                       :tools-diff (when prev (first-diff (:tools prev) tools))}]
+                       :tools-diff (when prev (first-diff (:tools prev) tools))
+                       :messages-diff (when prev (first-diff (:messages prev) messages))}]
             (.mkdirSync fs ".herd" #js {:recursive true})
             (.appendFileSync fs ".herd/cache-probe.jsonl"
                              (str (js/JSON.stringify (clj->js entry)) "\n"))))
-        (reset! cache-probe {:system system :tools tools
-                             :system-hash system-hash :tools-hash tools-hash})
+        (reset! cache-probe {:system system :tools tools :messages messages
+                             :system-hash system-hash :tools-hash tools-hash
+                             :messages-hash messages-hash})
         payload)
       (catch :default _ payload))))
 (defn install-hooks! []
