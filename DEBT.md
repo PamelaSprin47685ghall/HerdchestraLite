@@ -117,3 +117,8 @@
 - **缺口**：`write` 有单文件 2 MiB 上限，但 `mkdir`/`rm`/`mv` 的 256 路径操作、单次调用 16 MiB 总量与多路径批量预算未实现；`call` 的 64 MiB 会话日志上限也未实现。
 - **影响**：超出规格上限的批量写不会被 `:LIMIT_EXCEEDED` 拒绝；依赖宿主/OS 报错。
 - **下一步**：在 `repl.run` 的每程序记账里累计路径操作与字节数，超限时拒绝后续步骤并保留已写部分。
+## D32 `abandon` 不中止遗留 `call` 子进程
+
+- **缺口**：`abandon` 现已 reject 停靠程序并让 `wait` 收集 `:failed :ABANDONED`，但它不持有 `call` 的 child/锁句柄；若程序在 `await (call ...)` 上，reject park 的 Promise 不能杀死子进程，`$W$` 仍被该 `call` 持有。
+- **影响**：放弃一个正在 `call` 的程序不会立即释放写锁；需要等命令自然结束或进程退出。
+- **下一步**：为 `call` 注册可取消句柄（child + lock release）到程序状态，`abandon` 时先 kill/释放，再 reject 程序；补 F12 类交错测试。
