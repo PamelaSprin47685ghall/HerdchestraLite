@@ -12,9 +12,19 @@
 (defn- tool-result [text]
   {:content [(text-block text)]})
 
+(defn- normalized-error [error]
+  (let [data (ex-data error)
+        message (str error)]
+    (merge data
+           {:code (or (:code data)
+                      (when (str/includes? message "Could not resolve symbol")
+                        :CAPABILITY_DENIED)
+                      :INTERNAL)
+            :message message})))
+
 (defn- tool-error [error]
   {:isError true
-   :content [(text-block (str error))]})
+   :content [(text-block (ufss/print (normalized-error error)))]})
 
 (defn- byte-length [text]
   (js/Buffer.byteLength text "utf8"))
