@@ -10,8 +10,7 @@
  */
 
 import { herdError } from "../util/errors.mjs";
-import { printUfss } from "./edn-writer.mjs";
-import { EdnKeyword, EdnList, EdnSymbol } from "./edn-value.mjs";
+import { EdnKeyword, EdnList, EdnSymbol, ednIdentity } from "./edn-value.mjs";
 import { readUfssLiteral } from "./ufss-literal.mjs";
 
 const TAB = 0x09;
@@ -147,7 +146,7 @@ class EdnReader {
 		switch (code) {
 			case QUOTE:
 				if (this.text.startsWith('"""', this.index) && this.text[this.index + 3] === "\n") {
-					return this.readBareBlock();
+					return this.readLiteral();
 				}
 				return this.readStandardString();
 			case HASH:
@@ -170,7 +169,7 @@ class EdnReader {
 		}
 	}
 
-	readBareBlock() {
+	readLiteral() {
 		const literal = readUfssLiteral(this.text, this.index);
 		if (literal.ok === true) {
 			this.index = literal.nextIndex;
@@ -243,16 +242,10 @@ class EdnReader {
 	}
 
 	readHashValue() {
-		const start = this.index;
 		if (this.text.startsWith("#{", this.index)) {
 			return this.readSet();
 		}
-		const literal = readUfssLiteral(this.text, this.index);
-		if (literal.ok === true) {
-			this.index = literal.nextIndex;
-			return literal.value;
-		}
-		this.fail(literal.code, literal.message, literal.index, literal.data);
+		return this.readLiteral();
 	}
 
 	readList() {
@@ -312,7 +305,7 @@ class EdnReader {
 			}
 			const value = this.readValue();
 
-			const identity = printUfss(key);
+			const identity = ednIdentity(key);
 			if (keys.has(identity) || values.has(key)) {
 				this.fail("INVALID_ARGUMENT", "Map has a duplicate key", keyIndex);
 			}
@@ -338,7 +331,7 @@ class EdnReader {
 
 			const valueIndex = this.index;
 			const value = this.readValue();
-			const identity = printUfss(value);
+			const identity = ednIdentity(value);
 			if (seen.has(identity) || values.has(value)) {
 				this.fail("INVALID_ARGUMENT", "Set has a duplicate value", valueIndex);
 			}

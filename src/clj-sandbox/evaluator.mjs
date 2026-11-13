@@ -41,7 +41,7 @@ import {
 	reSeqStep as regexWorkerSeqStep,
 	stringReplace as regexWorkerStringReplace,
 } from "./regex-worker.mjs";
-import { EdnKeyword, EdnList, EdnSymbol, printUfss, readCljs, readUfss } from "./ufss.mjs";
+import { EdnKeyword, EdnList, EdnSymbol, printUfss, readCljs } from "./ufss.mjs";
 import { findAll, findUnique } from "./where.mjs";
 
 const TEXT_ENCODER = new TextEncoder();
