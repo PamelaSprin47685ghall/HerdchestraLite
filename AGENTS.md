@@ -173,7 +173,7 @@ Lite 的实现只能依赖以下宿主语义。具体类型签名以 `omp` 当�
 4. **全 CASE 并发独立实操审计，框架确定性汇总（L04）。** S5 收尾时，若 `.herd/missions/<slug>/s2-cases.edn` 定义了 $K$ 个 CASE，框架同时启动 $K$ 名独立的可见 `Manual Auditor`（每名只负责 1 个 CASE，各自拥有独立的 `tmux` 会话名、`/tmp` 破坏副本与 `plans/<slug>/evidence/<case_id>/` 目录，对主工作区严格只读）。CASE 数据集是 CASE 成员、阈值、路径与评分细则的唯一定义来源；每名审计员通过 `submit_case_audit` 提交双视角得分与报告；框架收集全部 $K$ 份结果，计算 `min(user_score, developer_score)`，汇总写出 `plans/<slug>/s5-report.md`，裁决结案或打回返工。任何自动化测试、CI、构建或覆盖率都不构成验收证据。见 §2.6。
 5. **宏观中心化换任与微观去中心化蜂群严格咬合（L05）。** S5 在单工作区内以中心化评估窗口开启：单一主模型 `Reviewer` 用只读 `clj_review` 核验现场并调用 `review`；若 `findings` 非空，`Reviewer` 退场，系统把每条台账实例化为看板根任务并 `wake-all` 唤醒 `@task` 蜂群；仅当全部根任务 `:done`、未结任务集合为空、无在途动作且 `Holder` 已无责退休时，原子触发接力屏障：退休本任、写入上下文屏障、启动无前任对话包袱的新任 `Reviewer`。没有 Slice 队列、worktree 或 join 循环。见 §2.5。
 6. **父项始终保留实质，严禁子项完成自动关闭父项（L06）。** 看板中拆分优先于原子认领；父任务 `board_split` 出子项后进入 `:waiting`，子项全部 `:done` 仅解除父项等待使其恢复 `:ready`，绝不自动折算为父项 `:done`，且严禁在同一回合内顺手关闭刚恢复的父项。父项必须凭独立的合龙与集成结果显式 `board_finish`。见 §3.4。
-7. **工作区写入一律经 ClojureScript 沙箱 VFS 干跑 + 纳秒 `stamp` + 写入口 $W$（L07）。** `cat` / `stat` 不加锁，自动采集精确凭据 `stamp = {mtime-sec, mtime-nsec, size}`（忽略 `atime`）。REPL 内的 `write` / `mkdir` / `rm` / `mv` 先按执行顺序作用于批内内存 VFS；程序正常返回（或 `call` 前排空）时申请该 tenure 的写锁 $W$，在锁内复核全部 `read-set`（含只读依赖文件）与结构条件，固定 `:applying` 资格后一次性原子落盘。任何可拒绝冲突必须在触碰真实磁盘前拒绝；正常路径零回滚。见 §4.3。
+7. **工作区写入一律经 ClojureScript 沙箱 VFS 干跑 + 纳秒 `stamp` + 写入口 $W$（L07）。** `cat` / `stat` 不加锁，自动采集精确凭据 `stamp = {mtime-sec, mtime-nsec, size}`（忽略 `atime`）。REPL 内的 `write` / `mkdir` / `rm` / `mv` 先按执行顺序作用于批内内存 VFS；程序正常返回（或 `call` 前排空）时申请该 tenure 的写锁 $W$，在锁内复核全部 `read-set`（含只读依赖文件）与结构条件，固定 `:applying` 资格后一次性原子落盘。任何可拒绝冲突必须在触碰真实磁盘前拒绝；正常路径零回滚。默认 Worker 的 `read`/`write` 直接代理宿主工具，不进入 VFS/`read-set`/$W$；`cat`/`stat` 与无 host 端口时的 VFS 回退仍遵守本节。见 §4.3。
 8. **抢令牌（`board_take_or_die`）不可逆，持令者独占 `call` 且无责即死，新生无记忆（L08）。** 普通个体在 `clj_worker` 中调用 `(call ...)` 一律拒收 `:TOKEN_REQUIRED`。个体仅在耗尽有价值的受保护工作且存在未结 `:needs-token` 任务时调用 `board_take_or_die`：赢者成为唯一 `Holder`，动态承担全看板 `:needs-token` 责任（仅在单次 `call` 运行期或文件提交期占 $W$，等待期释放 $W$）；输者在同一看板锁事务内公开移交剩余责任与认领并逻辑死亡；`Holder` 在完整责任集合 $R(a) = \emptyset$ 时同事务释放令牌并逻辑死亡。死亡槽位拉起全新 `agent_id`，绝不继承前世上下文。见 §3.5。
 9. **规划期源码只读锁与模型归属铁律（L09）。** S1–S4 的 `Plan` 除通过 `review` 空账 + `attach_*` 交出阶段交付物外，无任何仓库文件写入能力；调查仓库事实只能调用同步工具 `devops`，复用本任期专属 `Plan DevOps`；它是带 `call` 特权的 Worker，不是只读探针。`Plan`、`Reviewer`、`Manual Auditor`、`Blocker Oracle`、`Coordinator` 使用主模型；`Plan DevOps`、`Swarm Worker`、`Swarm Holder` 使用用户配置的 `@task` 模型。一切子代理经 `runSubprocess` 持久化产物并在 Agent Hub 实名可见。见 §2.1、§4.2。
 10. **投影不改写：Time Leap++ 枝桠剪裁、Ariadne 预算治理与系统输出一律 EDN + UFSS（L10）。** 彻底废弃旧式 Scope/intent/retention 复杂注解。会话通过零成本的 Ariadne's Thread（`ariadne_budget` + `ariadne_goal`）约束每一次关键执行；当假设被证伪、回合预算告急或阶段完成时，必须通过 `time_leap` 主动剪切当前枝桠回退到过去的干净锚点，携带完整经验（`experience`，其中必须逐项列出当前仍在运行、阻塞或尚未收集的 subagent 名称与状态；没有则写 `none`）与只读记忆灯塔（`beacon`）重新起步，彻底解决长上下文污染问题。每次出站请求末尾注入简体中文思考与输出要求（附带未决 `:parked` 提醒）；框架向模型返回的一切工具回执、看板快照、挂起诊断与错误详情，一律渲染为支持 UFSS 的 EDN，严禁投喂带 `\"`、`\\`、`\n` 转义噪音的裸 JSON。见 §4.7 与 §5。
@@ -647,11 +647,12 @@ wait({ otherwise_independent_work[, more_workers_without_hitting_mythical_man_mo
 
 | 沙箱函数 | 语义 | `clj_plan` | `clj_devops` | `clj_review` | `clj_worker`（Worker） | `clj_worker`（Holder） | `clj_auditor` |
 |---|---|:---:|:---:|:---:|:---:|:---:|:---:|
-| `(cat {:path ...})` | 读取 UTF-8 文本；采 `stamp` 入 `read-set` | 有（任意可读文件） | 有 | 有 | 有 | 有 | 有（主工作区只读） |
+| `(cat {:path ...})` | 读取 UTF-8 文本；采 `stamp` 入 `read-set`；逐字一致 | 有（任意可读文件） | 有 | 有 | 有 | 有 | 有（主工作区只读） |
+| `(read {:path ...})` | 代理宿主 `read`；只保证可读，不保证逐字一致；无 hostRead 端口时退回 VFS 读取 | 有 | 有 | 有 | 有 | 有 | 有 |
 | `(stat {:path ...})` | 返回 `{:exists :size :mtime-sec :mtime-nsec :is-dir}`；入 `read-set` 与结构检查 | - | 有 | 有 | 有 | 有 | 有 |
 | `(ls {:path ...})` | 非递归列目录；纯探查，不取 $W$、不进 `read-set`、不做结构检查 | - | 有 | 有 | 有 | 有 | 有 |
 | `(glob {...})` | 纯异步探查；需要可调用的 `:exec`/`:fn`；不取 $W$、不进 `read-set` | - | 有 | 有 | 有 | 有 | 有 |
-| `(write {:path ... :content ...})` | 向批内 VFS 写最终 UTF-8 内容 | -（文档走 `advance_s*`） | 有 | - | 有 | 有 | 有（bwrap 隔离） |
+| `(write {:path ... :content ...})` | 默认 Worker 直接代理宿主 `write`；无 hostWrite 端口时退回批内 VFS 受保护提交 | -（文档走 `attach_*`） | 有 | - | 有 | 有 | 有（bwrap 隔离） |
 | `(mkdir {:path ...})` | 向批内 VFS 登记建目录 | - | 有 | - | 有 | 有 | 有（bwrap 隔离） |
 | `(rm {:path ...})` | 向批内 VFS 登记删除文件或空目录 | - | 有 | - | 有 | 有 | 有（bwrap 隔离） |
 | `(mv {:source ... :target ...})` | 向批内 VFS 登记移动路径 | - | 有 | - | 有 | 有 | 有（bwrap 隔离） |
@@ -660,6 +661,8 @@ wait({ otherwise_independent_work[, more_workers_without_hitting_mythical_man_mo
 | `(park {:payload ...})` | 显式挂起当前程序续体 | 有 | 有 | - | 有 | 有 | 有 |
 | `(unpark {:name ... :value ...})`, `(abandon {:name ...})` | 恢复已挂起程序并注入值 | 有 | 有 | 有 | 有 | 有 | 有 |
 | `(call {:argv [...]})` | 直接执行 argv（无 shell/管道/重定向/通配/`&&`）；先 drain 再运行；运行期持 $W$ | - | 有（特权） | - | -（`:TOKEN_REQUIRED`） | 有 | 有（tmux/`/tmp`） |
+
+**`cat` 与 `read` 的区别**：`cat` 保证逐字一致，可用于精确补丁；`read` 只保证可读，可能经过宿主解码或格式化，不得作为逐字补丁依据。
 
 **边界说明**：
 
