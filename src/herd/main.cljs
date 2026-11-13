@@ -23,9 +23,10 @@
       (:name data) (assoc :name (:name data))
       (:path data) (assoc :path (:path data))
       (:field data) (assoc :field (:field data)))))
-[error]
-{:isError true
- :content [(text-block (ufss/print (normalized-error error)))]})
+
+(defn- tool-error [error]
+  {:isError true
+   :content [(text-block (ufss/print (normalized-error error)))]})
 
 (defn- byte-length [text]
   (js/Buffer.byteLength text "utf8"))
