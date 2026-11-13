@@ -119,7 +119,11 @@ ufssify(cljs) = wrap(format(cljs))
 - `src/herd/ufss.cljs` 与 `bootstrap.cljs` 是自举内核：其字符串字面量全部是标准字符串（无引号/反斜杠/换行），docstring 只用单行短句；因此官方 reader 可直接读取，不需要 pre-pass。
 - 自举内核不使用 fence；这是 D1 的具体形式。
 
-## 8 已知偏差
+## 8 错误与验证
 
-- `canonical-source` 依赖 formatter 的成功返回；`format` 失败时抛 `:INVALID_ARGUMENT`，不静默保留旧源码。
-- `literals` 使用官方 `edamame` reader（`:deref`、`:fn`、`:regex`）读取源码并收集字符串；它只做值级验证，不做源码区间替换。
+1. `format` 失败必须抛 `:INVALID_ARGUMENT`，`data` 携带 `:error`；不得静默保留旧源码，也不得输出半格式化文本。
+2. `wrap` 遇到无法解析的标准字符串必须抛 `:INVALID_ARGUMENT`；不得吞字，也不得原样保留非法字面量。
+3. `canonical-source` 是源码层 canonical 的唯一入口，必须满足 A3：`canonical-source(source) = source`；不满足时由调用方写回。
+4. `literals` 只做值级验证（A4/A5）；它不承担源码文本规范化。
+5. 自举内核（`ufss.cljs`、`bootstrap.cljs`）的 `canonical-source` 输出仍为标准字符串；不得向自举内核引入 fence。
+6. 源码格式化保留注释与 `(comment ...)`；注释不是数据，不参与 UFSS 字符串渲染。

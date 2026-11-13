@@ -199,9 +199,19 @@
         (apply str out)
         (let [ch (subs text i (inc i))]
           (cond
+            (= ch ";")
+            (let [nl (str/index-of text newline-str i)
+                  end (if nl (inc nl) n)]
+              (recur end (conj out (subs text i end))))
+
             (= ch quote-str)
             (let [end (skip-string text i)
-                  body (edn/read-string (subs text i end))]
+                  body (try
+                         (edn/read-string (subs text i end))
+                         (catch :default error
+                           (throw (ex-info "invalid string literal"
+                                           {:code :INVALID_ARGUMENT
+                                            :error (str error)}))))]
               (recur end (conj out (format-string body))))
 
             (= ch "#")
