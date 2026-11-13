@@ -41,11 +41,20 @@
   (ex-info "the same call id arrived with a different payload"
            {:code :CALL_REPLAY_MISMATCH}))
 
+(defn- error-text [error]
+  (ufss/print (normalized-error error)))
+
+(defn- receipt-response [cached]
+  (if (:error? cached)
+    {:isError true
+     :content [(text-block (:text cached))]}
+    (tool-result (:text cached))))
+
 (defn- execute [tool-call-id params _signal]
   (let [request-digest (digest params)]
     (if-let [cached (and tool-call-id (@receipts tool-call-id))]
       (if (= request-digest (:digest cached))
-        (clj->js (tool-result (:text cached)))
+        (clj->js (receipt-response cached))
         (clj->js (tool-error (replay-mismatch))))
       (let [name (.-name params)
             code (.-code params)]
@@ -55,18 +64,17 @@
                      (let [text (ufss/print result)]
                        (when tool-call-id
                          (swap! receipts assoc tool-call-id
-                                {:digest request-digest :text text}))
+                                {:digest request-digest :text text :error? false}))
                        (clj->js (tool-result text)))))
             (.catch (fn [error]
-                      (let [text (ufss/print {:state :failed
-                                              :error {:message (str error)
-                                                      :code (:code (ex-data error))}})]
+                      (let [text (error-text error)]
                         (when tool-call-id
                           (swap! receipts assoc tool-call-id
-                                 {:digest request-digest :text text}))
-                        (clj->js (tool-error error))))))))))
-
-(defn- wait-execute [_tool-call-id params _signal]
+                                 {:digest request-digest :text text :error? true}))
+                        (clj->js {:isError true
+                                  :content [(text-block text)]})))))))))
+(defn- wait-execute
+  [_tool-call-id params _signal]
   (let [work (.-otherwise_independent_work params)]
     (-> (repl/wait-for-result (sandbox-deadline work))
         (.then (fn [result] (clj->js (tool-result (ufss/print result)))))
