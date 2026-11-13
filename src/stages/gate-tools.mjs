@@ -751,7 +751,7 @@ function confirmDecision(value) {
 	if (!isPlainObject(value)) return { decision: "pending", reason: "host-confirm-protocol" };
 	if (value.ok === false) return { decision: "error", error: normalizeError(value.error, ":HOST_API_MISMATCH") };
 	const decision = typeof value.decision === "string" ? value.decision : undefined;
-	if (decision === "approve" || decision === "revise" || decision === "pending") {
+	if (decision === "approve" || decision === "revise" || decision === "deny" || decision === "pending") {
 		return {
 			decision,
 			feedback: typeof value.feedback === "string" ? value.feedback : undefined,
