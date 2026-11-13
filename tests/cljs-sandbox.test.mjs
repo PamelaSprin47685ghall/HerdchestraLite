@@ -8,8 +8,19 @@ let waitTool;
 beforeAll(async () => {
 	globalThis.__pi = {
 		tools: new Map(),
+		hooks: new Map(),
+		active: ["read", "bash", "board_finish", "clj_devops", "wait"],
 		registerTool(definition) {
 			this.tools.set(definition.name, definition);
+		},
+		on(name, handler) {
+			this.hooks.set(name, handler);
+		},
+		getActiveTools() {
+			return [...this.active];
+		},
+		setActiveTools(next) {
+			this.active = [...next];
 		},
 	};
 	nbb.addClassPath(fileURLToPath(new URL("../src/", import.meta.url)));
@@ -17,6 +28,24 @@ beforeAll(async () => {
 	await new Promise((resolve) => setTimeout(resolve, 150));
 	tool = globalThis.__pi.tools.get("clj_devops");
 	waitTool = globalThis.__pi.tools.get("wait");
+});
+
+describe("CLJS host wiring", () => {
+	it("injects repo-aware rules once", () => {
+		const handler = globalThis.__pi.hooks.get("before_agent_start");
+		expect(handler).toBeDefined();
+		const first = handler({ systemPrompt: "base" }, {});
+		expect(first.systemPrompt).toContain("# Repo-aware Rules");
+		const second = handler({ systemPrompt: first.systemPrompt }, {});
+		expect(second.systemPrompt).toBe(first.systemPrompt);
+	});
+
+	it("removes blacklisted host tools", () => {
+		expect(globalThis.__pi.active).toContain("board_finish");
+		expect(globalThis.__pi.active).toContain("clj_devops");
+		expect(globalThis.__pi.active).not.toContain("read");
+		expect(globalThis.__pi.active).not.toContain("bash");
+	});
 });
 
 let counter = 0;

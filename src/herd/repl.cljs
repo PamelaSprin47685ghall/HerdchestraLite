@@ -12,10 +12,7 @@
 (require '[herd.sandbox :refer [cat read stat ls write mkdir rm mv whereAll call]])
 (require '[herd.macros :refer-macros [park unpark abandon where]])
 """
-       """
-
-
-"""))
+       "\n"))
 
 (defn- timeout-error []
   (ex-info "program timed out" {:code :STALLED}))
@@ -40,19 +37,13 @@
 (defn- source [code]
   (str prelude
        "(defn ^:async __run []"
-       """
-
-
-"""
+       "\n"
        (ufss/unwrap code)
        """
 )
 (__run)
 """
-       """
-
-
-"""))
+       "\n"))
 
 (defn- evaluate [code]
   (nbb/load-string (source code)))

@@ -6,8 +6,19 @@ import * as nbb from "nbb";
 beforeAll(async () => {
 	globalThis.__pi = {
 		tools: new Map(),
+		hooks: new Map(),
+		active: ["read", "clj_devops", "wait"],
 		registerTool(definition) {
 			this.tools.set(definition.name, definition);
+		},
+		on(name, handler) {
+			this.hooks.set(name, handler);
+		},
+		getActiveTools() {
+			return [...this.active];
+		},
+		setActiveTools(next) {
+			this.active = [...next];
 		},
 	};
 	nbb.addClassPath(fileURLToPath(new URL("../src/", import.meta.url)));

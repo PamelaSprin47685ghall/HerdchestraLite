@@ -170,6 +170,10 @@
   (cond
     (invisible-control? body) (pr-str body)
 
+    (and (str/includes? body newline-str)
+         (every? #(or (= % \newline) (= % \tab) (= % \space)) body))
+    (pr-str body)
+
     (not (str/includes? body newline-str))
     (if (or (str/includes? body quote-str) (str/includes? body backslash-str))
       (let [fence (apply str (repeat (smallest-single body) "#"))]

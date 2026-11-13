@@ -1,5 +1,7 @@
 (ns herd.main
   (:require
+   [clojure.string :as str]
+   [herd.prompts :as prompts]
    [herd.repl :as repl]
    [herd.ufss :as ufss]))
 
@@ -62,4 +64,30 @@
               :parameters (wait-parameters)
               :execute wait-execute}))
 
+(def host-tool-blacklist
+  #{"read" "write" "edit" "apply_patch" "ast_edit" "ast_grep"
+    "bash" "exec" "eval" "glob" "grep" "find"})
+
+(defn- apply-tool-surface! []
+  (let [pi js/globalThis.__pi
+        active (js->clj (.getActiveTools pi))
+        kept (remove host-tool-blacklist active)]
+    (.setActiveTools pi (clj->js kept))))
+
+(defn- prompt-with-rules [prompt]
+  (if (str/includes? prompt "# Repo-aware Rules")
+    prompt
+    (str prompt "\n\n" prompts/common-rules-text)))
+
+(defn- before-agent-start [event _ctx]
+  (try
+    #js {:systemPrompt (prompt-with-rules (.-systemPrompt event))}
+    (catch :default _
+      #js {:systemPrompt (.-systemPrompt event)})))
+
+(defn install-hooks! []
+  (.on js/globalThis.__pi "before_agent_start" before-agent-start))
+
 (register-all!)
+(install-hooks!)
+(apply-tool-surface!)

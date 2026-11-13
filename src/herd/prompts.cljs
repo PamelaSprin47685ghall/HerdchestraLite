@@ -3,10 +3,7 @@
    [clojure.string :as str]))
 
 (def ufss-prompt-note
-  (str/join """
-
-
-"""
+  (str/join "\n"
     ["UFSS is the raw string notation used in every EDN receipt. It avoids escaping quotes, backslashes, and newlines by choosing a fence deeper than any closing sequence in the body. Use `##` by default for ordinary text; use `###` when developing HerdchestraLite itself, because its source, docs, and prompts contain many quotes, backslashes, and fence-like sequences. Fence depth is arbitrary: zero hashes (bare multi-line), one, or more all work; the printer picks the smallest, but you're free. Raise the fence instead of escaping."
      ""
      "Every receipt you get is EDN, and every string in it is printed as UFSS (Universal Fence-Scaled String). You are not restricted to one escaping style; you are expected to pick the strongest one."
@@ -77,8 +74,4 @@
 (def repo-aware-heading "# Repo-aware Rules")
 
 (def common-rules-text
-  (str/join """
-
-
-
-""" (concat [repo-aware-heading] common-core-rules [ufss-prompt-note])))
+  (str/join "\n\n" (concat [repo-aware-heading] common-core-rules [ufss-prompt-note])))
