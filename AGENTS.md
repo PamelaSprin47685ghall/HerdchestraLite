@@ -7,6 +7,8 @@
 >
 > **版本基线**：依据 2026-11-11 的设计讨论定稿。设计讨论中的早期方案（`/herd-pair` 双轨、独立 `workspace-gate` 清单入口、`pi-goal-x` / `pi-context` 依赖、单审计员全 CASE 串行验收、Plan 阶段独立的继任 Reviewer）已被本文件收敛或替换；这些早期方案不再具有规范效力。第 10.4 节保留裁决索引，供实现者理解“为什么”。
 
+> **2026-11-13 生命周期修订（优先于下文旧述）**：S1–S4 不再使用旧的 advance 门禁与哈希冻结。每个 Plan tenure 以 `review` 台账（与 board 合一）判断达标；空账后必须显式调用按材料命名的 `attach_brainstorm` / `attach_manual_tests` / `attach_dev_guide` / `attach_coordination`，由 attach 写交付物、退休 tenure、写 barrier、启动继任者并注入下一阶段简报。S3 不再提交 `modules`；S4 不再提交 `slices`/Slice DAG，只提交 `markdown + promela`，`.pml` 只保存不校验。S5 dogfood 为单工作区 Reviewer/Swarm，worktree 编排暂不进入。`frozen` 只是提示词约定，无哈希、无 `contract-line`、无 `realign`。S2 CASE 文件为 `s2-cases.edn`。工具名已统一为 `review`。
+
 ---
 
 ## 0 序言
@@ -61,7 +63,7 @@ Lite 版不把模型当傻子。它不把每个动作都拆成一条“爷爷辈
 |---|---|
 | **使命（Mission）** | 一次 `/herd <seed>` 启动的完整研发周期，从 S1 到 `s5-report.md` 结案。一个工作区可同时存在多个未结使命，但一个会话同一时刻只聚焦一个。 |
 | **阶段（Stage）** | `S1` 头脑风暴、`S2` 手工测试方法论、`S3` 目标开发指南、`S4` 开发者协调手册、`S5` 蜂群自治开发与并发实操验收。 |
-| **门禁（Gate）** | 阶段收尾的结构化工具调用：`advance_s1` … `advance_s4`。它负责校验、落盘、冻结哈希、披露下一阶段方法论，并决定是否晋级。S1 另需手工批准；S2–S4 校验通过即自动批准。 |
+| **门禁（Gate）** | 阶段收尾的 `review` 空账 + 显式 `attach_*`：`review` 只维护 board 台账；空账后由 `attach_brainstorm` / `attach_manual_tests` / `attach_dev_guide` / `attach_coordination` 校验、落盘、退休 tenure、写 barrier 并披露下一阶段方法论。S1 另需手工批准；S2–S4 校验通过即自动批准。 |
 | **手工批准（Manual Approval）** | S1 门禁要求的显式批准方式：确认面板展示磁盘上的真实 `plans/<slug>/s1-brainstorm.md`，操作员以明确交互批准或提出修改。沉默、超时、关闭面板、自动继续都不构成批准。真实产品运行只能由人类操作员批准；隔离测试环境可由用户授权的 AI 操作员操作真实确认界面模拟，但只需在实测记录中注明该次操作是测试模拟，不得冒充人类批准或生产授权；产品本身无需识别操作者身份。详见 §2.2、§2.3。 |
 | **任期（Tenure）** | S5 中一个 Slice 的一次 `Reviewer` 评估窗口及其后续蜂群施工期；换任即建立上下文屏障，旧任期退休。 |
 | **切片（Slice）** | S4 定义的、目标互不相交的一段工程工作；每个 Slice 对应一个独立 Git worktree 与一个独立看板。 |
@@ -77,7 +79,7 @@ Lite 版不把模型当傻子。它不把每个动作都拆成一条“爷爷辈
 | **Time Leap（时间跃迁）** | 把当前时间线剪回一个干净的 `clj_*` 锚点，携带完整经验并留下只读 Beacon。 |
 | **Beacon（灯塔）** | 被剪枝桠的只读记忆摘要；只能通过 `ask_beacon` 查询，绝不复活。 |
 | **UFSS** | Universal Fence-Scaled String，变长围栏字符串（`#"..."#`、`#"""..."""#`）。系统向模型呈现结构化数据时使用。 |
-| **CASE** | 随 `advance_s2` 的 `cases` 参数提交、由框架独立持久化为 `.herd/missions/<slug>/cases.edn` 权威控制态的可独立执行、独立评分的验收用例；`s2-manual-tests.md` 只写方法论，不是 CASE 来源。 |
+| **CASE** | 随 `attach_manual_tests` 的 `cases` 参数提交、由框架独立持久化为 `.herd/missions/<slug>/s2-cases.edn` 权威控制态的可独立执行、独立评分的验收用例；`s2-manual-tests.md` 只写方法论，不是 CASE 来源。 |
 | **评分细则（Rubric）** | 每个 CASE 记录中 `rubric` 字段携带的 0–100 可复现评分规则，随 CASE 一起冻结；要求两名独立审计员面对同一证据时分差不超过 ±5。 |
 | **WTP** | Willingness to Pay，主观支付意愿。每个 CASE 分 `user_score`（外部用户价值）与 `developer_score`（内部工程质量），最终分取 `min(user_score, developer_score)`。 |
 | **审计员（Manual Auditor）** | S5 终局为单个 CASE 启动的可见子代理；K 个 CASE 同时启动 K 名，互不共享上下文。 |
@@ -96,8 +98,8 @@ Lite 版不把模型当傻子。它不把每个动作都拆成一条“爷爷辈
 | 维度 | Herdchestra Lite **包含** | Herdchestra Lite **不包含**（属独立标准版或其他产品） |
 |---|---|---|
 | **宿主与依赖** | 挂载于 `omp` 进程的纯 `.mjs` 插件；无构建步骤；运行时第三方依赖只有 `cherry-cljs`；零宿主源码修改、零 `AgentSession` / `TUI` 原型猴子补丁；多入口故障隔离。 | Clojure/JVM 守护进程、跨终端单机单例 Server、Pixi/MSYS2 环境托管器、外部数据库进程。关闭 `omp` 即停止。 |
-| **阶段协议** | S1 头脑风暴 → S2 手工测试方法论 → S3 目标开发指南 → S4 开发者协调手册 → S5 蜂群自治开发与并发实操验收；`plans/<slug>/s1..s5-*.md`、`.herd/missions/<slug>/s1-summary.md`、`.herd/missions/<slug>/cases.edn` 与 `mission.edn` 的 `:s3-modules` 分别冻结 SHA-256；只有 S1 门禁手工批准（真实产品运行由人类操作员明确批准；隔离测试见 §2.3），S5 初任空账可一次性询问人类，其余自动。 | 7×24 小时后台冥想的 `Standing Sphinx`（`Meditator`）、跨仓库长期值守的 `Steward` Docket、常驻仓库守望。 |
-| **协作与并发** | 多 Worktree Slice `fork_slices` / `join_slice`（`.herd-worktrees/<slug>/<slice_id>`）；单 Worktree 内文件锁看板（拆分优先、父项保留实质）、`stamp` + $W$、`board_take_or_die` 唯一持令者、无责即死与无记忆转世。 | Clojure 内存 STM、Datalevin（LMDB）数据库、跨机器分布式执行。Lite 用 `.herd/` 下的 EDN 当前态 + 追加式 `events.jsonl` + 字节偏移检查点。 |
+| **阶段协议** | S1 头脑风暴 → S2 手工测试方法论 → S3 目标开发指南 → S4 开发者协调手册 → S5 蜂群自治开发与并发实操验收；`plans/<slug>/s1..s5-*.md`、`.herd/missions/<slug>/s2-cases.edn` 与 `plans/<slug>/s4-coordination.pml`；各交付物按提示词约定 frozen，不计算 SHA-256；只有 S1 门禁手工批准（真实产品运行由人类操作员明确批准；隔离测试见 §2.3），S5 初任空账可一次性询问人类，其余自动。 | 7×24 小时后台冥想的 `Standing Sphinx`（`Meditator`）、跨仓库长期值守的 `Steward` Docket、常驻仓库守望。 |
+| **协作与并发** | 单工作区栈：`.herd/` 文件锁看板（拆分优先、父项保留实质）、`stamp` + $W$、`board_take_or_die` 唯一持令者、无责即死与无记忆转世；多 Worktree `fork_slices`/`join_slice` 保留为后续完整装配，暂不进入 dogfood 面。 | Clojure 内存 STM、Datalevin（LMDB）数据库、跨机器分布式执行。Lite 用 `.herd/` 下的 EDN 当前态 + 追加式 `events.jsonl` + 字节偏移检查点。 |
 | **工具与续体** | 角色裁剪的 `clj_plan` / `clj_devops` / `clj_review` / `clj_worker` / `clj_auditor` 异步沙箱；EDN + UFSS 读写；批内内存 VFS 干跑；`where` / `park` / `unpark` 表达式级续体；`call` 黑盒 Shell。 | JVM 字节码编译、Java FFM 原生 C ABI 调用、Clojure/JVM REPL 求值器。 |
 | **上下文与界面** | Ariadne 线程/Beacon 注入与出站副本裁剪；双块锚点缓存保留与显式断点前移；Nudge 空转退避；上游断流恢复；`@oh-my-pi/pi-tui` 编辑器上方双态看板；Agent Hub 实名可见子会话。 | Fulcro + Framework7 Web 工作台、Sente/AG-UI 多端同控、受管图形浏览器、Mini-Apps、语音、定时任务、WebDAV/S3 备份中心。 |
 | **终局验收** | K 个 CASE 同时启动 K 名独立可见 `Manual Auditor`；每名只做一个 CASE；框架确定性汇总双视角分数并写出 `s5-report.md`。 | 单一审计员串行跑完全部 CASE；自动化测试、CI、构建或覆盖率作为放行证据。 |
@@ -165,15 +167,15 @@ Lite 的实现只能依赖以下宿主语义。具体类型签名以 `omp` 当�
 
 以下十条是全系统的最高不变量。后文展开细节；若细节与本节存在任何歧义，以本节为准。
 
-1. **结构化与长文交付一律走专用工具调用（L01）。** 任何时刻需要模型产出结构化数据（阶段元数据、CASE 清单、模块图、Slice 拓扑、评审台账、看板变更、审计打分、会诊建议、调查结论）或大段文本（S1–S4 阶段文档、调查报告、审计报告），必须通过带严格参数 Schema 的原生工具调用实现；大段 Markdown / 文本直接作为工具的大 `string` 参数传入，由框架校验并原子落盘。严禁从模型自由聊天正文中用正则抠取业务数据或状态标记（如 `<approved/>`）。见 §2.3、§8.1。
-2. **仅 S1 过程/门禁与 S5 初任空账可征求人类，其余自动一气呵成（L02）。** 每个阶段以专属门禁工具 `advance_s1` … `advance_s4` 收尾，由框架保存文件并冻结 `sha256`。S1 过程中允许 `ask_user` 澄清；S1 最后唯有 `advance_s1` 实际停下征求手工批准：真实产品运行必须由人类操作员明确批准；隔离测试环境可由获用户授权的 AI 操作员操作真实确认界面模拟，但测试操作不冒充人类批准或生产授权。未批准则留在 S1 继续打磨。S1 获批后，`advance_s2`、`advance_s3`、`advance_s4` 校验通过即由框架自动保存、自动批准，无缝进入 S5 蜂群开发与并发实操验收。S5 的唯一人类交互是：初任 `Reviewer` 首次空账且主工作区已满足契约、没有任何 Slice 可做时，允许一次性 `ask_user`；除此之外 S5 全程无人值守。见 §2.3、§2.5.2、§2.7。
-3. **方法论按门禁回执渐进披露，严禁前置堆砌（L03）。** 基础系统提示词绝不提前暴露 S2–S5 的大师名字与阶段细则：S1 启动时只披露 S1 方法论；S2 的方法论仅在 `advance_s1` 获批的工具结果中首次披露；S3 仅在 `advance_s2` 的成功结果中披露；S4 仅在 `advance_s3` 中披露；S5 仅在 `advance_s4` 中披露。出站投影只钉住当前阶段的门禁简报，晋级后自动退役上一阶段长文。见 §2.4、§8.3。
-4. **全 CASE 并发独立实操审计，框架确定性汇总（L04）。** S5 收尾时，若冻结的 `.herd/missions/<slug>/cases.edn` 定义了 $K$ 个 CASE，框架同时启动 $K$ 名独立的可见 `Manual Auditor`（每名只负责 1 个 CASE，各自拥有独立的 `tmux` 会话名、`/tmp` 破坏副本与 `plans/<slug>/evidence/<case_id>/` 目录，对主工作区严格只读）。CASE 数据集是 CASE 成员、阈值、路径与评分细则的唯一定义来源；每名审计员通过 `submit_case_audit` 提交双视角得分与报告；框架收集全部 $K$ 份结果，计算 `min(user_score, developer_score)`，汇总写出 `plans/<slug>/s5-report.md`，裁决结案或打回返工。任何自动化测试、CI、构建或覆盖率都不构成验收证据。见 §2.6。
-5. **宏观中心化换任与微观去中心化蜂群严格咬合（L05）。** S5 每个 Slice 任期以中心化评估窗口开启：单一主模型 `Reviewer` 用只读 `clj_review` 核验现场并调用 `submit_review`；若 `findings` 非空，`Reviewer` 退场，系统把每条台账实例化为看板根任务并唤醒 `@task` 蜂群；仅当全部根任务 `:done`、未结任务集合为空、无在途动作且 `Holder` 已无责退休时，原子触发接力屏障：退休本任、写入上下文屏障、启动无前任对话包袱的新任 `Reviewer`。见 §2.5。
+1. **结构化与长文交付一律走专用工具调用（L01）。** 任何时刻需要模型产出结构化数据（阶段元数据、CASE 清单、review 台账、看板变更、审计打分、会诊建议、调查结论）或大段文本（S1–S4 阶段文档、调查报告、审计报告），必须通过带严格参数 Schema 的原生工具调用实现；大段 Markdown / 文本直接作为工具的大 `string` 参数传入，由框架校验并原子落盘。严禁从模型自由聊天正文中用正则抠取业务数据或状态标记（如 `<approved/>`）。见 §2.3、§8.1。
+2. **仅 S1 过程/门禁与 S5 初任空账可征求人类，其余自动一气呵成（L02）。** 每个 Plan tenure 以 `review` 台账判断达标；空账只置 attach-ready，必须显式调用 `attach_brainstorm` / `attach_manual_tests` / `attach_dev_guide` / `attach_coordination` 才写交付物、退休 tenure、写 barrier、启动继任者并注入下一阶段简报。S1 过程中允许 `ask_user` 澄清；S1 最后唯有 `attach_brainstorm` 实际停下征求手工批准：真实产品运行必须由人类操作员明确批准；隔离测试环境可由获用户授权的 AI 操作员操作真实确认界面模拟，但测试操作不冒充人类批准或生产授权。未批准则留在 S1 继续打磨，并清除 attach-ready。S1 获批后，S2–S4 的 attach 校验通过即自动晋级，无缝进入 S5 蜂群开发与并发实操验收。S5 的唯一人类交互是：初任 `Reviewer` 首次空账且主工作区已满足契约、没有任何任务可做时，允许一次性 `ask_user`；除此之外 S5 全程无人值守。见 §2.3、§2.5、§2.7。
+3. **方法论按 attach 逐阶段披露，严禁前置堆砌（L03）。** 基础系统提示词绝不提前暴露 S2–S5 的大师名字与阶段细则：S1 启动时只披露 S1 方法论；S2 简报仅在 `attach_brainstorm` 成功后的 successor 初始化中首次披露；S3 仅在 `attach_manual_tests` 后披露；S4 仅在 `attach_dev_guide` 后披露；S5 仅在 `attach_coordination` 后披露。旧 tenure 在 barrier 后退休，不能继续看到下一阶段简报。见 §2.4、§8.3。
+4. **全 CASE 并发独立实操审计，框架确定性汇总（L04）。** S5 收尾时，若 `.herd/missions/<slug>/s2-cases.edn` 定义了 $K$ 个 CASE，框架同时启动 $K$ 名独立的可见 `Manual Auditor`（每名只负责 1 个 CASE，各自拥有独立的 `tmux` 会话名、`/tmp` 破坏副本与 `plans/<slug>/evidence/<case_id>/` 目录，对主工作区严格只读）。CASE 数据集是 CASE 成员、阈值、路径与评分细则的唯一定义来源；每名审计员通过 `submit_case_audit` 提交双视角得分与报告；框架收集全部 $K$ 份结果，计算 `min(user_score, developer_score)`，汇总写出 `plans/<slug>/s5-report.md`，裁决结案或打回返工。任何自动化测试、CI、构建或覆盖率都不构成验收证据。见 §2.6。
+5. **宏观中心化换任与微观去中心化蜂群严格咬合（L05）。** S5 在单工作区内以中心化评估窗口开启：单一主模型 `Reviewer` 用只读 `clj_review` 核验现场并调用 `review`；若 `findings` 非空，`Reviewer` 退场，系统把每条台账实例化为看板根任务并 `wake-all` 唤醒 `@task` 蜂群；仅当全部根任务 `:done`、未结任务集合为空、无在途动作且 `Holder` 已无责退休时，原子触发接力屏障：退休本任、写入上下文屏障、启动无前任对话包袱的新任 `Reviewer`。没有 Slice 队列、worktree 或 join 循环。见 §2.5。
 6. **父项始终保留实质，严禁子项完成自动关闭父项（L06）。** 看板中拆分优先于原子认领；父任务 `board_split` 出子项后进入 `:waiting`，子项全部 `:done` 仅解除父项等待使其恢复 `:ready`，绝不自动折算为父项 `:done`，且严禁在同一回合内顺手关闭刚恢复的父项。父项必须凭独立的合龙与集成结果显式 `board_finish`。见 §3.4。
-7. **工作区写入一律经 ClojureScript 沙箱 VFS 干跑 + 纳秒 `stamp` + 写入口 $W$（L07）。** `cat` / `stat` 不加锁，自动采集精确凭据 `stamp = {mtime-sec, mtime-nsec, size}`（忽略 `atime`）。REPL 内的 `write` / `mkdir` / `rm` / `mv` 先按执行顺序作用于批内内存 VFS；程序正常返回（或 `call` 前排空）时申请该 Slice 的写锁 $W$，在锁内复核全部 `read-set`（含只读依赖文件）与结构条件，固定 `:applying` 资格后一次性原子落盘。任何可拒绝冲突必须在触碰真实磁盘前拒绝；正常路径零回滚。见 §4.3。
+7. **工作区写入一律经 ClojureScript 沙箱 VFS 干跑 + 纳秒 `stamp` + 写入口 $W$（L07）。** `cat` / `stat` 不加锁，自动采集精确凭据 `stamp = {mtime-sec, mtime-nsec, size}`（忽略 `atime`）。REPL 内的 `write` / `mkdir` / `rm` / `mv` 先按执行顺序作用于批内内存 VFS；程序正常返回（或 `call` 前排空）时申请该 tenure 的写锁 $W$，在锁内复核全部 `read-set`（含只读依赖文件）与结构条件，固定 `:applying` 资格后一次性原子落盘。任何可拒绝冲突必须在触碰真实磁盘前拒绝；正常路径零回滚。见 §4.3。
 8. **抢令牌（`board_take_or_die`）不可逆，持令者独占 `call` 且无责即死，新生无记忆（L08）。** 普通个体在 `clj_worker` 中调用 `(call ...)` 一律拒收 `:TOKEN_REQUIRED`。个体仅在耗尽有价值的受保护工作且存在未结 `:needs-token` 任务时调用 `board_take_or_die`：赢者成为唯一 `Holder`，动态承担全看板 `:needs-token` 责任（仅在单次 `call` 运行期或文件提交期占 $W$，等待期释放 $W$）；输者在同一看板锁事务内公开移交剩余责任与认领并逻辑死亡；`Holder` 在完整责任集合 $R(a) = \emptyset$ 时同事务释放令牌并逻辑死亡。死亡槽位拉起全新 `agent_id`，绝不继承前世上下文。见 §3.5。
-9. **规划期源码只读锁与模型归属铁律（L09）。** S1–S4 的 `Plan` 除通过 `advance_s1..s4` 交由框架保存对应阶段文档外，无任何仓库文件写入能力；调查仓库事实只能调用同步工具 `devops`，复用本任期专属 `Plan DevOps`；它是带 `call` 特权的 Worker，不是只读探针。`Plan`、`Reviewer`、`Manual Auditor`、`Blocker Oracle`、`Coordinator` 使用主模型；`Plan DevOps`、`Swarm Worker`、`Swarm Holder` 使用用户配置的 `@task` 模型。一切子代理经 `runSubprocess` 持久化产物并在 Agent Hub 实名可见。见 §2.1、§4.2。
+9. **规划期源码只读锁与模型归属铁律（L09）。** S1–S4 的 `Plan` 除通过 `review` 空账 + `attach_*` 交出阶段交付物外，无任何仓库文件写入能力；调查仓库事实只能调用同步工具 `devops`，复用本任期专属 `Plan DevOps`；它是带 `call` 特权的 Worker，不是只读探针。`Plan`、`Reviewer`、`Manual Auditor`、`Blocker Oracle`、`Coordinator` 使用主模型；`Plan DevOps`、`Swarm Worker`、`Swarm Holder` 使用用户配置的 `@task` 模型。一切子代理经 `runSubprocess` 持久化产物并在 Agent Hub 实名可见。见 §2.1、§4.2。
 10. **投影不改写：Time Leap++ 枝桠剪裁、Ariadne 预算治理与系统输出一律 EDN + UFSS（L10）。** 彻底废弃旧式 Scope/intent/retention 复杂注解。会话通过零成本的 Ariadne's Thread（`ariadne_budget` + `ariadne_goal`）约束每一次关键执行；当假设被证伪、回合预算告急或阶段完成时，必须通过 `time_leap` 主动剪切当前枝桠回退到过去的干净锚点，携带完整经验（`experience`）与只读记忆灯塔（`beacon`）重新起步，彻底解决长上下文污染问题。每次出站请求末尾注入简体中文思考与输出要求（附带未决 `:parked` 提醒）；框架向模型返回的一切工具回执、看板快照、挂起诊断与错误详情，一律渲染为支持 UFSS 的 EDN，严禁投喂带 `\"`、`\\`、`\n` 转义噪音的裸 JSON。见 §4.7 与 §5。
 
 **补充：终局可解释。** 用户侧只有三种状态词：**进行中**、**已交付**、**未交付（必附具体理由与教训）**。中间过程（等待、重试、应用中等）属于实现细节，不向用户暴露细分状态。允许善意误解：用户的心智模型可以比实现简单，只要有助于理解产品。
@@ -182,7 +184,7 @@ Lite 的实现只能依赖以下宿主语义。具体类型签名以 `omp` 当�
 
 ---
 
-## 2 宏观秩序：五阶段、门禁、渐进披露与多 Worktree 编排
+## 2 宏观秩序：五阶段、review/attach、渐进披露与单工作区编排
 
 Lite 在宏观上只有一个任务周期：一次 Mission 从 S1 走到 S5，再由并发审计决定结案或返工。与标准版不同，Lite 没有常驻仓库守望层（`Steward` / `Standing Sphinx`）；人类用 `/herd <seed>` 明确准入，主会话 `Coordinator` 负责推进，使命结束后系统回到空闲。
 
@@ -192,456 +194,127 @@ Lite 在宏观上只有一个任务周期：一次 Mission 从 S1 走到 S5，�
 
 | 角色身份 | 所在阶段 | 宿主形态 | 可用工具面（硬边界） | 模型 |
 |---|---|---|---|---|
-| `Coordinator` | 全阶段的主会话 | 主会话本身 | 命令、看板 TUI、`fork_slices` / `join_slice`、审计调度、`ask_user`（仅 S5 主工作区初任空账且尚未 fork 时代表初任 `Reviewer`）；不直接改业务源码，不替个体选任务。S1–S4 期间主会话以 `Plan` 身份工作。 | 主模型 |
-| `Plan` | S1–S4 | 主会话（或独立任期会话） | `clj_plan`（只读底稿与附件、`where`/`whereAll`/`park`/`unpark`）、`devops`、`ask_user`（仅 S1）、`advance_s1..s4`、Ariadne/Beacon 辅助。**无 `write` / `edit` / `bash`。** | 主模型 |
+| `Coordinator` | 全阶段的主会话 | 主会话本身 | 命令、看板 TUI、审计调度、单工作区编排、`ask_user`（仅 S5 主工作区初任空账且尚未启动 Reviewer 时代表初任 `Reviewer`）；不直接改业务源码，不替个体选任务。S1–S4 期间主会话以 `Plan` 身份工作。 | 主模型 |
+| `Plan` | S1–S4 | 主会话（或独立任期会话） | `clj_plan`（只读底稿与附件、`where`/`whereAll`/`park`/`unpark`）、`devops`、`ask_user`（仅 S1）、`review`、`attach_brainstorm` / `attach_manual_tests` / `attach_dev_guide` / `attach_coordination`、Ariadne/Beacon 辅助。**无 `write` / `edit` / `bash`。** | 主模型 |
 | `Plan DevOps` | S1–S4 辅助 | `runSubprocess` 子会话 | `clj_devops`（Worker 全部文件与续体能力，外加特权 `call`）、`submit_devops_report`。无看板、无令牌；写与 `call` 都可用，不经 `board_take_or_die`。 | `@task` |
-| `Reviewer` | S5-Phase A | `runSubprocess` 干净子会话 | `clj_review`（`cat`/`stat`/`ls`/`where`/`whereAll`/`unpark`）、`submit_review`、`ask_user`（仅主工作区初任空账例外）、Ariadne/Beacon 辅助。无写方法、无 `call`。 | 主模型 |
+| `Reviewer` | S5-Phase A | `runSubprocess` 干净子会话 | `clj_review`（`cat`/`stat`/`ls`/`where`/`whereAll`/`unpark`）、`review`、`ask_user`（仅主工作区初任空账例外）、Ariadne/Beacon 辅助。无写方法、无 `call`。 | 主模型 |
 | `Swarm Worker` | S5-Phase B | `runSubprocess` 固定槽位池 | `clj_worker`（文件/文本/续体；无 `call`）、`board_split` / `board_claim` / `board_finish` / `board_cancel` / `board_replace` / `board_release` / `board_reopen` / `board_comment` / `board_update` / `board_park_slot` / `board_take_or_die`、Ariadne/Beacon 辅助。 | `@task` |
-| `Swarm Holder` | S5-Phase B | `runSubprocess`（每 worktree 至多 1 名） | 同 `Swarm Worker`，另加 `clj_worker` 的 `call` 与 `abandon_slice`。 | `@task` |
+| `Swarm Holder` | S5-Phase B | `runSubprocess`（每个 S5 tenure 至多 1 名） | 同 `Swarm Worker`，另加 `clj_worker` 的 `call`。 | `@task` |
 | `Manual Auditor` ($\times K$) | S5 终局验收 | `runSubprocess` 独立可见子会话 | `clj_auditor`（只读主工作区、`tmux` 抓屏、`/tmp` 隔离实验、证据写入白名单）、`submit_case_audit`、Ariadne/Beacon 辅助。**禁止 spawn 子代理。** | 主模型 |
 | `Blocker Oracle` | S5 按需会诊 | `runSubprocess` 只读子会话 | `clj_review`（只读子集）、`submit_oracle_advice`。 | 主模型 |
 
 **模型归属铁律**：主模型负责“判断与验收”，`@task` 模型负责“施工与调查”。不要让审计员用 `@task`（它需要最强的证伪能力），也不要让蜂群普通个体用主模型（成本与并发都不允许）。模型不可用时明确失败，不静默降级。
 
-**子代理不继承主会话对话**。每次 `runSubprocess` 必须提供完整上下文：角色提示词、当前阶段或 Slice、冻结契约路径、看板快照、当前任务/责任、可用工具与验收条件。禁止假设“它知道刚才聊了什么”。
+**子代理不继承主会话对话**。每次 `runSubprocess` 必须提供完整上下文：角色提示词、当前阶段或 S5 tenure、交付物路径、看板快照、当前任务/责任、可用工具与验收条件。禁止假设“它知道刚才聊了什么”。
 
-**Agent Hub 实名可见**：每个子代理在 Agent Hub 中显示为可辨认的名字，例如 `PlanDevOps-<slug>-<tenure>`、`Reviewer-<slice>-<tenure>`、`Worker-<slice>-<slot>`、`Holder-<slice>-<term>`、`Auditor-<slug>-<case_id>`。`runSubprocess` 必须传 `artifactsDir`（子会话 transcript 落盘的唯一开关）与 `eventBus`（实时 progress）；`sessionFile` 是父会话链接，不是子会话路径。没有 `artifactsDir` 时必须在回执中明示“仅内存可见”，不得假装可通过 `history://` 重放。
+**Agent Hub 实名可见**：每个子代理在 Agent Hub 中显示为可辨认的名字，例如 `PlanDevOps-<slug>-<tenure>`、`Reviewer-<slug>-<tenure>`、`Worker-<slug>-<slot>`、`Holder-<slug>-<term>`、`Auditor-<slug>-<case_id>`。`runSubprocess` 必须传 `artifactsDir`（子会话 transcript 落盘的唯一开关）与 `eventBus`（实时 progress）；`sessionFile` 是父会话链接，不是子会话路径。没有 `artifactsDir` 时必须在回执中明示“仅内存可见”，不得假装可通过 `history://` 重放。
 
 ### 2.2 五阶段总览
 
-```mermaid
-sequenceDiagram
-    participant U as 操作员（生产为人类；隔离测试可为获授权 AI）
-    participant P as Plan（主模型）
-    participant F as Lite 框架
-    participant S as Swarm（@task）
-    participant A as K 名并发 Auditor（主模型）
+| 阶段 | 交付物 | Review | Attach | 批准 |
+|---|---|---|---|---|
+| S1 | `plans/<slug>/s1-brainstorm.md` | `review` 台账空账 | `attach_brainstorm({ markdown })` | 人工确认面板 |
+| S2 | `plans/<slug>/s2-manual-tests.md` + `.herd/missions/<slug>/s2-cases.edn` | `review` 台账空账 | `attach_manual_tests({ markdown, cases })` | 自动 |
+| S3 | `plans/<slug>/s3-dev-guide.md` | `review` 台账空账 | `attach_dev_guide({ markdown })` | 自动 |
+| S4 | `plans/<slug>/s4-coordination.md` + `plans/<slug>/s4-coordination.pml` | `review` 台账空账 | `attach_coordination({ markdown, promela })` | 自动 |
+| S5 | `plans/<slug>/s5-report.md` | Reviewer findings | 无 attach | K 路审计 |
 
-    U->>F: /herd <seed>
-    F->>P: 启动 S1（只披露 S1 方法论）
-    opt S1 存在关键歧义
-        P->>U: ask_user({ question, context, recommended_default })
-        U-->>P: 回答
-    end
-    P->>F: advance_s1({ slug, brainstorm_markdown, ... })
-    F->>F: 校验并保存 plans/<slug>/s1-brainstorm.md + .herd/missions/<slug>/s1-summary.md
-    F->>U: 唯一手工门禁：展示真实文档，等待明确批准或修改
-    U-->>F: 明确批准（实测记录注明模拟）
-    F-->>P: 冻结 S1 与摘要 sha256 + 披露 S2 方法论
-    P->>F: advance_s2({ slug, manual_tests_markdown, cases: [完整 CASE 记录] })
-    F->>F: 校验 cases Schema，保存 s2-manual-tests.md + .herd/missions/<slug>/cases.edn，冻结双哈希
-    F-->>P: 自动批准 + 披露 S3
-    P->>F: advance_s3({ slug, dev_guide_markdown, modules })
-    F-->>P: 校验、保存、冻结、自动批准 + 披露 S4
-    P->>F: advance_s4({ slug, coordination_markdown, slices })
-    F-->>P: 校验、保存、冻结、自动批准 + 启动 S5
-    F->>S: 按无交集 Slice 派生 worktree，循环 Reviewer ⇄ Swarm
-    F->>A: 全部 Slice join 后，同时启动 K 个 CASE 的独立审计员
-    A->>F: submit_case_audit({ case_id, user_score, developer_score, report_markdown, evidence_paths })
-    F->>F: 汇总 K 份结果，算 min(U,D)，写 s5-report.md
-    alt 全部达标
-        F->>U: 已交付
-    else 任一未达标
-        F->>S: 未达标 CASE 转为修复 Slice / 根任务，自动返工
-    end
-```
+S1–S4 的 Plan tenure 只有一个 board；该 board 同时是 review 台账。S5 的 Slice tenure 使用同一套 board 数据结构，但由 Reviewer 立账、Swarm 施工。
 
-| 阶段 | 交付物 | 方法论 | 门禁 | 手工确认 | 披露时机 |
-|---|---|---|---|---|---|
-| **S1 头脑风暴** | `plans/<slug>/s1-brainstorm.md` + `.herd/missions/<slug>/s1-summary.md`（摘要冻结副本） | Bezos · Howard · Dalio · Munger · Taleb | `advance_s1` | **是（唯一手工批准门禁，见 §2.3）** | `/herd` 启动时 |
-| **S2 手工测试方法论** | `plans/<slug>/s2-manual-tests.md`（方法论叙述）+ `.herd/missions/<slug>/cases.edn`（CASE 数据集，权威控制态，唯一权威） | Bach · Myers · Weinberg | `advance_s2` | 否，自动批准 | `advance_s1` 获批后的工具结果 |
-| **S3 目标开发指南** | `plans/<slug>/s3-dev-guide.md`（说明）+ `mission.edn` 的 `:s3-modules`（结构化模块映射，机器权威） | Pólya · Schoenfeld · Parnas · Hickey · Ousterhout | `advance_s3` | 否，自动批准 | `advance_s2` 成功后的工具结果 |
-| **S4 开发者协调手册** | `plans/<slug>/s4-coordination.md` | Knuth · Brooks · Lamport · Amdahl（辅以 Dijkstra / Reinertsen） | `advance_s4` | 否，自动批准 | `advance_s3` 成功后的工具结果 |
-| **S5 蜂群自治开发与并发验收** | `plans/<slug>/s5-report.md` | Reviewer ⇄ Swarm ⇄ K 路 Manual Auditor | 审计结案或返工 | 仅初任空账一次询问；其余自动 | `advance_s4` 成功后的工具结果 |
+### 2.3 阶段协议：`review` 与 `attach_*`
 
-**手工批准的边界（生产 vs 隔离测试）**：
+#### 2.3.1 board = review 台账
 
-- **真实产品运行**：S1 门禁是唯一的手工批准点，但“手工”不等于“任何自动化都能自动通过”。只有人类操作员本人在确认面板上明确批准或提出修改才构成批准；AI 不得代替人类批准，也不得把脚本、预置环境变量、聊天正文或自动继续当作批准。
-- **隔离测试环境**：仅在独立测试工作区或容器，且用户已明确授权时，AI 可以亲自操作真实确认界面，模拟操作员完成批准或修改；只在本测试实例内有效，不得冒充生产门禁的人类批准，不得产生或复用生产授权。该事实只需在实测记录中注明即可。测试可以使用用户配置的真实模型凭证；使用时必须按 §7.6 保护凭证，不得把凭证写入实测记录、证据、日志或交付物。
-- **共同要求**：无论由谁操作，面板都必须展示磁盘上的真实 `plans/<slug>/s1-brainstorm.md` 文档（可附一页摘要），并等待明确批准或修改交互；沉默、超时、关闭面板、自动继续均不构成批准。
-- **范围限定**：此边界只适用于 `advance_s1`；S1 的 `ask_user` 澄清与 S5 初任空账询问仍按各自条款等待人类回答，测试 AI 不得代替。
-- **实现不变**：本条款只约束测试授权与实测记录，不引入产品模式、设置项、持久字段或身份认证协议。产品门禁实现与生产人类审批保持不变：确认面板只认明确批准/修改交互，无需判断按键者是谁。无法证明隔离时，不得使用该测试例外，必须由人类操作员批准。
+每个 tenure 只有一个 `board.edn`。S1–S4 的任务就是当前阶段的义务；没有独立 `review.ledger`。S5 的 board 同时是施工看板。任务结构扁平：`tasks { key -> task }`，用 `parent-key` / `child-keys` / `wait-for` 表达父子与等待，允许 `:waiting`，但物理上是一张扁平 map，便于编辑与 diff。
 
-**阶段判定铁律**：每个阶段只判定“离下一阶段能够开始的差距”（S1 判离 S2 能开始的差距，S2 判离 S3，S3 判离 S4，S4 判离可交付 S5），严禁把下一阶段的工作算作本阶段缺口。每个阶段都是开放式打磨闭环；迭代上百回合仍属正常，直至无可再改。每个阶段的每个判断与选择，必须在当前证据下达到 95% 置信度；低于 95% 时，S1 问人类，S2–S4 用 `devops` 调查或缩小问题，不得用自信的语气蒙混过关。
+#### 2.3.2 `review` 语义
 
-**slug 规则**：`<slug>` 匹配 `^[a-z0-9][a-z0-9-]{0,63}$`；首次 `advance_s1` 固定 slug，之后不得换名。同名目录已存在且不是当前使命时，拒收 `:SLUG_TAKEN`。阶段文件只能由门禁工具写入；`Plan` 的沙箱没有写权限。
+`review({ summary_markdown?, findings: [{ key, value }] })`：
 
-### 2.3 阶段协议与门禁
+- `value` 非空字符串：新增该 key，或更新其 value 并回到 `:ready`。
+- `value` 为 `nil`：删除该 key；若任务有子项或处于在途动作，拒绝。
+- `findings: []`：不改变 board；只有 board 已经为空时，才视为空账。
+- `summary_markdown`：写入 `board.review-summary`，作为本轮判断的说明。
+- 返回 `:review-open` 或 `:review-quiescent`，并给出 `open-tasks`、`attach-ready` 与 `expected-attach`。
 
-#### S1 头脑风暴与需求决策
+空账**只**把当前阶段置为 attach-ready，不写阶段文档、不冻结、不退休 tenure、不注入下一阶段简报。空账后若回合结束，Nudge 点名对应的 `attach_*`。
 
-**交付物**：`plans/<slug>/s1-brainstorm.md` 与 `.herd/missions/<slug>/s1-summary.md`（摘要冻结副本），由 `advance_s1` 原子写入。
+S5 的 `review` 仍由 Reviewer 调用；非空 findings 直接成为 board 根任务并触发 `wake-all`。S5 不出现 attach。
 
-**方法论**（只在改变决策或检查项时点名）：
+#### 2.3.3 材料命名的 attach 工具
 
-- **Jeff Bezos（逆向工作法）**：从最终用户可见结果倒推；先写发布稿（Press Release）与 FAQ；区分不可逆的单向门与可逆的双向门；单向门要求更强证据，双向门在约 70% 信息且行动成本低于分析成本时决断。
-- **Ronald A. Howard（决策分析）**：显式拆开决策框架（Frame）、目标（Objectives）、备选方案（Alternatives）、信息（Information）与价值取舍（Values）；在搜集更多信息前先估算信息价值（VoI）。
-- **Raymond Thomas Dalio（极度求真）**：先摆出最痛的现状事实；诊断根因而非症状；按可核实的证据与可信度加权，不按资历或语气加权。
-- **Charlie Munger（反向思考 / 事前验尸）**：假设这项工程半年后彻底失败，写出最可能死掉的三个原因与当前必须建立的前置防线。
-- **Nassim Nicholas Taleb（否定法 / Via Negativa）**：人类很难一次说清“要什么”，却能精准指出“什么绝对不可接受”；用明确的 Non-Goals、伪需求删除与脆弱耦合切除来锁定真实意图。
-
-**文档必须覆盖**：
-
-1. 一句话目标与用户可见结果（PR 开头）。
-2. 决策框架：目标、备选、已知信息、价值取舍、VoI。
-3. 现状事实与根因：最痛的事实、证据、约束；不把症状当根因。
-4. 单向门 / 双向门分类，以及每扇门的证据门槛。
-5. 事前验尸：失败路径、致命假设、前置防线。
-6. Non-Goals 与刻意不做的事。
-7. 成功标准与“什么叫完成”的用户可见描述。
-8. 未决问题（若有）；每个问题附推荐默认答案与需要人类决定的原因。
-
-**唯一提问通道**：S1 允许调用 `ask_user({ question, context, recommended_default })`。问题必须指向最高 VoI 的歧义；附完整上下文、已知事实、可选方案与推荐默认。禁止问“我能不能继续”“这样可以吗”这类空问题。能先写草案再问的，先写草案。人类回答后，模型继续修改 S1 文档，不需要重新开任期。
-
-**门禁 `advance_s1`**：
-
-- 参数：`{ slug, brainstorm_markdown, summary, non_goals }`。`brainstorm_markdown` 是完整文档；`summary` 是给确认面板的一页摘要，同时也是审计员 S1 背景的冻结副本；它不能替代真实文档展示；`non_goals` 是字符串数组。
-- 框架校验：slug 合法且未被占用；Markdown 非空且包含上述八类内容的可识别章节；`summary` 非空；`non_goals` 非空。校验失败不保存、不晋级、不披露 S2。
-- 校验通过后，框架原子写入 `plans/<slug>/s1-brainstorm.md` 与 `.herd/missions/<slug>/s1-summary.md`（后者是本次 `summary` 的原样冻结副本），打开 TUI 确认面板，**同步等待操作员手工批准或修改意见**。这是全流程唯一的手工批准门禁；S5 初任空账的一次性询问不是阶段批准，不改变本条的排他性。等待期间 Nudge 抑制。
-- 确认面板必须展示磁盘上的真实 `plans/<slug>/s1-brainstorm.md` 内容（可附一页摘要）；不得只显示摘要或内存提交副本。批准时，框架**重读磁盘最新文档与摘要副本**，分别计算 `sha256` 并冻结；不得使用内存中已过时的提交副本。摘要只能来自 `advance_s1.summary`，不得从文档自动提取或改写。
-- 操作员可以直接在编辑器中修改 `plans/<slug>/s1-brainstorm.md`。直接编辑本身不是批准；修改后仍须通过确认面板明确批准或再次提交 `advance_s1`。若文档在提交后发生变化，摘要仍是本次提交的原样副本，并在面板与记录中明确标注“原始提交摘要，可能未覆盖最新文档”；不得从文档解析或重生成摘要，也不得因此新增人类输入等待。若确需更新摘要，只能由现有自动结构化 `advance_s1`/重对齐调用产生。
-- 测试授权：真实产品运行必须由人类操作员本人在面板上明确批准；隔离测试环境可由获用户授权的 AI 操作员操作真实确认界面模拟，按 §2.2 的手工批准边界，在实测记录中注明由 AI 模拟操作员完成即可；产品无需识别按键者身份。无法证明隔离时，不得使用该测试例外，必须由人类操作员批准。
-- 手工批准：在 `:frozen` 中写入 `:s1` 与 `:s1-summary` 的路径和哈希并冻结；卸载 `ask_user` 与 `advance_s1`；挂载 `advance_s2`；在本次工具结果中首次注入 S2 方法论简报；`Plan` 进入 S2。
-- 操作员要求修改：返回具体修改意见与磁盘差异；不冻结、不披露 S2；`Plan` 留在 S1 继续打磨，再次调用 `advance_s1`。
-- 沉默、超时、关闭面板或自动继续不等于批准。不得以“看起来没问题”自行晋级。
-
-#### S2 手工测试方法论
-
-**交付物**（同一次门禁校验、同期冻结）：
-
-- `plans/<slug>/s2-manual-tests.md`：方法论叙述，只写 Testing/Checking、证伪策略、路径覆盖策略、证据标准与双视角评分原则；**不是 CASE 来源**。
-- `.herd/missions/<slug>/cases.edn`：CASE 数据集，由 `advance_s2` 从 `cases` 参数校验后独立持久化到权威控制态；**是 CASE 成员、阈值、路径、步骤、证据要求与评分细则的唯一定义来源**。
-
-**方法论**：
-
-- **James Bach（Rapid Software Testing）**：严格区分 **Testing**（智能体以真实用户/运维视角对真实运行产物做探索性实操调查）与 **Checking**（对已知断言的机器脚本核对）。单元测试、集成测试、端到端脚本、Linter、Typecheck、构建、覆盖率与 CI 绿灯都只是 Checking，**绝不构成验收证据**。
-- **Glenford J. Myers（The Art of Software Testing）**：测试的唯一意图是证伪与找错，不是证明快乐路径能工作；必须覆盖正常、非法输入、边界、并发交错、权限/依赖缺失、取消、崩溃恢复、流程逆序；执行者不能自证完成。
-- **Gerald M. Weinberg（Quality Software Management）**：质量是特定利益相关者眼中的价值；每个 CASE 必须有专属的 0–100 可复现评分细则，以及双视角主观支付意愿（WTP）定义。
-
-**CASE 数据集契约**（`advance_s2` 的严格 Schema 强制；框架**不从 Markdown 解析 CASE**）：
-
-`cases` 是非空数组。每项是一条完整、可独立执行、可独立评分的 CASE，必须且只能包含以下字段；所有对象层禁止未知字段：
-
-| 字段 | 类型 | 约束 |
-|---|---|---|
-| `case_id` | string | 匹配 `^CASE-[A-Za-z0-9_-]+$`；在 `cases` 数组内唯一。持久化 EDN 中写作 `:case-id`。 |
-| `path` | string | 非空，取值如正常、错误、边界、并发、安全、兼容、恢复、取消、逆序、性能、可访问性；必须覆盖正常、错误、边界、并发、恢复，安全/兼容/取消/逆序/性能/可访问性按适用性覆盖，禁止只写快乐路径。 |
-| `threshold` | number | 0–100 的有限数值；建议整数。阈值是 PASS 线，不是“差不多”。 |
-| `steps` | string[] | 非空；每一步是可执行动作。需要前置条件时写在步骤开头。涉及 TUI 的必须写真实按键与抓屏时机；涉及破坏性分支的必须写 `/tmp` 副本破坏步骤。 |
-| `expected` | string | 非空；写清可观察结果，不写“代码看起来正确”。 |
-| `rubric` | string | 非空；本 CASE 专属的完整 0–100 评分规则，必须覆盖原要求：证据到 0–100 的映射、恰好及格与差一档不及格的边界、一票否决条件、漏测非快乐路径的扣分、取整/粒度、最低证据要求，以及 `user_score`/`developer_score` 双视角 WTP 与 `min` 语义。不得用摘要或通用权重模板代替。 |
-
-`rubric` 是自由文本评分规则，不拆成固定子字段；审计员以该字符串为唯一评分依据。框架只校验它非空，不解析其内部结构。
-
-`cases` 持久化为 `.herd/missions/<slug>/cases.edn`，文件内容是 CASE 向量本身（不另加包装字段）。数组顺序就是 $K$ 的枚举顺序、S5 审计启动顺序与 `s5-report.md` 的报告顺序；不按 `case_id` 排序，也不跟随 `s2-manual-tests.md`。冻结哈希是该文件字节的 `sha256`；写入时由框架生成规范 EDN，落盘后回读、计算哈希并冻结。`case_id` 只以 `case_id`/`:case-id` 一个名字出现，其他层不得另造 `id` 身份。
-
-统一要求：
-
-1. `rubric` 是评分唯一权威；审计员按该字符串执行，不得从其他文档推导评分规则。每个 CASE 的 `rubric` 必须把可观察证据映射到完整 0–100 区间，并使两名独立审计员面对同一组证据时分差不超过 ±5。
-2. 单 CASE 最终分为 `min(user_score, developer_score)`，与 `threshold` 比较。Wow 折叠进两分，不设单独的 Wow 阈值。两个分数都是审计员基于观察证据的主观支付意愿，不需要真实用户证词，也不能替代行为证据。
-3. 不得把 `npm test`、`pytest`、`CI 通过`、覆盖率、类型检查、构建成功写成 CASE 的验收证据或加分项。
-4. `s2-manual-tests.md` 只写方法论。框架不解析、不提取、不比对其中的 CASE 文本；正文中提及 `CASE-*` 不构成 CASE 来源，也不参与校验、分发、评分、报告或返工。若与方法论或数据冲突，一律以 `.herd/missions/<slug>/cases.edn` 为准。
-5. 持久化 EDN 使用 kebab-case 字段名（`:case-id`、`:threshold`、`:steps`、`:expected`、`:rubric`），工具参数使用 snake_case（`case_id`、`threshold`、`steps`、`expected`、`rubric`）；两者一一映射，转换只发生在工具边界。
-
-**门禁 `advance_s2`**：
-
-- 参数：`{ slug, manual_tests_markdown, cases: [完整 CASE 记录] }`。`cases` 每项严格遵循上述 Schema；不接收 `rubric_summary`，也不接收任何寄生在 Markdown 中的 CASE 定义。
-- 框架校验：
-  1. slug 合法且与当前使命一致；
-  2. `manual_tests_markdown` 非空；它只作为方法论叙述校验，不检查固定大师关键词、标题结构或 Markdown 中的 CASE 文本；
-  3. `cases` 非空；每项通过严格 Schema；`case_id` 唯一；`threshold` 为 0–100 有限数；`steps`、`expected`、`rubric` 非空；`path` 非空，且覆盖正常、错误、边界、并发、恢复五类必需路径；其余类别按适用性覆盖，不要求固定全集；
-  4. **不解析、不提取、不比对 Markdown 中的 CASE 文本**；Markdown 不是 CASE 来源，二者不存在“一一对应”校验。
-- 校验失败返回 `cases[i].<field>` 或 Markdown 为空的期望值与修复动作；不保存、不晋级、不披露 S3。
-- 校验通过后，在既有使命锁/事务边界内执行：先检查 S1/摘要前缀、当前 stage 与两份文件的前置状态；再按顺序原子写入 `.herd/missions/<slug>/cases.edn`、`plans/<slug>/s2-manual-tests.md`；随后在同一事务内回读两份文件，复核规范字节、Schema 与 `sha256`；最后在 `:frozen` 写入 `:s2` 与 `:s2-cases` 键、递增 `revision`、提交 mission 记录，并晋级 S3。mission 记录未提交不算晋级；崩溃恢复以 `mission.edn` 状态为准，不对进程崩溃承诺两文件同时原子可见；未提交的孤儿文件由恢复/重试识别，不得静默删除或覆盖。
-- **重试判定**：同一 `call-id` 重试先读 mission 状态与两份文件。mission 已提交则按幂等返回原结果；两份文件均未写则继续执行，不得判为冲突；文件已写且字节等于本调用规范字节则复用并继续提交；文件已写但字节不等于本调用规范字节则视为外部修改或其他内容，返回 `:CASE_HASH_MISMATCH` 或 `:FILE_CONFLICT`，不覆盖。不同载荷立即 `:CALL_REPLAY_MISMATCH`。
-- 人类对 `s2-manual-tests.md` 的编辑走现有 `realign` 边界。`.herd/missions/<slug>/cases.edn` 是权威控制态，不提供常规人类编辑入口；若检测到外部修改，按同一 `realign` 边界重读、重新校验 Schema、重算哈希、更新 `mission.edn`、递增 `revision`，并按 `case_id` 重新计算 S4 映射与 S5 审计有效性。未重对齐前一律拒绝使用旧 CASE 哈希，不得静默覆盖，也不得用 `s2-manual-tests.md` 重建 CASE。
-
-#### S3 目标开发指南
-
-**唯一交付物**：`plans/<slug>/s3-dev-guide.md`，由 `advance_s3` 校验并原子写入。
-
-**方法论**：
-
-- **George Pólya（解题四步与启发法）**：理解完整边界、拟定计划、执行、回看；卡住时用类比、逆向、分解重组或泛化。用 `devops` 采集真实宿主与代码事实。
-- **Alan H. Schoenfeld（元认知监控与调控）**：盘点资源、启发法、控制与信念；监控过程；当一条架构路径无法证明它如何满足某条冻结 CASE 记录时，尽早切换，不为沉没成本辩护。
-- **David L. Parnas（信息隐藏）**：按“可能独立变化的设计秘密”拆分模块，禁止按执行流程图步骤或文件行数拆分。
-- **Rich Hickey（Simple Made Easy）**：解耦（de-complect）不可变值、显式状态转换与职责身份；优先扁平数据与显式组合，避免把多件事编织进同一处。
-- **John Ousterhout（A Philosophy of Software Design）**：深模块——窄接口、深实现；用前置防呆（Poka-yoke）把非法状态与错误定义出存在之外，而不是到处散落防御性补丁。
-
-**文档必须覆盖**：
-
-1. 模块边界与单向依赖 DAG；每个模块声明它隐藏的“变化秘密”、公开契约、失败模式。
-2. 每个 S1 需求与每条冻结 CASE 记录由哪个模块/接口满足；每个模块在 `modules[].mapped_cases` 中列出它满足的 `case_id`；不能映射的需求必须回到 S1 澄清或显式列为 Non-Goal。
-3. 数据结构、状态机、错误语义、边界条件、并发模型；接口的输入/输出/不变量。
-4. 实现步骤：从最小完整件（Gall 定律 + Mise en place）到完整组合；每一步可独立验证。
-5. 失败隔离与降级：宿主 API 缺失、`cherry-cljs` 加载失败、子代理启动失败、上游断流时系统如何不崩溃。
-6. 防呆设计：哪些非法状态在结构上不可表示；哪些冲突在触盘前拒绝。
-7. 与冻结 CASE 数据集的对应表，以 `case_id` 为键；每个冻结 CASE 至少被一个模块覆盖；没有 CASE 覆盖的模块必须说明理由。
-
-上述文档是说明性叙述；`modules` 的机器权威是 `advance_s3` 持久化到 `mission.edn` 的 `:s3-modules` 结构化记录（含 `mapped_cases`），不是 Markdown 表格。
-
-**门禁 `advance_s3`**：
-
-- 参数：`{ slug, dev_guide_markdown, modules: [{ path, secret_owned, depends_on, mapped_cases }] }`。`mapped_cases` 是 `string[]`，元素为冻结 CASE 数据集中的 `case_id`；可为空，但全部 CASE 的并集必须被覆盖。
-- 框架校验：模块路径唯一、非空、相对仓库根；`depends_on` 只引用已声明模块；依赖图无环；每个模块声明 `secret_owned`；`mapped_cases` 只引用冻结数据集中存在的 `case_id`，且全部冻结 CASE 至少被一个模块覆盖（未知 ID 与缺失 ID 都拒绝）；Markdown 非空且包含模块边界与依赖图。
-- 校验失败返回具体模块/环/缺失字段/未知 `case_id`/未覆盖 `case_id`，不保存、不晋级、不披露 S4。
-- 校验通过：在同一使命事务中把完整结构化 `modules`（含 `mapped_cases`）写入 `mission.edn` 的 `:s3-modules`，计算其规范 EDN 字节的 `sha256` 并写入 `:frozen` 的 `:s3-modules`（inline 控制态条目，无文件路径）；同时原子保存 S3 文档（只作说明），写入 `:frozen` 的 `:s3` 文档哈希。事务提交后自动批准、挂载 `advance_s4`、注入 S4 方法论简报。S3 文档或 `:s3-modules` 任一写入失败则不晋级；重试必须先重读，外部修改未重对齐时 fail closed。
-
-#### S4 开发者协调手册
-
-**唯一交付物**：`plans/<slug>/s4-coordination.md`，由 `advance_s4` 校验并原子写入。
-
-**方法论**：
-
-- **Donald E. Knuth（文学化伪代码）**：在写任何业务代码之前，用精确伪代码写清核心数据结构、字段类型、状态转换、不变量与边界条件。
-- **Frederick P. Brooks Jr.（人月神话）**：把工程切分为目标互不相交的 Worktree Slice；用前置冻结契约把跨组沟通开销压到 $O(1)$；不要靠增加共享可变状态上的工人来加速。
-- **Leslie Lamport（TLA+）与 Edsger W. Dijkstra（守卫命令）**：显式分开 **Safety**（坏事永不发生：单 Holder、写锁互斥、死身份禁写、stamp 完整性、幂等）与 **Liveness**（好事终将发生：父项等待必可恢复、无死锁、无睡死、Quiescence 可收束）。
-- **Gene Amdahl（Amdahl 定律）与 Donald G. Reinertsen（产品开发流）**：识别并压薄串行关键路径与全局锁争用；禁止人为分批/波次；上游契约一就绪立即放行下游；用 FIFO join 队列减少等待损耗。
-
-**文档必须覆盖**：
-
-1. 文学化伪代码：任务、责任、令牌、写锁、提交、取消、换任的状态与转换。
-2. Safety / Liveness 不变量清单；每条对应一个可检查的转换。
-3. Slice DAG：`slice_id`、`goal`、`inputs`、`depends_on`、`done_when`、`mapped_cases`；目标互不相交；`depends_on` 无环；拓扑合并顺序。
-4. **冻结 CASE 数据集中的每一个 `case_id` 必须被某个 Slice 的 `mapped_cases` 覆盖**。未覆盖即拒绝晋级；需要跨 Slice 集成验证时，必须建立一个显式的集成 Slice，并把对应 CASE 写入它的 `mapped_cases`，不得只在文字中说明。
-5. 并发计划：最大同时施工 Slice 数、每 Slice 槽位数、关键路径、锁持有区间、worktree 创建/回收。
-6. 失败与淘汰：rebase 冲突、`abandon_slice`、全部 Slice 失败的退路。
-7. 与 S3 模块 DAG 的映射：每个 Slice 触碰哪些模块；跨 Slice 共享契约如何冻结。
-8. 人类可读的“为什么这样切”说明：不是按文件数切，而是按独立变化秘密与因果依赖切。
-
-**门禁 `advance_s4`**：
-
-- 参数：`{ slug, coordination_markdown, slices: [{ slice_id, goal, inputs, depends_on, done_when, mapped_cases }] }`。
-- 框架校验：`slice_id` 唯一且合法；`depends_on` 无环；每个 Slice 有非空 `goal`、`inputs`、`done_when`；同一 Slice 的 `mapped_cases` 不得重复；`mapped_cases` 只引用冻结 CASE 数据集中存在的 `case_id`，且全部 CASE 至少被一个 Slice 覆盖（未知 ID 与缺失 ID 都拒绝）；`coordination_markdown` 包含伪代码、Safety/Liveness、合并顺序。
-- 校验失败返回具体 Slice/环/未知 `case_id`/未覆盖 `case_id`，不保存、不晋级、不启动 S5。
-- 校验通过：
-  1. 先核对 `mission.edn` 的 `:frozen` 中已有 `:s1`、`:s1-summary`、`:s2`、`:s2-cases`、`:s3` 与 inline `:s3-modules` 哈希与当前值一致，并复核 `:s3-modules[].mapped_cases` 对当前冻结 CASE 集合的覆盖、未知与重复；哈希不符且未完成重对齐拒绝 `:CONTRACT_HASH_MISMATCH`，映射不合法拒绝 `:MAPPED_CASE_UNKNOWN`/`:MAPPED_CASE_MISSING`，不得静默重冻前序阶段。
-  2. 原子保存 `s4-coordination.md`；只计算 S4 的新 `sha256`；S1、S1 摘要、S2、S2-CASE、S3 与 `:s3-modules` 的哈希沿用 `:frozen` 中既有值。
-  3. 合并写入 `.herd/missions/<slug>/mission.edn` 的 `:frozen`，递增 `revision`，并由 `:frozen` 确定性渲染 `contract-line`；不得把 `contract-line` 当作独立编辑字段。
-  4. **自动批准**，卸载 `advance_s4`，挂载 S5 编排器；
-  5. 在工具结果中首次注入 S5 简报；
-  6. 立即开始 S5 的 fork/join 循环。
-
-**冻结契约行**（从 `:frozen` 确定性渲染，单行，便于人工核对；不是第二权威）：
-
-```text
-Verification contract: MANUAL ACCEPTANCE — s1: plans/<slug>/s1-brainstorm.md sha256=<64hex>; s1-summary: .herd/missions/<slug>/s1-summary.md sha256=<64hex>; s2: plans/<slug>/s2-manual-tests.md sha256=<64hex>; s2-cases: .herd/missions/<slug>/cases.edn sha256=<64hex>; s3: plans/<slug>/s3-dev-guide.md sha256=<64hex>; s3-modules: inline sha256=<64hex>; s4: plans/<slug>/s4-coordination.md sha256=<64hex>; execute every CASE from s2-cases and score min(user_score, developer_score) out of 100; automated tests are NOT acceptance evidence.
-```
-
-#### 已冻结产物的变更（人类编辑/外部修改）
-
-人类可以在任何时刻直接编辑 `plans/<slug>/` 下的文件。系统必须区分三种情况：
-
-1. **当前阶段尚未冻结的 `plans/` 文档**：人类编辑是正常输入。`Plan` 下次读取时看到新内容，应润色到与上下文一致；不得覆盖人类意图。S2 的 CASE 权威是 `.herd/missions/<slug>/cases.edn`；它属于控制态，不提供常规人类编辑入口。若发生外部修改，必须通过严格 Schema，Markdown 中的 CASE 文本不会因此获得效力。
-2. **已冻结但当前阶段尚未结束的文件**：人类编辑或外部修改触发“增量对齐”（现有 `realign` 边界）。系统重读变更文件、重新校验 CASE 数据 Schema、重新计算对应哈希、更新 `mission.edn`、递增 `revision`，并向当前角色注入简短对齐提示：
-   - 若变更的是 `s2-manual-tests.md`，只说明方法论章节变化，不改变 CASE 数据集；
-   - 若变更的是 `.herd/missions/<slug>/cases.edn`，按 `case_id` 列出任何字段变化（至少包括新增、删除、阈值、路径、步骤与 `rubric`），并用新的冻结 CASE 集合逐项校验 `mission.edn` 的 `:s3-modules[].mapped_cases` 与 `:frozen` 的 S4 `slices[].mapped_cases`。若映射仍完整且无未知/缺失/重复，只更新 CASE 哈希与受影响审计；若映射需要变化，**框架不得猜造映射、自动分配给某个模块/Slice，或只重算哈希伪装对齐**。必须由现有自动结构化 realign 调用提交完整 `modules`（及必要 `slices`），逐项重新校验后再写入 `:s3-modules`/slices 并重算 `:frozen` 对应哈希。该调用由当前自动角色发起，S2–S5 不要求人类审批。无有效完整映射时停止推进，报告 `:MAPPING_REALIGN_REQUIRED` 与具体未覆盖/未知 `case_id` 及受影响模块/Slice。**不得从 S3 Markdown 的映射表重新读取或覆盖结构化记录。**
-   - 若变更的是 `s1-brainstorm.md`，摘要保持为原已批准背景并明确标注，不因文档编辑解析、重生成或要求人类输入；`realign` 只更新 S1 文档哈希并注入当前冻结 S1 文档/对齐提示。若必须更新摘要，只能由现有自动结构化重对齐调用产生。
-   - 若 CASE ID 集合变化使已冻结的 S4 映射无法覆盖，必须由同一自动结构化 realign 调用提交完整 `slices`（必要时同时提交完整 `modules`），逐项校验并通过后重冻；无法在不破坏冻结契约的前提下完成时，拒绝继续晋级或结案并报告具体缺口。不得猜测映射，不得只重算哈希，也不得假装直接改盘没有发生。
-   重对齐完成后，框架必须从 `:frozen` 重新确定性渲染 `contract-line`；旧行不得保留。所有受影响的审计回执与 `s5-report.md` 立即失效并必须重跑；已签发的批准凭证不得复用。
-   不得静默使用旧哈希，也不得静默覆盖人类修改。
-3. **审计期间或结案前的哈希不匹配**：若文件、S1 摘要或 `.herd/missions/<slug>/cases.edn` 与 `:frozen` 不一致且尚未完成重对齐，审计结果无效；框架拒绝结案，要求先重对齐并重跑受影响的 CASE。框架先按 `:frozen` 验证哈希，再把单条 CASE 记录派发给审计员；审计员只消费该记录，不需要对照数据集或契约，也不判断二者是否一致。
-
-任何情况下都不得“拿被静默改弱的标准结案”。人类版本优先，但必须显式重对齐、重新计算、重新验收。
-
-**门禁交互降级**：若宿主工具不能长时间挂起等待明确交互，`ask_user` 与 `advance_s1` 可以返回 `:awaiting-user` 回执并结束回合；守卫抑制 Nudge；下一条明确交互到达后，系统恢复等待中的门禁，不重开阶段、不重复保存、不重复披露。同步等待与异步等待的批准语义完全相同；不得因为宿主限制就把 `advance_s1` 降级为自动批准。
-
-#### 门禁的幂等与崩溃边界
-
-- 每个门禁工具调用携带宿主的 `call-id`。同一 `call-id` 重放返回原回执；同一 `call-id` 换不同载荷立即拒收 `:CALL_REPLAY_MISMATCH`。
-- 阶段文件写入使用同目录 `.tmp` + `fsync` + `rename` 原子替换。保存成功但回执丢失时，重放只返回已保存结果，不重复追加。
-- 门禁的“保存 + 冻结 + 晋级 + 披露”在一次逻辑提交中完成。若进程在保存后、晋级前崩溃，恢复时以 `mission.edn` 的阶段与哈希为准：文件存在但阶段未晋级，允许重新校验并晋级；阶段已晋级但文件缺失/哈希不符，拒绝继续并要求恢复。
-- 系统不承诺抗停电；只承诺不暴露半提交状态。最后一次提交可能丢失，恢复后按当前现场重新判断。
-
-### 2.4 渐进披露：一棒一换血
-
-**问题**：把 S1–S5 的全部大师、全部规则、全部 CASE Schema 与字段说明一次性塞进系统提示词，模型会在 S1 就想着写测试表，在 S2 就想着切 Slice，注意力被未来任务稀释；同时长提示词会破坏缓存前缀，增加成本。
-
-**决定**：基础系统提示词只含 `COMMON`（工程哲学、内省三闸门、工具优先、UFSS）与当前阶段简报。下一阶段的方法论**只在上一阶段门禁成功的工具结果中披露**。
-
-| 披露载荷 | 何时注入 | 内容 | 退役 |
+| 工具 | 参数 | 完成阶段 | 写入 |
 |---|---|---|---|
-| `S1_BRIEFING` | `/herd` 启动时，作为 S1 初始简报 | S1 大师、文档与摘要要求、`ask_user` 规则、`advance_s1` 唯一手工批准门禁 | `advance_s1` 获批后退役 |
-| `S2_BRIEFING` | `advance_s1` 获批的工具结果 | S2 大师、Testing ≠ Checking、CASE 数据 Schema 与字段、方法论文档职责分工、双视角 WTP、`advance_s2` 自动批准 | `advance_s2` 成功后退役 |
-| `S3_BRIEFING` | `advance_s2` 成功的工具结果 | S3 大师、模块边界、依赖 DAG、`advance_s3` 自动批准 | `advance_s3` 成功后退役 |
-| `S4_BRIEFING` | `advance_s3` 成功的工具结果 | S4 大师、Slice DAG、Safety/Liveness、关键路径、`advance_s4` 自动批准 | `advance_s4` 成功后退役 |
-| `S5_BRIEFING` | `advance_s4` 成功的工具结果 | S5 fork/join、tenure 双相、K 路审计、返工循环、无人值守 | 结案后退役 |
+| `attach_brainstorm` | `markdown` | S1 → S2 | `plans/<slug>/s1-brainstorm.md` |
+| `attach_manual_tests` | `markdown`, `cases` | S2 → S3 | `plans/<slug>/s2-manual-tests.md`、`.herd/missions/<slug>/s2-cases.edn` |
+| `attach_dev_guide` | `markdown` | S3 → S4 | `plans/<slug>/s3-dev-guide.md` |
+| `attach_coordination` | `markdown`, `promela` | S4 → S5 | `plans/<slug>/s4-coordination.md`、`plans/<slug>/s4-coordination.pml` |
 
-**实现规则**：
+所有文档参数统一叫 `markdown: string`。`cases` 是 S2 唯一保留的结构化控制态；`promela` 必填非空，但只保存、只读观察，不解析、不运行 Spin、不做模型检查。Promela 表达力不足时，用注释嵌入 Knuth 风格伪代码；注释是该模型的一部分。S3 不提交 `modules`；S4 不提交 `slices`、不定义 Slice DAG。`attach_dev_guide` 的内容组织完全由 markdown 决定。
 
-1. `src/stages/disclosures.mjs` 只导出各阶段简报常量；只有门禁工具的 handler 可以读取下一阶段简报并放入工具结果。`before_agent_start` 只能读取当前阶段简报。
-2. 出站投影在 `context` 钩子中钉住“当前阶段简报”的完整文本：即使它位于最新一次 `time_leap` 剪枝之前，也保留在出站副本中。晋级后，旧简报不再钉住，自然被裁掉。
-3. 基础提示词、S1 简报、角色提示词中不得出现 S2–S5 的大师名字、CASE 字段名、Slice 字段名或审计流程细节。该约束由代码评审与人工/运行时观察确认；测试禁止断言 LLM-facing 的文本内容，代码是唯一真理。
-4. 门禁工具结果中的简报是 system-authored 内容，模型应把它当作权威指令；简报必须完整，不能只给一句“进入下一阶段”。
-5. 阶段晋级后，旧简报自然退役；如需丢弃上一阶段的探索噪音，可调用 `time_leap` 回到本阶段干净的 `clj_*` 锚点并携带经验，必要时用 `ask_beacon` 查询已封存枝桠的结论。系统不强制阻断，但 Nudge 与简报会提醒。
+#### 2.3.4 attach 前置条件与事务
 
-**为什么不用“每次阶段切换都新建一个全新子代理”**：S1–S4 是同一个 `Plan` 的连续打磨，强行换人会丢失需求上下文与人类澄清；真正的“无包袱验收”发生在 S5 的 `Reviewer` 换任与 K 路审计，而不是规划期。S1–S4 用渐进披露 + 出站投影来换血，已经足够。
+`attach_*` 按顺序检查：当前 active Plan tenure；stage 与工具一致；board 为空且无在途动作；attach-ready 属于当前 tenure；没有另一个 pending attach；`call-id` 与 payload digest 一致。错误码：`:ATTACH_NOT_READY`、`:REVIEW_LEDGER_NOT_EMPTY`、`:ATTACH_STAGE_MISMATCH`、`:ATTACH_ALREADY_PENDING`、`:TENURE_RETIRED`、`:CALL_REPLAY_MISMATCH`。
 
-### 2.5 S5 多 Worktree 编排与任期双相循环
+成功路径：
 
-#### 2.5.1 `fork_slices` 与 `join_slice`
+1. 校验参数。
+2. 逐个原子写交付物；全部成功后才进入 barrier。
+3. 在一个 mission 事务中：归档当前 board 到 `boards/<tenure-id>.edn`；写 barrier；当前 tenure 退休；清空 attach-ready / pending；stage 前进；创建 successor tenure 与空 board；递增 control-version；追加事件。
+4. 事务提交后：切换工具面；启动 successor Plan 会话；只向 successor 注入下一阶段简报。
 
-S4 门禁通过后，`Coordinator` 按冻结的 `s4-coordination.md` 调度 Slice 级并行：
+barrier 记录包含 from/to、retired-tenure、successor-tenure、board-archive、review-summary、written-at。旧 tenure 的迟到 `review` / `attach_*` 一律 `:TENURE_RETIRED`。attach 文件写完后、barrier 前崩溃：stage 不变，保留 `:attach.pending`，同 `call-id` 重试复用/覆盖文件并补 barrier；barrier 已提交但 successor 未启动：只补启动与简报注入，不重跑 attach。
 
-1. **`fork_slices({ slices })`**：
-   - 对所有 `depends_on` 已满足的 Slice，在 `.herd-worktrees/<slug>/<slice_id>` 创建基于当前目标主分支（`base`）的独立 Git worktree；分支名 `herd/<slug>/<slice_id>`。
-   - 初始化该 Slice 的看板 `.herd/missions/<slug>/slices/<slice_id>/board.edn`、写锁 `$W$` 与令牌槽；启动该 Slice 的任期循环（Phase A `Reviewer` ⇄ Phase B `Swarm`）。
-   - `N` 不设人为上限；按因果最大化并发。磁盘/句柄不足时返回 `:INSUFFICIENT_WORKTREES` 与建议降数，由 `Coordinator` 重试；不得静默改小 `N` 或把多个 Slice 塞进同一 worktree。
-   - 绝不把同一份活派给多个 Slice；Slice 的目标互不相交。worktree 隔离就是边界；系统不检查每个 Slice 的 `:paths` 是否重叠，靠 S4 的切片设计与 `join` 冲突处理兜底。
-   - 返回每个已启动 Slice 的 `{ slice_id, swarm_id, workspace, branch }`；`workspace` 是 `.herd-worktrees/<slug>/<slice_id>` 的绝对或仓库相对路径。未就绪的 Slice 不出现在返回值中，等其 `depends_on` 满足后再次 `fork_slices`。
-2. **`join_slice({})`（FIFO 队列，不是竞速）**：
-   - 当某个 Slice 通过其内部继任 `Reviewer` 空账验收且满足单任期 Quiescence 后，进入已完成 FIFO 队列。
-   - 每次 `join_slice` 取队首结果；若队列为空但仍有 `:running` Slice，调用阻塞等待；若队列为空且没有任何 `:running` Slice，立即返回 `:none`。
-   - 取得结果后，获取**主分支集成锁**（`.herd/locks/master-integration.lock`）；若 `base` 已前进，唤醒该 Slice 的 `Holder` 在该 worktree 内执行 `git rebase <base>` 并复核冲突。若冲突因方向性淘汰不可解，`Holder` 调用 `abandon_slice({ reason })` 丢弃该 worktree 并上报；该结果不入队，其余 Slice 继续。
-   - 对齐通过后，主工作区执行机械 `git merge --ff-only`；释放集成锁；向 `Coordinator` 内联返回该 Slice 的完整结项报告全文（不截断、不摘要）：`{ slice_id, workspace, report, ff_commit, rebase_rounds }`。
-   - Worktree 在 `join` 或 `abandon` 后保留 7 天（可配置）备查，随后 GC；diff 与报告进入事件日志，不进入主分支历史之外的用户可见区。
-3. **全部 Slice 完成后**：`Coordinator` 反复调用 `join_slice` 直到 `:none`；随后进入终局审计。若全部 Slice 都 `abandon`，队列为空且无 `:running`，`Coordinator` 收到 `:no-results`，决定 re-fork、re-plan 或终止，并必须向用户给出具体理由与教训。
+#### 2.3.5 S1 人工批准
 
-**锁层级（必须遵守，禁止反向）**：
+`attach_brainstorm` 写 `s1-brainstorm.md` 后，读回磁盘正文并打开确认面板。`pending` 返回 `awaiting-user` 并抑制 Nudge；`revise` 清 attach-ready、留在 S1，修改后必须重新 `review([])`；`approve` 重新读取磁盘正文后直接 barrier。没有 `s1-summary.md`，没有 `non_goals` 参数；Non-Goals 写在 markdown 内。
 
-```text
-master-integration lock
-  └── slice 的 $W$（写入口）
-        └── slice 的 board lock（看板短事务）
-```
+#### 2.3.6 frozen 只是约定
 
-- 任何路径按“集成锁 → $W$ → board lock”的顺序获取；反向获取视为实现缺陷。
-- `board_split` / `board_claim` / `board_take_or_die` 等纯看板操作只取 board lock；不得在持 board lock 时等待 $W$。
-- `board_finish` 若依赖文件事实，先取 $W$ 复核 `read-set`，再进 board lock 提交；不得先取 board lock 再等 $W$。
-- `call` 先 drain（取 $W$ 提交未落盘修改），再进 board lock 登记 `:running`，释放 board lock 后运行命令；运行期继续持 $W$；结束后进 board lock 结清，再释放 $W$。
-- 锁等待不设“超时自动转交”：持锁者仍存活时，第二个写者不能进入；长时间无输出不等于责任结束。`/herd-recovery repair` 只能在确认 PID 已死或用户明确同意时清理陈旧锁。
+本版删除 `:frozen` 哈希、`contract-line`、`realign_frozen` 与所有哈希不匹配错误。交付物由提示词声明为 frozen，系统不校验；外部修改、审计员误写都不会被机器发现。`mission.edn` 不保存 `:contract` 路径清单；继任者路径由 `slug + stage` 推导。
 
-#### 2.5.2 Slice 内部任期：Phase A ⇄ Phase B ⇄ Relay
+#### 2.3.7 锁与原子写
 
-```mermaid
-stateDiagram-v2
-    state "Phase A：中心化评估窗口（Reviewer + clj_review）" as ReviewWin
-    state "Phase B：微观蜂群施工期（Swarm + 看板）" as SwarmPhase
-    state "原子接力屏障（退休 + 上下文屏障 + 继任者）" as RelayBarrier
-    state "Slice 完成，进入 FIFO join 队列" as Queued
+S1–S4 只有当前一个 active Plan tenure 写 `mission.edn`、`board.edn` 与交付物，不加 mission 锁。S5 的 board 有并发写者，只保留一个 `board.lock` 做短事务。所有控制文件与交付物使用同目录 `.tmp` + `fsync` + `rename`；只承诺单文件不半截，不承诺跨文件事务。没有 `master-integration.lock`。
 
-    [*] --> ReviewWin: 任期开启
-    ReviewWin --> Queued: 继任者首评空账 + Quiescence
-    ReviewWin --> SwarmPhase: 提交非空 findings，立账并唤醒蜂群
-    SwarmPhase --> RelayBarrier: 根任务全 done + 无在途动作 + Holder 无责
-    RelayBarrier --> ReviewWin: 新任期（干净视野）
-```
+### 2.4 渐进披露：attach 后换血
 
-1. **Phase A：中心化评估窗口**：
-   - 每个 Slice 任期开始时，启动一名干净的 `Reviewer` 子会话（主模型），常规只开放 `clj_review` 与 `submit_review`；仅当主工作区首次启动且已满足契约、需要执行初任空账的一次性询问时，临时开放 `ask_user`。除此之外，评审期间不得用 `ask_user` 推迟判断。
-   - `Reviewer` 读取冻结的 `s1..s4` 契约（或摘要 + 路径）、`mission.edn` 中 `:s3-modules` 的结构化模块映射（不读取 S3 Markdown 映射表）、框架注入的、由 `.herd/missions/<slug>/cases.edn` 中 `mapped_cases` 指向本 Slice 的 CASE 记录、当前 worktree 现场；用只读沙箱核对代码、测试、文档与实际产物。CASE 记录由框架按 Slice 预筛后注入；`Reviewer` 不自行从任何 Markdown 解析或对照 CASE。
-   - **初任首评**：通常提交非空 `findings`，把“离 S4 `done_when` 还差什么”逐条列出。若整个 S5 在主工作区首次启动、现场已完全满足契约且没有任何 Slice 需要施工，系统不把这次空账记为 review，而是转为一次 `ask_user({ question: "契约已满足，接下来做什么？" })`；该询问由初任 `Reviewer` 提交空账触发，尚未 fork 时由 `Coordinator` 代表初任 `Reviewer` 执行。人类回答只作为新需求进入上下文，不记 review、不触发接力。同一初任只问一次；之后的空账按正常继任流程处理。
-   - **继任者首评**：在完全看不到前任对话与蜂群草稿的干净视野中独立核验。若提交**空账 `findings: []`**，且通过单任期 Quiescence 检查，本 Slice 完成，进入 FIFO join 队列；若提交**非空 `findings`**，立即打回，进入新一轮 Phase B。
-2. **Phase B：微观蜂群施工期**：
-   - `Reviewer` 提交非空台账后退场。系统在同一 board lock 事务内：
-     1. 将 `clj_review` 从当前角色工具面卸载；
-     2. 把每条 `{ key, value }` 实例化为看板根任务 $T_k$（`:state :ready`，`ledger_key = key`）；
-     3. 向该 Slice 的全部固定槽位发出 `wake-all`；
-     4. 记录事件 `:review-findings-opened`。
-   - 蜂群按 §3 自主拆分、认领、受保护写文件、持令 `call`。每当根任务 $T_k$ 被显式 `board_finish`，系统同步把台账键 `k` 置 `nil`。
-3. **原子接力屏障**：
-   - 触发条件：全部根任务 `:done`、未结任务集合 $U = \emptyset$、无 `:applying`/`:running`/`:uncertain` 动作、`Holder` 已无责退休、`$W$` 未被持有。
-   - 在同一原子状态提交中完成：
-     1. 当前任期标为 `:retired`；旧任期与旧蜂群身份全部失效；迟到请求拒收 `:TENURE_RETIRED`；
-     2. 写入上下文屏障；
-     3. 以 `:successor` 开启下一任 `Reviewer`，里程碑字段原样复制（接力只换人，不换 Slice 目标）；
-     4. 清空旧看板的动作/槽位可见状态，但保留任务结果与事件账本供继任者读取。
-   - 继任者只看到：用户原始输入、冻结契约、worktree 真实现场、看板任务树与结果引用、系统继任提示。前任 `Reviewer` 与蜂群的对话、思考、失败尝试全部不可见。
-   - **不存在“屏障已写、台账未推进”的中间状态**：事务未提交，旧任期仍活；事务提交，继任者已活。恢复只读最后一次已提交状态，不重放、不扫描全部历史。
-4. **Quiescence 检查**（单任期最小集，提交空账前必须通过）：
-   - 本 tenure 无 `:applying` / `:running` / `:uncertain` 动作；
-   - 无未结 `:needs-token` 任务；
-   - 不持有 `$W$`；
-   - 无待办 rebase 任务；
-   - 当前 worktree 相对最新 `base` 可通过 `git merge --ff-only` 的 dry-run；
-   - actor 只需无责任，不要求槽位为空；master 集成锁归 `join_slice` 管，不进入本检查。
-   - 任一不满足：拒收 `:RESOURCES_NOT_QUIESCENT`；ff dry-run 失败：拒收 `:FF_NOT_READY`，要求该 Slice 的 `Holder` 完成一次 rebase 后再提交空账。
+S1 简报在 `/herd` 启动时注入。S2–S5 简报不再由 `advance_*` 回执注入，而是由 `attach_*` 成功后的 successor 初始化注入；旧 tenure 在 barrier 后退休，不能继续看到下一阶段简报。基础提示词不得提前出现 S2–S5 的大师名字、CASE 字段、attach 参数或审计流程。
 
-#### 2.5.3 `abandon_slice`
+### 2.5 S5：单工作区 Reviewer ⇄ Swarm
 
-- 仅该 Slice 的 `Holder` 可调用；参数 `{ reason }`。
-- 使用场景：rebase 冲突因方向性淘汰不可解；Slice 目标已被主分支演进证明无意义；worktree 损坏且无法安全修复。
-- 效果：该 Slice 标 `:abandoned`、worktree 丢弃、agent 逻辑死亡；结果不入队；其余 Slice 继续。
-- `abandon_slice` 不是“失败重试”的快捷方式；不得因为实现困难而放弃一个仍然有效的 Slice。放弃必须给出可核对的理由与已产生的证据。
+S5 的 dogfood 面是单工作区、单看板：
 
-### 2.6 S5 终局：K 路并发独立实操审计
+1. Coordinator 启动一名只读 `Reviewer`；其工具面为 `clj_review` 与 `review`。
+2. Reviewer 提交非空 findings 时，同一 board 生成根任务并 `wake-all` 唤醒 Swarm；Swarm 用 `clj_worker` 受保护提交、用 `board_*` 拆分/认领/完成；Holder 额外拥有 `call`。
+3. 当 board 为空、没有 `:applying`/`:running`/`:uncertain` 动作、Holder 已无责时，原子退休当前 tenure、写上下文屏障、启动继任 Reviewer。继任者只看到用户 seed、工作区现场、board 任务树与结果引用、继任提示。
+4. 继任 Reviewer 空账且 quiescence 通过后，进入 K 路审计；不出现 `attach_s5`。
+5. 初任 Reviewer 首次空账且主工作区已满足契约时，保留一次性 `ask_user` 例外。
 
-当全部 Slice `join` 完成（或 `Coordinator` 明确决定终止）后，进入终局验收。
+`fork_slices`、`join_slice`、`gc_worktrees`、`abandon_slice` 与 worktree/rebase/ff 编排暂不进入 dogfood 工具面；`src/swarm/worktree.mjs` 保留为休眠代码。S4 的 attach 不调用 fork，也不依赖 `runner.forkSlices`。
 
-#### 2.6.1 审计前准备
+### 2.6 终局：K 路并发实操审计
 
-1. **契约复核**：`Coordinator` 以 `mission.edn` 的 `:frozen` 为唯一权威，重新计算 `s1`、`s1-summary`、`s2`、`s2-cases`、`s3`、`s4` 对应文件的 `sha256`，并重新计算 `mission.edn` 内 `:s3-modules` 规范 EDN 字节的 inline `sha256`，逐项比对；`contract-line` 只作渲染摘要，不参与判定。任何缺失、空文件、哈希不符且未完成重对齐，直接拒绝启动审计，并向用户报告具体文件与期望/实际哈希。
-2. **CASE 数据集装载**：框架对冻结的 `.herd/missions/<slug>/cases.edn` 只读取一次字节；用同一字节计算 `sha256`、解析 EDN、校验 Schema 与 `case_id` 唯一，得到 $K$ 个 CASE 的 `case_id`、`path`、`threshold`、`steps`、`expected` 与 `rubric`。不得先哈希再重新读取解析，或先解析再另读哈希。哈希不符、Schema 失败或 CASE 数为 0，拒绝审计。框架**不从** `s2-manual-tests.md` **解析 CASE**，也不从任何 Markdown 提取或对照 CASE。
-3. **主工作区快照**：启动前，框架采集主工作区全部产品源码、测试、配置、`plans/` 契约文件、`.herd/missions/<slug>/s1-summary.md` 与 `.herd/missions/<slug>/cases.edn` 的 `stamp` 快照（或等价的哈希清单）；审计结束后再次采集并比对。
-4. **审计员隔离**：
-   - 每名审计员一个 `runSubprocess`，主模型，名字 `Auditor-<slug>-<case_id>`；必须传 `artifactsDir`（例如 `.herd/artifacts/audit/<case_id>/`，用于 transcript）与 `eventBus`（用于 Agent Hub 实时进度），并把父会话 `sessionFile` 作为父链接。`artifactsDir` 与证据目录 `plans/<slug>/evidence/<case_id>/` 是两回事：前者是会话 transcript，后者是审计证据。
-   - 工具面：`clj_auditor` + `submit_case_audit` + 出站尾注语言要求；禁止 spawn 子代理；禁止修改主工作区产品/测试/文档/`.herd`。`clj_auditor` 的读取白名单不包含 `.herd/missions/<slug>/cases.edn`；CASE 数据只通过框架注入的本 CASE 记录提供，防止审计员读取其他 CASE 或整份数据集。
-   - 独立 `tmux` 会话名：`herd-<slug>-<case_id>`；独立 `/tmp` 破坏副本：`/tmp/herd-audit-<slug>-<case_id>-<uuid>/`；独立证据目录：`plans/<slug>/evidence/<case_id>/`。
-   - 硬超时默认 30 分钟（可配置）；父级 `AbortSignal` 递归传播。
-   - 每个审计员只收到：来自 `.herd/missions/<slug>/s1-summary.md` 冻结副本的 S1 原已批准背景摘要（不得从 `s1-brainstorm.md` 提取）、冻结契约路径、属于它的那一条完整结构化 CASE 记录（含 `case_id`、`path`、`threshold`、`steps`、`expected` 与 `rubric`，以 EDN + UFSS 渲染）、隔离边界、提交 Schema。数据集哈希、Schema、ID 唯一与覆盖由框架校验；审计员只按注入记录执行。**不收到 `s2-manual-tests.md`，不收到其他 CASE 的内容，也不收到其他审计员的结果。**
-5. **并发语义**：K 名审计员同时启动（`Promise.all` 或等价的并发调度）。运行时资源不足时排队，但语义上全部启动；不得串行跑完一个再启动下一个，也不得因为某个 CASE 简单就跳过。
+全部 S5 施工收束后，框架读取 `.herd/missions/<slug>/s2-cases.edn`，为每个 CASE 启动一名独立可见 `Manual Auditor`；每名只消费自己的 CASE 记录，不读整份数据集。审计在真实宿主与专属 `/tmp` 副本中进行；自动化测试、CI、构建、覆盖率不作为验收证据。
 
-#### 2.6.2 审计员行为
-
-每个审计员必须：
-
-1. 使用框架注入的 S1 原已批准摘要冻结副本理解用户可见目标；自己的 CASE 以框架注入的结构化记录为唯一权威。数据集完整性由框架负责，审计员不读取 `.herd/missions/<slug>/cases.edn`，也不从 `s2-manual-tests.md` 提取 CASE；只消费框架注入的单条记录。
-2. 在真实 `omp` 宿主中按 CASE 步骤亲自操作；涉及 TUI 的，在专属 `tmux` 会话中发送真实按键并抓屏，保存到证据目录，报告中引用路径与可见行；未抓屏不得声称通过。若 CASE 覆盖 S1 手工批准门禁，审计员可在专属 `/tmp` 隔离副本中按 §2.2 的手工批准边界，以获用户授权的测试 AI 操作员身份操作真实确认界面，并在报告中注明该次 S1 批准由隔离测试中的 AI 模拟操作员完成；产品无需识别操作者身份；不得冒充人类批准，不得在主工作区或真实生产使命上操作。
-3. 涉及缺失依赖、损坏配置、非法入口、权限失败的分支，把仓库复制到专属 `/tmp` 副本中制造破坏并运行；不得污染主工作区。
-4. 覆盖正常、错误、边界、并发、恢复、取消、逆序等 CASE 要求的全部路径；不得只跑快乐路径，不得用“代码看起来正确”代替观察。
-5. 不把单元测试、集成测试、CI、Linter、Typecheck、构建、覆盖率当作验收证据；它们可以出现在前置条件或诊断中，但绝不能提高分数。
-6. 不使用执行者的总结、提交信息、任务数量或“已完成”声明作为证据；只信自己在真实界面与文件系统中观察到的行为。
-7. 如果环境、GUI、权限或服务不可用，记录失败并给出低于阈值的分数；不得跳过、不得凭信通过。
-8. 按 CASE 记录的 `rubric` 打两个分：
-   - `user_score`：外部用户愿为该交互效果支付的程度；
-   - `developer_score`：工具开发者愿为该内部工程质量支付的程度。
-   最终分 `min(user_score, developer_score)`；不提交总分，由框架计算。
-9. 通过 `submit_case_audit` 一次性提交：
-   `{ case_id, user_score, developer_score, report_markdown, evidence_paths }`。
-   `report_markdown` 必须包含执行者、环境、逐步骤观察、证据路径、双视角评分理由、问题与限制；不得只交 JSON 或一句“通过”。
-
-#### 2.6.3 框架汇总与结案
-
-1. 收集全部 $K$ 份回执。拒绝：
-   - 缺失的 CASE（相对冻结 CASE 数据集）；
-   - 未知的 CASE ID（不在冻结 CASE 数据集内）；
-   - 重复的 CASE ID（同一 ID 多次有效提交）；
-   - 非有限、越界（<0 或 >100）的分数；
-   - 空的 `report_markdown`；
-   - 指向不存在文件或越界目录的 `evidence_paths`；
-   - 审计员在运行期间修改了主工作区或 CASE 数据（由快照比对发现）。
-2. 对每个 CASE 计算 `final = min(user_score, developer_score)`，与冻结记录中的 `threshold` 比较；阈值不取自审计员自报。
-3. **全部达标**：
-   - 按冻结 CASE 数据集的记录顺序合成总报告，原子写入 `plans/<slug>/s5-report.md`；
-   - 总报告包含：契约行、CASE 数据集哈希、审计环境、每个 CASE 的得分表（`case_id` / `path` / `user_score` / `developer_score` / `final` / `threshold` / `PASS|FAIL`）、各 CASE 证据路径、审计员报告全文、总判定、限制与教训；
-   - 再次以 `:frozen` 为唯一权威复核 S1/摘要/S2/CASE/S3/S3 modules/S4 哈希与主工作区快照；`contract-line` 只作渲染核对。通过后签发绑定 `(missionId, revision)` 的一次性结案批准凭证，写入 `mission.edn` 的 `approval` 字段；
-   - 使命置为 `:completed`（用户侧“已交付”）。任何绕过该凭证直接把使命标为 `:completed` 的调用一律硬拒绝 `:APPROVAL_REQUIRED`。
-4. **任一未达标或审计异常**：
-   - 保留完整失败明细（哪个 CASE、哪个视角、哪条证据、审计员指出的具体缺陷）；
-   - 不写“已交付”报告；使命保持进行中；
-   - 把未达标 CASE 及其缺陷转化为新一轮修复 Slice（或当前 Slice 的根任务），自动打回蜂群修复；修复 Slice 是运行时派生，**不修改冻结的 `s4-coordination.md` 与 `.herd/missions/<slug>/cases.edn`**，其 `mapped_cases` 只包含冻结数据集与本次审计回执交集里的未达标 `case_id`；
-   - 修复完成后重新 `join`，重新启动受影响 CASE 的审计（必要时整批重跑）；重跑必须沿用同一条冻结 CASE 记录，不得改写描述或降低阈值；
-   - 递增 `revision`；循环直至全部 CASE 达标。
-5. **审计员异常/超时/崩溃**：该 CASE 视为“未完成”，不得结案；重试该 CASE 或整批重跑。审计员失败不是“通过”的理由。
-6. **主工作区或 `.herd/missions/<slug>/cases.edn` 在审计期间被修改**：整批审计作废；先调查修改来源（人类编辑、残留进程、未受保护的 Shell），完成重对齐或修复后重跑。CASE 数据变更必须重新校验 Schema、重算哈希、按 `case_id` 重跑受影响审计；不得把审计员观察到的旧现场与新代码或新标准混在一起结案。
-
+审计员通过 `submit_case_audit` 提交 `user_score`、`developer_score`、报告与证据路径；最终分为 `min(user_score, developer_score)`，阈值来自 CASE 记录。全部 PASS 时写 `plans/<slug>/s5-report.md` 并签发批准；任一 FAIL 时把未达标 CASE 转为 board 根任务，继续修复，循环直到全 PASS 或人类取消。审计前后不校验 frozen 哈希；CASE 数据集与工作区现场由审计员自行核对。
 ### 2.7 常授权无人值守与防停机 Nudge
 
 Lite 默认是常授权无人值守模式。整个 Mission 只有以下合法停止出口：
 
 1. **S1 的 `ask_user` 挂起**：等待人类回答澄清问题。
-2. **S1 门禁 `advance_s1` 等待手工批准**：这是唯一的手工批准点。真实产品运行必须由人类操作员明确批准；隔离测试环境可由获用户授权的 AI 操作员操作真实确认界面模拟，测试操作不冒充人类批准或生产授权（见 §2.2、§2.3）。
-3. **S5 初任空账的一次性 `ask_user`**：仅当主工作区已满足契约、没有任何 Slice 可做、且是初任 `Reviewer` 的第一次空账时。问完即恢复无人值守；同一初任只问一次，之后的空账按继任流程处理。
+2. **S1 `attach_brainstorm` 等待手工批准**：这是唯一的手工批准点。真实产品运行必须由人类操作员明确批准；隔离测试环境可由获用户授权的 AI 操作员操作真实确认界面模拟，测试操作不冒充人类批准或生产授权（见 §2.2、§2.3）。
+3. **S5 初任空账的一次性 `ask_user`**：仅当主工作区已满足契约、没有任何任务可做、且是初任 `Reviewer` 的第一次空账时。问完即恢复无人值守；同一初任只问一次，之后的空账按继任流程处理。
 4. **终局结案**：`s5-report.md` 全部 CASE 达标并签发批准凭证；或 `Coordinator` 明确决定终止并给出未交付理由与教训。结案是完成，不是等待人类。
 
-**其余阶段全程无人值守**：除 S1 过程中的 `ask_user`、S1 最后的 `advance_s1`、S5 初任空账的一次性询问外，任何阶段都不得阻塞等待人类或操作员、不得弹审批、不得要求人类或操作员确认下一步。S5 的审计失败、返工、join 等待，都由系统按看板与审计结果继续推进。
+**其余阶段全程无人值守**：除 S1 过程中的 `ask_user`、S1 最后的 `attach_brainstorm`、S5 初任空账的一次性询问外，任何阶段都不得阻塞等待人类或操作员、不得弹审批、不得要求人类或操作员确认下一步。S5 的审计失败与返工由系统按看板与审计结果继续推进。
 
 除此以外，任何角色在未达出口时结束模型回合，守卫内核立即拦截并注入 **Nudge**，驱动下一轮继续。Nudge 不弹窗、不等待人类、不判断“是不是原地打转”；它只判断“回合是否在没有合法出口时结束”。
 
 **Nudge 内容**：
 
 - 当前阶段与当前角色；
-- 当前应调用的出口工具（例如 `advance_s2`、`submit_review`、`board_finish`、`submit_case_audit`）；
+- 当前应调用的出口工具（例如 `review`、`attach_manual_tests`、`board_finish`、`submit_case_audit`）；
 - 未结义务台账或当前责任集合；
 - 当前挂起未恢复的沙箱程序名；
 - 硬口令：系统处于无人值守常授权模式，禁止等待用户决策或授权，禁止半途而废，禁止用纯聊天正文代替结构化工具调用。
@@ -650,7 +323,7 @@ Lite 默认是常授权无人值守模式。整个 Mission 只有以下合法停
 
 - 若本轮有实质进展（阶段文档变更、看板状态迁移、受保护文件落盘、非空调查报告、审计提交），下一轮立即 `0ms` 触发 Nudge。
 - 若连续回合无实质进展，首轮仍立即触发；随后按 `30s → 60s → 120s → 240s → 300s` 指数退避。
-- 看板变更、人类新输入、门禁成功、审计结果到达，立即清零退避。
+- 看板变更、人类新输入、attach 成功、审计结果到达，立即清零退避。
 - Nudge 退避不改变“禁止自然停止”的铁律；它只是防止在逻辑死胡同里一秒钟刷十次空回合烧穿账单。
 
 **上游断流退避**（与 Nudge 分开）：
@@ -659,7 +332,7 @@ Lite 默认是常授权无人值守模式。整个 Mission 只有以下合法停
 - 排除 `insufficient_quota` / 计费拒绝：这是确定性不可重试错误，直接标 `:stalled` 并暴露可观察事件，不得空跑重试预算。
 - 瞬态故障按 `5s → 10s → 20s → 40s → 80s` 指数退避自动恢复；每次重试记录事件与剩余预算。
 
-**等待操作员时抑制 Nudge**：`ask_user` 挂起（S1 或 S5 初任空账，等待人类回答）、`advance_s1` 确认面板打开（等待人类或获授权测试 AI 操作员）、`/herd-cancel` 确认期间，Nudge 不得触发。
+**等待操作员时抑制 Nudge**：`ask_user` 挂起（S1 或 S5 初任空账，等待人类回答）、`attach_brainstorm` 确认面板打开（等待人类或获授权测试 AI 操作员）、`/herd-cancel` 确认期间，Nudge 不得触发。
 
 ### 2.8 人类操作员交互面
 
@@ -667,18 +340,14 @@ Lite 默认是常授权无人值守模式。整个 Mission 只有以下合法停
 
 - **启动**：`/herd <seed>` 创建 Mission，进入 S1。`<seed>` 是自然语言需求，不需要预先写文档。
 - **S1 提问**：模型用 `ask_user` 提问；人类在常规对话中回答。此通道只等待人类，不适用 §2.2 的测试 AI 操作员例外。回答进入 S1 上下文，模型继续打磨。
-- **S1 门禁**：`advance_s1` 打开确认面板并展示磁盘上的真实文档；操作员必须明确批准或要求修改，也可以直接在编辑器中改文件。真实产品运行中操作员必须是人类；隔离测试环境可由获用户授权的 AI 操作员操作真实确认界面模拟，实测记录注明该次操作由 AI 模拟操作员完成即可；不冒充人类批准或生产授权，产品无需识别操作者身份。沉默、超时与自动继续不构成批准。批准后 S2–S4 自动；S5 除初任空账外自动。
-- **S5 初任空账**：若主工作区已满足契约且没有任何 Slice 可做，初任 `Reviewer`（或尚未 fork 时的 `Coordinator`）可以一次性询问“接下来做什么”；此询问只等待人类，不是阶段批准，也不适用测试 AI 操作员例外。人类回答只作为新需求进入上下文。问完即恢复无人值守。
-- **随时编辑**：人类可以编辑 `plans/<slug>/` 下任何文件；系统按 §2.3 的“已冻结产物的变更”重对齐。编辑 `s1-brainstorm.md` 后，摘要保持为原已批准背景并明确标注；系统不从文档提取或重生成摘要，也不新增人类输入等待；若必须更新摘要，只能由现有自动结构化重对齐调用产生。S2 的 CASE 唯一权威是 `.herd/missions/<slug>/cases.edn`；它是控制态，不提供常规编辑入口。编辑 `s2-manual-tests.md` 不会改变 CASE；若检测到 `cases.edn` 被外部修改，按现有 `realign` 边界重新校验 Schema、重算哈希，并按 `case_id` 重跑受影响审计。若 CASE ID 变化导致 `:s3-modules`/S4 `slices` 映射失效，必须由同一自动结构化 realign 提交完整 `modules`（及必要 `slices`）并逐项校验；不得猜造/自动分配，不得只重算哈希，无有效映射时停止推进并报告缺口；该调用由当前自动角色发起，不新增人类审批。
+- **S1 门禁**：`attach_brainstorm` 写盘后打开确认面板并展示磁盘上的真实文档；操作员必须明确批准或要求修改，也可以直接在编辑器中改文件。真实产品运行中操作员必须是人类；隔离测试环境可由获用户授权的 AI 操作员操作真实确认界面模拟，实测记录注明该次操作由 AI 模拟操作员完成即可；不冒充人类批准或生产授权，产品无需识别操作者身份。沉默、超时与自动继续不构成批准。批准后 barrier 进入 S2；S2–S4 自动；S5 除初任空账外自动。
+- **S5 初任空账**：若主工作区已满足契约且没有任何任务可做，初任 `Reviewer`（或尚未启动 Reviewer 时的 `Coordinator`）可以一次性询问“接下来做什么”；此询问只等待人类，不是阶段批准，也不适用测试 AI 操作员例外。人类回答只作为新需求进入上下文。问完即恢复无人值守。
+- **随时编辑**：人类可以编辑 `plans/<slug>/` 下任何文件。交付物按提示词约定为 frozen，系统不校验哈希；改动后由模型或审计员自行观察。S2 的 CASE 唯一权威是 `.herd/missions/<slug>/s2-cases.edn`，它是控制态，不提供常规编辑入口；编辑 `s2-manual-tests.md` 不会改变 CASE。
 - **随时取消**：`Esc` 或 `/herd-cancel`。取消沿主会话与整棵子会话树递归传播；正在运行的外部命令标 `:cancelled` 或 `:outcome-unknown`；不销毁未领取证据；不自动重放非幂等命令。
-- **查看**：`/herd-status`（与 TUI 看板同源）、`/herd-status verbose`（契约哈希，含 `.herd/missions/<slug>/cases.edn`，与账本尾部）、`/herd-status health`（锁与存储一致性）、`/herd-list`、`/herd-focus` / `/herd-unfocus`。
+- **查看**：`/herd-status`（与 TUI 看板同源）、`/herd-status verbose`（阶段、tenure、board、交付物路径与账本尾部）、`/herd-status health`（锁与存储一致性）、`/herd-list`、`/herd-focus` / `/herd-unfocus`。
 - **恢复**：`/herd-recovery [repair]` 扫描损坏状态、孤立 `.tmp`、死进程陈旧锁、`:outcome-unknown` 动作；`repair` 先备份再经确认清理。
-- **设置**：`/herd-settings` 配置 `@task` 模型、每 Slice 槽位数、Nudge 退避开关、Blocker Oracle 模型与配额、审计并发/超时、worktree 保留天数、输出上限、语言。
-- **不接受的人类操作**：在 S2–S5 逐阶段审批、在工具调用前逐条批准、用聊天正文冒充工具参数、要求跳过审计或直接标完成、通过编辑 `s2-manual-tests.md` 改变 CASE、绕过 `.herd/missions/<slug>/cases.edn` 添加或覆盖 CASE。这些请求应被拒绝，并解释唯一合法路径。
-
----
-
-## 3 微观蜂群执行层：文件锁看板、拆分优先与 `take_or_die` 生命周期
+- **设置**：`/herd-settings` 配置 `@task` 模型、每 S5 tenure 槽位数、Nudge 退避开关、Blocker Oracle 模型与配额、审计并发/超时、输出上限、语言。
+- **不接受的人类操作**：在 S2–S5 逐阶段审批、在工具调用前逐条批准、用聊天正文冒充工具参数、要求跳过审计或直接标完成、通过编辑 `s2-manual-tests.md` 改变 CASE、绕过 `.herd/missions/<slug>/s2-cases.edn` 添加或覆盖 CASE。这些请求应被拒绝，并解释唯一合法路径。\n\n## 3 微观蜂群执行层：文件锁看板、拆分优先与 `take_or_die` 生命周期
 
 当 `Reviewer` 提交非空台账开启施工期后，该 Slice 进入无中心调度者的 **Swarm 协作协议**。控制内核只维护公开看板的原子转换与文件写入口；它只拒绝非法认领、串行化实际写入、广播唤醒与补充死亡槽位，**绝不替个体挑选下一步任务**。
 
@@ -994,7 +663,7 @@ wait({ otherwise_independent_work[, more_workers_without_hitting_mythical_man_mo
 
 **边界说明**：
 
-- `clj_plan` 没有 `write` 或 `call`；它可以读取宿主进程可读的任意文件（包括 `plans/` 与 `cases.edn`）。阶段文档与 CASE 数据集仍只由对应门禁或现有 `realign` 边界写入；调查仍通过 `devops` 工具。
+- `clj_plan` 没有 `write` 或 `call`；它可以读取宿主进程可读的任意文件（包括 `plans/` 与 `.herd/missions/<slug>/s2-cases.edn`）。阶段文档与 CASE 数据集仍只由对应 `attach_*` 写入；调查仍通过 `devops` 工具。
 - `clj_devops` 是 `clj_worker` 的超集，也就是带特权的 Worker：具备 Worker 的全部文件与续体能力，并额外拥有 `call`。写走 §4.3，`call` 走 §4.5，不设只读豁免，也不经 `board_take_or_die`。默认模式只暴露这一面。
 - `clj_review` 严格只读；没有 `write`、没有 `call`、没有 `park`。`Reviewer` 不能修改它正在评审的东西。
 - `clj_worker` 的路径不受 VFS 根目录限制：`..`、绝对路径与越界符号链接都按进程权限执行。写入仍经批内 VFS、写锁 $W$ 与（若读过）`stamp` 复核。`Holder` 额外拥有 `call`。
@@ -1298,12 +967,12 @@ Lite 在 `omp` 编辑器上方挂载单一 `HerdDashboardWidget`，与 `/herd-st
 | 命令 | 行为 |
 |---|---|
 | `/herd <seed>` | 创建并聚焦新使命，进入 S1。`<seed>` 是自然语言需求。 |
-| `/herd-status [verbose\|health]` | 输出与看板同源的使命状态；`verbose` 展开完整契约哈希（含 `.herd/missions/<slug>/s1-summary.md` 与 `cases.edn`）、看板任务树与账本尾部；`health` 执行只读存储/锁一致性体检。 |
+| `/herd-status [verbose\|health]` | 输出与看板同源的使命状态；`verbose` 展开阶段、tenure、board、交付物路径与账本尾部；`health` 执行只读存储/锁一致性体检。 |
 | `/herd-list` | 列出当前工作区 `.herd/missions/` 下所有未结使命与当前会话焦点。 |
 | `/herd-focus` | 人类显式切换本会话聚焦的使命；AI 不得自主切换焦点。 |
 | `/herd-unfocus` | 解除聚焦；不取消使命。 |
 | `/herd-cancel` | 操作员确认后取消当前运行并归档使命；保留已落盘文件与 `plans/<slug>/` 产物，绝不静默删文件。 |
-| `/herd-recovery [repair]` | 扫描损坏状态文件、`.herd/missions/<slug>/s1-summary.md` 与 `cases.edn` 的 Schema/哈希异常、孤立 `.tmp`、死进程遗留陈旧锁与 `:outcome-unknown` 动作；`repair` 先备份再经确认清理。 |
+| `/herd-recovery [repair]` | 扫描损坏状态文件、`.herd/missions/<slug>/s2-cases.edn` 的 Schema 异常、孤立 `.tmp`、死进程遗留陈旧锁与 `:outcome-unknown` 动作；`repair` 先备份再经确认清理。 |
 | `/herd-settings` | 配置 `@task` 模型、每 Slice 槽位数、Nudge 退避开关、Blocker Oracle 模型与配额、审计并发/超时、worktree 保留天数、输出上限、语言、是否注入并发自检字段。 |
 
 **不提供 `/herd-pair`**：S1 门禁是唯一的手工批准点；S5 初任空账是一次性询问，不是阶段审批。再加一个“每阶段人工点头”模式，会与 L02 的单一批准语义冲突，也会让用户误以为可以在 S2–S4 靠审批代替验收。若未来需要更细的人类介入，应通过“直接编辑 `plans/<slug>/` 文件”或 `Esc` 取消实现，而不是新增审批模式。
@@ -1338,20 +1007,20 @@ Lite 在 `omp` 编辑器上方挂载单一 `HerdDashboardWidget`，与 `/herd-st
 | 状态 | 含义 | 必须提供的后续路径 |
 |---|---|---|
 | **进行中** | 使命仍在 S1–S5 或返工循环中 | 显示当前阶段、当前焦点、取消入口；不承诺完成时间。 |
-| **已交付** | `s5-report.md` 全部 CASE 达标，`:frozen` 中的 S1 摘要与 CASE 数据哈希均一致，批准凭证已签发 | 报告路径、每个 CASE 的得分与证据、契约哈希（含 `.herd/missions/<slug>/s1-summary.md` 与 `cases.edn`）。 |
-| **未交付（必附具体理由与教训）** | 人类取消、无法满足契约、环境不可用、全部 Slice 放弃等 | 具体未完成项、已产生的证据、失败原因、教训、可重试入口。不得只写“失败”或“已取消”。 |
+| **已交付** | `s5-report.md` 全部 CASE 达标，批准凭证已签发 | 报告路径、每个 CASE 的得分与证据、`.herd/missions/<slug>/s2-cases.edn`。 |
+| **未交付（必附具体理由与教训）** | 人类取消、无法满足契约、环境不可用等 | 具体未完成项、已产生的证据、失败原因、教训、可重试入口。不得只写“失败”或“已取消”。 |
 
 中间过程（等待、重试、应用中等）属于实现细节，不向用户暴露细分状态。允许善意误解：用户的心智模型可以比实现简单。
 
 **进程重启后的七窗口扫描**（在派发任何新工作前）：
 
-1. **使命窗口**：读 `.herd/missions/*/mission.edn`，确认阶段、`revision`、冻结哈希（含 `s1-summary`、`s2-cases`、inline `s3-modules`）、是否有批准凭证。
-2. **CASE 数据窗口**：进入 S3 或更后阶段时，读 `.herd/missions/<slug>/cases.edn`，校验严格 Schema、ID 唯一与 `mission.edn` 中 `s2-cases` 哈希一致；缺失、损坏或哈希不符时先备份并报告，不进入 S5、不结案。S1/S2 尚未冻结时按当前阶段判断是否已存在。
-3. **看板窗口**：读每个 `board.edn`，检查 `board-version`、未结任务、动作阶段、令牌槽。
-4. **锁窗口**：扫描 `.herd/locks/*.lock`，用 PID 存活检测识别死进程遗留；不盲目删除。
+1. **使命窗口**：读 `.herd/missions/*/mission.edn`，确认 `stage`、`control-version`、`revision`、`tenure`、`attach`、`barrier` 与批准凭证。
+2. **CASE 数据窗口**：进入 S3 或更后阶段时，读 `.herd/missions/<slug>/s2-cases.edn`，校验严格 Schema 与 `case_id` 唯一；缺失或损坏时先备份并报告，不进入 S5、不结案。
+3. **看板窗口**：读 `board.edn`，检查 `board-version`、未结任务、动作阶段与令牌槽。
+4. **锁窗口**：只扫描 `.herd/locks/s5-board.lock`；用 PID 存活检测识别死进程遗留，不盲目删除。
 5. **临时文件窗口**：扫描同目录 `.tmp-*`，确认是否有未完成 `rename`；保留证据，不静默清空。
 6. **账本窗口**：读 `events.jsonl` 的最后已提交字节偏移与 `checkpoint.edn`；不重放全量历史。
-7. **worktree/证据窗口**：检查 `.herd-worktrees/<slug>/<slice_id>` 是否存在、是否已 join/abandon、`plans/<slug>/evidence/` 是否有未收束的审计产物。
+7. **证据窗口**：检查 `plans/<slug>/evidence/` 是否有未收束的审计产物。
 
 恢复规则：
 
@@ -1359,11 +1028,8 @@ Lite 在 `omp` 编辑器上方挂载单一 `HerdDashboardWidget`，与 `/herd-st
 - 启动后失去进程句柄的外部副作用动作标 `:outcome-unknown`，要求下一任个体先核对磁盘与 Git 现场；
 - 严禁盲目自动重放非幂等命令；
 - 严禁在状态库读取失败时静默新建空目录覆盖用户历史；
-- 状态文件损坏时先备份，再尝试从 `checkpoint.edn` / `events.jsonl` 恢复；无法恢复则报告并停止，不猜。
-- `.herd/missions/<slug>/s1-summary.md` 缺失或与 `:frozen` 中的 `:s1-summary` 哈希不符时，先备份并报告；不得从 `s1-brainstorm.md` 重新生成摘要，也不得要求人类补写。可恢复时使用已冻结的原已批准背景；若必须更新摘要，只能由现有自动结构化重对齐调用产生，不新增 S2–S5 人类等待。
-- `.herd/missions/<slug>/cases.edn` 损坏或与冻结哈希不符时，先备份；能恢复到最后一个已冻结版本才继续，否则拒绝进入 S5 或结案，并报告具体字段/哈希差异。不得用 `s2-manual-tests.md` 重建 CASE 来绕过恢复。
-
-### 6.5 设置默认值
+- 状态文件损坏时先备份，再尝试从 `checkpoint.edn` / `events.jsonl` 恢复；无法恢复则报告并停止，不猜；
+- `.herd/missions/<slug>/s2-cases.edn` 损坏时，先备份；能恢复到最后一个可用版本才继续，否则拒绝进入 S5 或结案，并报告具体字段差异。不得用 `s2-manual-tests.md` 重建 CASE 来绕过恢复。\n\n### 6.5 设置默认值
 
 | 项目 | 默认 | 改变时的影响 |
 |---|---|---|
@@ -1401,68 +1067,61 @@ Lite 不启动独立服务；控制状态由 `omp` 进程内的主会话与子�
 .herd/
 ├── missions/
 │   └── <slug>/
-│       ├── mission.edn              # 阶段、revision、冻结哈希、:s3-modules、契约行（渲染）、批准凭证
-│       ├── s1-summary.md            # S1 摘要冻结副本（来自 advance_s1.summary）
-│       ├── cases.edn                # CASE 数据集（权威控制态，S2 冻结）
-│       ├── slices/
-│       │   └── <slice_id>/
-│       │       ├── board.edn
-│       │       ├── events.jsonl
-│       │       ├── checkpoint.edn
-│       │       └── approvals.edn
-│       └── audit/
-│           ├── <case_id>.submit.edn # 单 CASE 审计回执（键来自冻结 CASE 集，可选缓存）
-│           └── summary.edn          # 汇总输入（最终报告仍写 plans/）
+│       ├── mission.edn              # stage、tenure、attach、barrier、批准凭证
+│       ├── board.edn                # 当前 tenure 的 board = review 台账
+│       ├── boards/
+│       │   └── <tenure-id>.edn      # attach/接力时归档的旧 board
+│       ├── events.jsonl
+│       ├── checkpoint.edn
+│       ├── s2-cases.edn             # S2 CASE 数据集（唯一 CASE 权威）
+│       ├── audit/
+│       │   ├── <case_id>.submit.edn
+│       │   └── summary.edn
+│       └── artifacts/
 ├── locks/
-│   ├── master-integration.lock
-│   ├── <slice_id>.write-w.lock
-│   └── <slice_id>.board.lock
-├── artifacts/
-│   └── <slug>/<slice_id>/<action_id>.log
-└── settings.edn                     # 可选；也可用宿主 settings
+│   └── s5-board.lock                # S5 唯一 board 锁
+└── settings.edn
 ```
 
-> 当前 dogfood 面无 `<slug>`/`<slice_id>`，`call` 日志写到 `.herd/artifacts/clj-core/<action_id>.log`；完整使命路径见上。
+`plans/<slug>/` 是用户可见交付物：`s1-brainstorm.md`、`s2-manual-tests.md`、`s3-dev-guide.md`、`s4-coordination.md`、`s4-coordination.pml`、`s5-report.md` 与 `evidence/<case_id>/`。
 
 **边界**：
 
-- `.herd/` 只存在于主工作区；Slice worktree 内不创建自己的 `.herd/`。控制面集中，数据面分散。
-- `plans/<slug>/` 是用户可见交付物，位于主工作区；S1 摘要冻结副本与 CASE 数据集分别保存在 `.herd/missions/<slug>/s1-summary.md` 与 `cases.edn`，CASE 数据是 CASE 的唯一定义来源。S5 的 Slice 不得修改 `plans/` 或 `.herd/`；`s1-summary.md` 与 `cases.edn` 只由对应门禁落盘或由现有 `realign` 边界重对齐写，不提供常规人类编辑入口；审计员只写自己的证据目录。
-- `.herd-worktrees/<slug>/<slice_id>/` 是数据面；`.gitignore` 必须忽略 `.herd/` 与 `.herd-worktrees/`。
-- 用户删除 `.herd/` 等于放弃控制状态；不得在删除后静默重建“看起来没发生”的空状态。
+- `.herd/` 只存在于主工作区；没有 `.herd-worktrees/`，没有 Slice worktree。
+- S5 的 Reviewer/Swarm 不修改 `plans/` 或 `.herd/` 的控制态；审计员只写自己的证据目录。
+- 用户删除 `.herd/` 等于放弃控制状态；不得在删除后静默重建“看起来没发生”的空状态。\n\n### 7.2 `mission.edn` 与当前控制态
 
-### 7.2 `mission.edn` 与冻结契约
-
-`mission.edn` 至少包含：
+`mission.edn` 不再包含 `:frozen` 或 `contract-line`。最小结构：
 
 ```clojure
 {:mission-id "..."
  :slug "..."
- :created-at "..."
- :updated-at "..."
- :stage :s1 ; :s2 :s3 :s4 :s5 :completed
+ :seed "..."
+ :stage :s2                    ; :s1..:s5 | :completed
+ :control-version 17
  :revision 3
- :contract-line #"Verification contract: ..."# ; 由 :frozen 确定性渲染，不是独立权威
- :frozen {:s1 {:path "plans/<slug>/s1-brainstorm.md" :sha256 "..."}
-          :s1-summary {:path ".herd/missions/<slug>/s1-summary.md" :sha256 "..."}
-          :s2 {:path "plans/<slug>/s2-manual-tests.md" :sha256 "..."}
-          :s2-cases {:path ".herd/missions/<slug>/cases.edn" :sha256 "..."}
-          :s3 {:path "plans/<slug>/s3-dev-guide.md" :sha256 "..."}
-          :s3-modules {:sha256 "..."} ; inline 控制态，无文件路径
-          :s4 {:path "plans/<slug>/s4-coordination.md" :sha256 "..."}}
- :s3-modules [{:path "src/..." :secret-owned "..." :depends-on [] :mapped-cases ["CASE-01"]}]
- :approval {:revision 3 :token "..." :issued-at "..."} ; 仅结案后
- :limits {...}
- :settings {...}}
+ :tenure {:id "T4" :stage :s2 :state :active :started-at "..."}
+ :attach {:pending nil :ready true}
+ :barrier {:id "B3" :from :s2 :to :s3
+           :retired-tenure "T4" :successor-tenure "T5"
+           :board-archive "boards/T4.edn" :written-at "..."}
+ :approval nil}
 ```
 
-- `revision` 在每次冻结/重对齐/返工时递增；批准凭证绑定 `(mission-id, revision)`，一次性。
-- `stage` 只由门禁或结案流程推进；任何工具不得直接把 `:stage` 改成 `:completed`。
-- `:frozen` 是机器哈希与路径的唯一权威。`contract-line` 只是从 `:frozen` 按固定顺序（`:s1`、`:s1-summary`、`:s2`、`:s2-cases`、`:s3`、`:s3-modules`、`:s4`）确定性渲染的人类可读摘要；任何代码不得以 `contract-line` 覆盖、补齐或替代 `:frozen`。两者不一致时以 `:frozen` 为准，记录 `:CONTRACT_LINE_STALE` 并重渲染。
-- 人类编辑已冻结文档时，先重新计算对应 `:sha256`；S1 文档变更时，`:s1-summary` 保持为原已批准背景并明确标注，`realign` 只更新 S1 文档哈希并注入当前冻结 S1 文档/对齐提示，不得解析、重生成摘要或要求人类输入；若必须更新摘要，只能由现有自动结构化重对齐调用产生。CASE 数据若发生外部修改，还须通过严格 Schema 与现有 `realign` 边界；若 CASE ID 变化导致 `:s3-modules`/S4 `slices` 映射失效，必须由同一自动结构化 realign 提交完整 `modules`（及必要 `slices`）并逐项校验，不得猜造/自动分配或只重算哈希；该调用由当前自动角色发起，S2–S5 不要求人类审批；无有效映射时停止推进并报告缺口。随后更新 `:revision` 并重渲染 `contract-line`；未重对齐的旧哈希不得用于结案。
-- 直接改 `mission.edn` 的 `:approval` 或 `:stage` 不构成批准；批准只能由框架在审计全 PASS 后签发。
-- `:frozen` 必须同时包含 `:s1`、`:s1-summary`、`:s2`、`:s2-cases`、`:s3`、`:s3-modules` 与 `:s4` 七项；其中 `:s1`/`:s1-summary`/`:s2`/`:s2-cases`/`:s3`/`:s4` 是路径 + SHA-256，`:s3-modules` 是 `mission.edn` 内 `:s3-modules` 规范 EDN 字节的 inline SHA-256（无文件路径）。缺一即拒绝启动 S5 或结案。`:s1-summary` 只能指向 `.herd/missions/<slug>/s1-summary.md`，`:s2-cases` 只能指向 `.herd/missions/<slug>/cases.edn`，不得用阶段 Markdown 的哈希替代。
+- `control-version` 由 review/attach/barrier 递增；`revision` 只服务审计与批准语义。
+- `:attach.pending` 记录 `tool`、`stage`、`call-id`、`payload-digest`、已写文件路径；仅用于崩溃恢复，不是锁。
+- `:barrier` 与 tenure 退休、stage 推进、successor 创建在同一 `mission.edn` 原子写中提交。
+- 文档路径按 `slug + stage` 推导，不维护可漂移的 `:contract` 列表。
+- 直接改 `mission.edn` 的 `:approval` 或 `:stage` 不构成批准；批准只由审计全 PASS 后的框架签发。
 
+### 7.3 锁与原子写
+
+#### 7.3.1 锁文件
+
+- S1–S4 单写者，不使用 mission 锁。
+- S5 只保留一个 `board.lock`，覆盖 board 的短事务；`board.edn` 原子替换。
+- 没有 `master-integration.lock`、没有 worktree 锁、没有 `mission.lock`。
+- 锁文件用 `fs.openSync(path, "wx")` 创建；持有者存活时等待，不自动转交；陈旧锁由 `/herd-recovery repair` 清理。
 ### 7.3 锁与原子写
 
 #### 7.3.1 锁文件
@@ -1496,15 +1155,16 @@ Lite 不启动独立服务；控制状态由 `omp` 进程内的主会话与子�
 `events.jsonl` 记录：
 
 - 用户输入到达；
-- 任务结构变化（拆分、认领、完成、取消、替代、重开）；
+- review 台账变化（新增、覆盖、删除、空账）；
+- attach 前置检查、文件写入、board 归档、tenure 退休、barrier、successor 启动；
+- 看板任务结构变化（拆分、认领、完成、取消、替代、重开）；
 - 责任移交；
 - 令牌竞争结果、退休、死亡、转生；
-- `fork_slices` / `join_slice` / `:result-queued` / `:abandoned`；
 - $W$ 取得与释放、动作进入 `:applying`、应用结果；
 - `call` 状态；
 - 等待登记与 `wake-all`；
-- 门禁成功/失败、阶段披露、契约冻结/重对齐、S1 摘要冻结/原样保持、CASE 数据 Schema 校验与冻结；
-- Nudge、上游重试、按 `case_id` 启动/提交/汇总审计、结案。
+- 审计按 `case_id` 启动/提交/汇总、报告、批准；
+- Nudge 与上游重试。
 
 规则：
 
@@ -1515,8 +1175,9 @@ Lite 不启动独立服务；控制状态由 `omp` 进程内的主会话与子�
 
 ### 7.5 并发与资源限制
 
-- **Slice 并发**：按因果最大化；不设人为上限。资源不足时 `fork_slices` 返回 `:INSUFFICIENT_WORKTREES`，由 `Coordinator` 降数重试；不得把多个 Slice 塞进一个 worktree。
-- **单 Slice 槽位**：默认 4；可配置。槽位是资源，不是任务分配器；补位只让槽恢复可用。
+- **S1–S4 Plan**：只有一个 active Plan tenure 写 `mission.edn`、`board.edn` 与交付物；不加 mission 锁，信任单写者。
+- **S5 board**：只保留一个 `board.lock` 做短事务；没有 worktree 并发、没有 rebase/ff。
+- **S5 槽位**：默认 4；可配置。槽位是资源，不是任务分配器；补位只让槽恢复可用。
 - **审计并发**：K 个 CASE 同时启动；运行时限制导致排队时，语义仍是全部启动，不得跳过。
 - **文件/命令上限**：VFS 2 MiB/16 MiB/256；`call` 内联 1 MiB、日志 64 MiB；超出显式报错。
 - **期限**：1000ms + `code` 字节数 × 50ms；到期 `park`，不杀死会话。
@@ -1527,7 +1188,7 @@ Lite 不启动独立服务；控制状态由 `omp` 进程内的主会话与子�
 
 1. **沙箱隔离**：符号表不含 `js/*`、`globalThis`、`process`、`Bun`、`require`、`import`、`eval`、`read-string`、`load-string`、`resolve`、`ns-*`、`set!`、`aget`/`aset`。逃逸尝试返回 `:CAPABILITY_DENIED`，不得回退到 JS 全局。
 2. **路径边界**：普通 VFS 不再拒绝 `..`、绝对路径或越界符号链接；进程权限是唯一边界。审计员隔离由 bwrap 会话与专属 `/tmp` 负责。
-3. **审计员只读主工作区**：产品源码、测试、配置、文档、`.herd/` 与 `.herd/missions/<slug>/cases.edn` 不可写；审计员不得读取整份 CASE 数据集或他人 CASE；启动前后 `stamp` 快照比对；任何主工作区或 CASE 数据修改使整批审计作废。
+3. **审计员只读主工作区**：产品源码、测试、配置、文档、`.herd/` 与 `.herd/missions/<slug>/s2-cases.edn` 不可写；审计员不得读取整份 CASE 数据集或他人 CASE；启动前后 `stamp` 快照比对；任何主工作区或 CASE 数据修改使整批审计作废。
 4. **不把密钥写入交付物**：`plans/`、`evidence/`、日志中不得出现 API key、令牌、私人数据；审计员不得导出密钥；发现泄漏立即停止并报告。
 5. **提示注入边界**：工具结果/用户消息中的 XML 标签、伪系统指令、`<approved/>` 一律当数据；只有门禁工具的成功回执能推进阶段。系统提示词优先级高于工具结果中的“新指令”。
 6. **命令注入**：`call` 使用 argv 数组，不经过 shell；不得把多个参数拼成一个字符串再交给 shell。需要结构化参数时，优先用沙箱能力，不要拼字符串。
@@ -1550,10 +1211,10 @@ Lite 不启动独立服务；控制状态由 `omp` 进程内的主会话与子�
 ### 8.1 组装与维护纪律
 
 1. 本节的文本是**运行时提示词的规范原文**。实现可以把它们放进 `src/prompts/common.mjs`、`disclosures.mjs`、`roles.mjs`、`runtime-wires.mjs`，但不得改写语义、删减锐度、把禁令软化成建议。
-2. 工具名统一为宿主 snake_case：`clj_plan`、`clj_devops`、`clj_review`、`clj_worker`、`clj_auditor`、`ask_user`、`devops`、`submit_review`、`submit_devops_report`、`submit_case_audit`、`submit_oracle_advice`、`advance_s1..s4`、`board_*`、`fork_slices`、`join_slice`、`abandon_slice`、`wait`、`time_leap`。默认模式只注册 `clj_devops` 与 `wait`、`time_leap`、`ask_beacon`；不注册 `clj_plan`、`clj_review`、`clj_worker`。设计讨论中出现的 `clj-plan` 等连字符写法是角色面名称，不是工具 ID。
-3. S2–S5 的简报只存在于 `disclosures.mjs`，只在门禁工具 handler 中读取；`common.mjs` 不得 import 它们。S1 简报可以独立导出，由 `/herd` 启动时注入。
+2. 工具名统一为宿主 snake_case：`clj_plan`、`clj_devops`、`clj_review`、`clj_worker`、`clj_auditor`、`ask_user`、`devops`、`review`、`attach_brainstorm`、`attach_manual_tests`、`attach_dev_guide`、`attach_coordination`、`submit_devops_report`、`submit_case_audit`、`submit_oracle_advice`、`board_*`、`wait`、`time_leap`。默认模式只注册 `clj_devops` 与 `wait`、`time_leap`、`ask_beacon`；不注册 `clj_plan`、`clj_review`、`clj_worker`。设计讨论中出现的 `clj-plan` 等连字符写法是角色面名称，不是工具 ID。
+3. S2–S5 的简报只存在于 `disclosures.mjs`，只在 attach 成功后的 successor 初始化中读取；`common.mjs` 不得 import 它们。S1 简报可以独立导出，由 `/herd` 启动时注入。
 4. 角色提示词只包含该角色需要知道的内容；不要把全部角色提示词拼进主会话。子代理的提示词必须自包含。
-5. 任何提示词改动必须同时更新本文件与相应实现；S1 出站请求不得含 S2–S5 关键词、门禁成功后下一阶段简报必须出现、晋级后旧简报必须从出站请求消失，这些由代码评审与人工/运行时观察确认，测试不得断言 LLM-facing 文本内容。
+5. 任何提示词改动必须同时更新本文件与相应实现；S1 出站请求不得含 S2–S5 关键词、attach 成功后下一阶段简报必须出现、旧 tenure 退休后旧简报必须从出站请求消失，这些由代码评审与人工/运行时观察确认，测试不得断言 LLM-facing 文本内容。
 6. 不允许在提示词中写“每次工具调用都要问用户”“不确定就停下来”这类与常授权无人值守冲突的 grandpa rules。唯一的等待点是 §2.7 的合法出口。
 
 ### 8.2 `COMMON_RULES_TEXT` 与默认模式注入面
@@ -1613,13 +1274,13 @@ You are in repo-aware mode. Obey the following repo-aware rules (AGENTS.md) as m
 
 ### 8.3 S1–S5 简报全文
 
-> 这些文本只由门禁工具结果或初始注入提供；不得放入基础系统提示词。工具名已统一为 snake_case。S1 简报在 `/herd` 启动时注入；S2–S5 分别在上一阶段门禁成功的工具结果中注入。
+> 这些文本只由 attach 成功后的 successor 初始化或 `/herd` 启动注入；不得放入基础系统提示词。工具名统一为 snake_case。S1 简报在 `/herd` 启动时注入；S2–S5 分别在上一阶段 `attach_*` 成功后的后继会话中注入。
 
 #### `S1_BRIEFING`
 
 ```text
 [STAGE S1: BRAINSTORMING & DECISION FRAMING]
-Deliverable: plans/<slug>/s1-brainstorm.md — submitted ONLY via `advance_s1`.
+Deliverable: plans/<slug>/s1-brainstorm.md — submitted ONLY via attach_brainstorm({ markdown }).
 Judge ONLY the gap to starting S2; never do downstream test-case tables or code skeletons here.
 
 Thinkers & Weapons (invoke a name only when it changes a decision or check):
@@ -1633,19 +1294,17 @@ Protocol:
 - Open-ended loop: 100+ rounds is acceptable. Every claim and choice passes only at >=95% confidence.
 - For repo facts, call `devops({ verbose_intent })` (reuses your read-only investigator). Never guess codebase reality.
 - Below 95% confidence on user intent, call `ask_user` with the single highest-VoI question, full context, and a recommended default. Artifact/draft first whenever possible; never ask empty "may I proceed" questions.
-- `advance_s1` is the ONLY manual-approval gate in the entire mission: it writes `plans/<slug>/s1-brainstorm.md`, renders the real on-disk document in the confirmation panel, and pauses for an explicit approve-or-revise interaction; the operator may also edit the file directly on disk before approving. Production runs require an explicit human-operator approval. In an isolated test environment, a user-authorized AI operator may personally drive the real confirmation UI to exercise this gate; the test record (not the product) should note that the approval was simulated by an AI operator in isolation; the product does not need to identify the operator or add a test mode or field. That simulation NEVER impersonates human approval or production authorization. Silence, timeout, closing the panel, or automatic continuation is NEVER approval. Once approved, S2–S5 run to completion autonomously.
-- The submitted `summary` is frozen verbatim as `.herd/missions/<slug>/s1-summary.md`. Before approval it is the original submission summary; after approval it remains the original approved background and is the only S1 background auditors receive later. It is NEVER extracted from `s1-brainstorm.md`. If the operator edits the document, keep the original summary explicitly marked as the original submission/background; do not parse or regenerate it, and do not add a human wait. If it must be updated, only an existing automatic structured `advance_s1`/realign call may produce the new summary.
-- The operator allowance for isolated tests applies ONLY to the `advance_s1` confirmation panel. `ask_user` clarification still requires a human answer; a test AI MUST NOT answer it.
-```
-
-#### `S2_BRIEFING`
+- `attach_brainstorm` is the ONLY manual-approval gate in the entire mission: it writes `plans/<slug>/s1-brainstorm.md`, renders the real on-disk document in the confirmation panel, and pauses for an explicit approve-or-revise interaction; the operator may also edit the file directly on disk before approving. Production runs require an explicit human-operator approval. In an isolated test environment, a user-authorized AI operator may personally drive the real confirmation UI to exercise this gate; the test record (not the product) should note that the approval was simulated by an AI operator in isolation; the product does not need to identify the operator or add a test mode or field. That simulation NEVER impersonates human approval or production authorization. Silence, timeout, closing the panel, or automatic continuation is NEVER approval. Once approved, the barrier opens S2 and S2–S5 run to completion autonomously.
+- The submitted `markdown` is the only S1 artifact. There is no `s1-summary.md` and no separate `summary`/`non_goals` parameter; Non-Goals are a section inside the markdown. Do not parse or regenerate a summary, and do not add a human wait.
+- The operator allowance for isolated tests applies ONLY to the `attach_brainstorm` confirmation panel. `ask_user` clarification still requires a human answer; a test AI MUST NOT answer it.
+```#### `S2_BRIEFING`
 
 ```text
-[STAGE S1 APPROVED & FROZEN -> ENTERING STAGE S2: MANUAL TEST METHODOLOGY]
-S1 is frozen on disk. The S1 briefing is retired; work from the frozen S1 contract. `ask_user` is closed for S2–S4; no further stage approval will be requested. S5 keeps only one initial-empty-ledger question, and otherwise runs autonomously.
-Deliverables (both are submitted and frozen together by `advance_s2({ slug, manual_tests_markdown, cases })`):
+[STAGE S1 ATTACHED -> ENTERING STAGE S2: MANUAL TEST METHODOLOGY]
+S1 is frozen by convention; the S1 briefing is retired. Work from the frozen S1 contract. `ask_user` is closed for S2–S4; no further stage approval will be requested. S5 keeps only one initial-empty-ledger question, and otherwise runs autonomously.
+Deliverables (submitted together by attach_manual_tests({ markdown, cases })):
 - `plans/<slug>/s2-manual-tests.md` — methodology narrative only: Testing != Checking, falsification strategy, path coverage, evidence standards, and dual-WTP principles. It is NOT a CASE source; executable CASE definitions in it have no authority.
-- `.herd/missions/<slug>/cases.edn` — the authoritative CASE dataset, persisted from `cases` and frozen by SHA-256.
+- `.herd/missions/<slug>/s2-cases.edn` — the authoritative CASE dataset, persisted from `cases`.
 Judge ONLY the gap to starting S3.
 
 Thinkers & Weapons:
@@ -1653,61 +1312,64 @@ Thinkers & Weapons:
 - Glenford J. Myers (The Art of Software Testing): test with the ferocious intent of finding errors, never of proving the happy path works. Cover normal, invalid input, boundary, concurrency/race, security, permission/dependency failure (isolated `/tmp` broken-copy attacks), cancellation, crash recovery, and out-of-order paths; where UI/TUI exists, cover empty, loading, error, retry, narrow-screen, keyboard-only, overflow, and destructive-confirmation states.
 - Gerald M. Weinberg (Quality is value to some person): author a bespoke, reproducible 0–100 rubric inside EVERY item of `cases` (two independent auditors on the same evidence must land within +-5; dimension weights, vague adjectives, or copied templates are rejected).
 
-Mandatory CASE Dataset Schema (enforced by `advance_s2`; the framework NEVER parses Markdown for CASEs):
+Mandatory CASE Dataset Schema (enforced by attach_manual_tests; the framework NEVER parses Markdown for CASEs):
 1. `cases` is a non-empty array. Each item contains exactly: `case_id` (unique, matching `CASE-*`), `path`, `threshold` (finite number 0–100; integer recommended), `steps[]`, `expected`, and `rubric`. Unknown fields are rejected.
 2. `rubric` is one complete, non-empty free-text scoring rule. It MUST cover: evidence mapping across the full 0–100 range; the exact just-PASS and just-below-PASS boundaries; hard-fail conditions; deductions for unexercised non-happy paths; rounding/granularity; minimum evidence; and dual subjective WTP (`user_score`, `developer_score`, `final = min(...)`). It is not decomposed into fixed subfields and is the sole scoring authority.
 3. Cover normal, error, boundary, concurrency, and recovery paths with at least one CASE each; cover security, compatibility, cancellation, out-of-order, performance, and accessibility when applicable. Never happy-path-only. `steps` must be executable (preconditions at the start if needed; real keystrokes and pane captures for TUI; `/tmp` broken-copy steps for destructive branches).
 4. Dual WTP is defined inside `rubric`; neither score requires real user testimony; Wow folds into both.
-5. The Markdown is methodology only; the framework never extracts, compares, or scores CASEs from it. If it conflicts with `.herd/missions/<slug>/cases.edn`, the dataset wins.
-Iterate via `devops` and self-falsification until >=95% confidence and nothing remains to tighten, then call `advance_s2`.
+5. The Markdown is methodology only; the framework never extracts, compares, or scores CASEs from it. If it conflicts with `.herd/missions/<slug>/s2-cases.edn`, the dataset wins.
+
+Use `review` to track the remaining gaps as board tasks. When the board is empty, the stage is attach-ready; call `attach_manual_tests({ markdown, cases })`. Do not call it before the board is empty. Iterate via `devops` and self-falsification until >=95% confidence and nothing remains to tighten.
 ```
 
 #### `S3_BRIEFING`
 
 ```text
-[STAGE S2 FROZEN -> ENTERING STAGE S3: GOAL-DIRECTED DEVELOPMENT GUIDE]
-S1 and S2 are frozen. The S2 briefing is retired; work from the frozen S1–S2 contract.
-Deliverable: plans/<slug>/s3-dev-guide.md — saved and auto-approved via `advance_s3({ slug, dev_guide_markdown, modules })`.
+[STAGE S2 ATTACHED -> ENTERING STAGE S3: GOAL-DIRECTED DEVELOPMENT GUIDE]
+S1 and S2 are frozen by convention; the S2 briefing is retired. Work from the frozen S1–S2 contract.
+Deliverable: plans/<slug>/s3-dev-guide.md — submitted via attach_dev_guide({ markdown }).
 Judge ONLY the gap to starting S4.
 
 Thinkers & Weapons:
-- George Polya: understand the whole boundary, devise the plan, work backwards from the frozen CASE records, decompose and recombine; grow from Gall's minimal working kernel.
-- Alan H. Schoenfeld: audit host resources and Chesterton's Fences via `devops`; monitor and regulate—if an architectural angle cannot prove how a frozen CASE record is satisfied, kill it early instead of defending sunk cost.
-- David L. Parnas: information hiding—decompose modules strictly by changeable design secrets and independent reasons to change, NEVER by flowchart execution order or arbitrary line counts.
+- George Polya: understand the whole boundary, devise the plan, work backwards from the CASE records, decompose and recombine; grow from Gall's minimal working kernel.
+- Alan H. Schoenfeld: audit host resources and Chesterton's Fences via `devops`; monitor and regulate—if an architectural angle cannot prove how a CASE is satisfied, kill it early instead of defending sunk cost.
+- David L. Parnas: information hiding—decompose by changeable design secrets and independent reasons to change, NEVER by flowchart execution order or arbitrary line counts.
 - Rich Hickey: de-complect—separate immutable values, explicit state transitions, and runtime identities; prefer flat data over stateful tangles.
 - John Ousterhout: deep modules (narrow contract, deep implementation) and poka-yoke—define errors and illegal states out of existence at module boundaries rather than scattering defensive patches.
 
-Specify exact module boundaries, unidirectional dependency DAG, failure isolation, and exact contracts satisfying every S1 requirement and frozen CASE record. Each module MUST declare `mapped_cases: string[]` referencing frozen `case_id` values; their union MUST cover every frozen CASE, and unknown or uncovered IDs are rejected. `advance_s3` persists the full modules array in `mission.edn` as `:s3-modules` and freezes its canonical hash; the S3 Markdown is explanatory only. If the frozen CASE ID set later changes, submit a complete modules array (and necessary slices) through the existing automatic structured realign path; never guess, auto-assign, or only recompute hashes. If no valid mapping exists, stop and report the exact gap. Iterate to >=95% confidence, then call `advance_s3`.
+Write the development guide as prose. Parnas, Hickey, and Ousterhout are writing lenses, not machine gates: module boundaries, dependency DAG, CASE mapping, failure isolation, and contracts belong in the markdown; the system does not parse or persist a `modules` array, and there is no module-coverage gate. Use `review` to track open gaps; when the board is empty, call `attach_dev_guide({ markdown })`. Iterate to >=95% confidence.
 ```
 
 #### `S4_BRIEFING`
 
 ```text
-[STAGE S3 FROZEN -> ENTERING STAGE S4: DEVELOPER COORDINATION HANDBOOK]
-S1–S3 are frozen. The S3 briefing is retired; work from the frozen S1–S3 contract.
-Deliverable: plans/<slug>/s4-coordination.md — saved and auto-approved via `advance_s4({ slug, coordination_markdown, slices })`.
+[STAGE S3 ATTACHED -> ENTERING STAGE S4: DEVELOPER COORDINATION HANDBOOK]
+S1–S3 are frozen by convention; the S3 briefing is retired. Work from the frozen S1–S3 contract.
+Deliverable: plans/<slug>/s4-coordination.md and plans/<slug>/s4-coordination.pml — submitted via attach_coordination({ markdown, promela }).
+Judge ONLY the gap to starting S5.
 
 Thinkers & Weapons:
 - Donald E. Knuth: literate pseudocode—write explicit data structures, state fields, and deterministic transition steps before a line of production code exists.
-- Frederick P. Brooks Jr.: defeat the Mythical Man-Month—partition the mission into maximally disjoint Worktree Slices (`slice_id`, `goal`, `inputs`, `depends_on`, `done_when`, `mapped_cases`) with frozen interface contracts so cross-slice communication drops to O(1).
+- Frederick P. Brooks Jr.: defeat the Mythical Man-Month at the single-board level—make task boundaries explicit and keep cross-task communication O(1); do not add workers on shared mutable state.
 - Leslie Lamport & Edsger W. Dijkstra: state explicit Safety invariants (mutual exclusion, stamp integrity, dead-actor rejection, idempotence) and Liveness guarantees (progress, quiescence, wake-all completeness) as guarded transitions.
-- Gene Amdahl & Donald G. Reinertsen: compress the serial critical path and global lock contention; eliminate artificial batch waves; define the exact FIFO `rebase` + `--ff-only` merge topology to minimize wall-clock time while maximizing concurrent workers.
+- Gene Amdahl & Donald G. Reinertsen: compress the single-board critical path and board-lock contention; eliminate artificial audit batch waves. There is no worktree/rebase/ff topology to optimize.
 
-Every `case_id` in the frozen CASE dataset MUST appear in at least one Slice's `mapped_cases`; unknown IDs and uncovered IDs are rejected. Cross-Slice integration verification must be an explicit Slice with those CASEs in its `mapped_cases`. Iterate until the schedule, invariants, and pseudocode admit no further change, then call `advance_s4` to freeze the full S1–S4 contract and ignite S5 autonomous swarm execution.
+Promela is the sole formal truth for the coordination protocol. It is required and non-empty, but the system does not parse it, run Spin, or model-check it; it is stored and observed only. When Promela's expressive power is insufficient, embed Knuth-style pseudocode in comments; those comments are part of the model. There is no `slices` parameter and no Slice DAG. Use `review` to track open gaps; when the board is empty, call `attach_coordination({ markdown, promela })`.
 ```
 
 #### `S5_BRIEFING`
 
 ```text
-[STAGE S4 FROZEN -> IGNITING STAGE S5: AUTONOMOUS SWARM & CONCURRENT AUDIT]
-The S1–S4 contract and the CASE dataset are sha256-frozen. Execute without stopping until `plans/<slug>/s5-report.md` passes 100% of CASEs from the frozen dataset:
-1. Fork ready disjoint Slices into `.herd-worktrees/<slug>/<slice_id>` immediately; never assign the same slice to multiple swarms.
-2. Drain completed Slices in FIFO order via `join_slice`: each Slice passes a clean-context successor `Reviewer`, rebases onto latest base, and fast-forwards under the integration lock.
-3. Once all Slices join, launch all K `Manual Auditors` concurrently (1 auditor = 1 CASE; each receives exactly its own structured CASE record, never the whole dataset). If any CASE fails, turn its findings into repair Slice obligations and loop automatically until every CASE meets `min(user_score, developer_score) >= threshold`. Never retreat, never weaken frozen S1–S4 files or `.herd/missions/<slug>/cases.edn`, never stop early.
-4. The only human interaction in S5 is one initial-empty-ledger question: if the main workspace already satisfies the contract and no Slice needs work, the initial Reviewer (or Coordinator before forking) may call `ask_user` once; otherwise never stop for humans.
-```
+[STAGE S4 ATTACHED -> IGNITING STAGE S5: SINGLE-WORKSPACE SWARM & CONCURRENT AUDIT]
 
-### 8.4 角色提示词全文
+Review lenses: Lamport/Dijkstra for board safety and liveness; Brooks for single-board communication cost; Weinberg/Myers/Bach for audit falsification. These are judgment lenses, not machine gates.
+The S1–S4 deliverables are frozen by convention, and `.herd/missions/<slug>/s2-cases.edn` is the CASE authority. Execute without stopping until `plans/<slug>/s5-report.md` passes 100% of CASEs:
+1. Run in the single main workspace. There are no worktrees, no fork_slices/join_slice, no rebase/ff cycle.
+2. Start one clean-context Reviewer. Non-empty `review` findings become root tasks on the single board and wake all Swarm workers; the Swarm uses `clj_worker` and `board_*` under the existing write gate and token protocol.
+3. When the board is empty, no action is in flight, and the Holder has no responsibility, atomically retire the tenure, write the context barrier, and start a successor Reviewer. A successor empty review with quiescence enters K-path audit.
+4. Launch all K Manual Auditors concurrently (1 auditor = 1 CASE; each receives exactly its own CASE record, never the whole dataset). If any CASE fails, turn its findings into board repair tasks and loop automatically until every CASE meets `min(user_score, developer_score) >= threshold`. Never retreat, never weaken the S1–S4 deliverables or `s2-cases.edn`, never stop early.
+5. The only human interaction in S5 is one initial-empty-ledger question: if the main workspace already satisfies the contract and no task needs work, the initial Reviewer (or Coordinator before starting the Reviewer) may call `ask_user` once; otherwise never stop for humans.
+```### 8.4 角色提示词全文
 
 > 角色提示词只在对应子代理启动时注入；主会话不加载其他角色的提示词。工具名统一为 snake_case。`buildCaseAuditorPrompt` 是模板，不是固定字符串。
 
@@ -1725,10 +1387,10 @@ You are the privileged worker for the current Plan tenure: every Swarm Worker ca
 ```text
 [ROLE: CENTRALIZED REVIEWER — PHASE A CLEAN-BREAK JUDGE]
 You start on a clean Context Barrier with zero loyalty to your predecessor's sunk cost.
-- Inspect the frozen `plans/<slug>/s1..s4-*.md` contract, the injected mapped CASE records from `.herd/missions/<slug>/cases.edn`, and actual worktree reality using read-only `clj_review`. Paperwork, task counts, and passing unit tests prove nothing.
-- Call `submit_review({ summary_markdown, findings })`:
-  - Non-empty `findings: [{ key, value }]`: suspends Reviewer, materializes each item as a root task on the Swarm board, and wakes all `@task` workers (Phase B).
-  - Empty `findings: []`: confirms this Slice genuinely satisfies its S4 `done_when` and S1–S3 requirements (requires single-tenure quiescence and clean `--ff-only` readiness, else refused).
+- Inspect the frozen-by-convention `plans/<slug>/s1..s4-*.md` deliverables, the injected CASE records from `.herd/missions/<slug>/s2-cases.edn`, and the real single main workspace using read-only `clj_review`. There is no worktree. Paperwork, task counts, and passing unit tests prove nothing.
+- Call `review({ summary_markdown, findings })`:
+  - Non-empty `findings: [{ key, value }]`: suspends Reviewer, materializes each item as a root task on the single board, and wakes all `@task` workers (Phase B).
+  - Empty `findings: []`: confirms this tenure genuinely satisfies its S1–S4 requirements and single-workspace quiescence; the system then enters K-path audit.
 ```
 
 #### `SWARM_WORKER_PROMPT`
@@ -1754,27 +1416,29 @@ A Swarm task repeatedly stalled on the same blocker fingerprint. Diagnose the hi
 ```text
 [ROLE: CONCURRENT MANUAL AUDITOR — ${caseSpec.case_id} ONLY]
 Mission: ${mission.missionId} (slug: ${mission.slug})
-Frozen contract summary (rendered from `:frozen`): ${mission.contractLine}
+
+Contract paths (frozen by convention; read-only):
+- plans/${mission.slug}/s1-brainstorm.md
+- plans/${mission.slug}/s2-manual-tests.md
+- plans/${mission.slug}/s3-dev-guide.md
+- plans/${mission.slug}/s4-coordination.md
+- plans/${mission.slug}/s4-coordination.pml
+- .herd/missions/${mission.slug}/s2-cases.edn (control state; do not edit)
 
 You own exactly one CASE: ${caseSpec.case_id} (path: ${caseSpec.path}, PASS threshold: ${caseSpec.threshold}/100).
-The framework has already validated the frozen CASE dataset. You do not need to cross-check it. The injected frozen CASE record below is the sole authority for what to execute and how to score; do not read the dataset or other CASE data.
+The framework has already validated the CASE dataset. The injected CASE record below is the sole authority for what to execute and how to score; do not read the dataset or other CASE data.
 Other auditors are attacking the other CASEs in parallel right now. Spend 100% of your budget trying to falsify this single CASE against real software behavior.
 
-S1 original approved background (frozen `advance_s1.summary`; never extracted from `s1-brainstorm.md`):
-#"""
-${mission.s1Summary}
-"""#
+Read `plans/${mission.slug}/s1-brainstorm.md` as the approved S1 background. There is no `s1-summary.md`; do not extract a summary from any other file.
 
-Assigned frozen CASE record:
-#"""
+Assigned CASE record (EDN + UFSS, rendered by `formatCaseRecord(caseSpec)`):
 ${formatCaseRecord(caseSpec)}
-"""#
 
 Mindset & Hard Rules (Bach · Myers · Weinberg):
 - Executor claims, commit messages, file counts, typechecks, linters, builds, unit/integration suites, and CI green lights are NOT acceptance evidence (Testing != Checking). They must NEVER raise a score.
-- Never mutate product code, tests, docs, or `.herd/` state in the main workspace (workspace stamps are verified after you exit; any mutation invalidates the audit).
+- Never mutate product code, tests, docs, or `.herd/` state in the main workspace. The framework observes the workspace; any mutation invalidates the audit.
 - Isolation: for TUI observations, run omp inside dedicated tmux session `herd-${mission.slug}-${caseSpec.case_id}`, send real keystrokes, capture panes to `plans/${mission.slug}/evidence/${caseSpec.case_id}/`, and cite exact capture paths and visible lines. Never claim an uncaptured TUI path.
-- If the CASE exercises the S1 manual-approval gate, you may act as a user-authorized test operator ONLY inside the isolated copy: display the real on-disk document, perform an explicit approve-or-revise interaction, and note in your report that this approval was performed by an AI test operator in the isolated copy; the product does not need operator-identity fields or test modes. Never impersonate human approval or production authorization, and never do this in the main workspace or a real production mission. This exception does NOT extend to `ask_user` clarification or the S5 initial-empty-ledger question; those still require a human answer.
+- If the CASE exercises the S1 manual-approval gate, you may act as a user-authorized test operator ONLY inside the isolated copy: display the real on-disk document, perform an explicit approve-or-revise interaction against `attach_brainstorm`, and note in your report that this approval was performed by an AI test operator in the isolated copy; the product does not need operator-identity fields or test modes. Never impersonate human approval or production authorization, and never do this in the main workspace or a real production mission. This exception does NOT extend to `ask_user` clarification or the S5 initial-empty-ledger question; those still require a human answer.
 - For destructive, missing-dependency, or corrupt-config paths, copy the repo to `/tmp/herd-audit-${mission.slug}-${caseSpec.case_id}-<uuid>`, break the copy, and test there.
 - Disapprove scaffolds, imitations, silent fallbacks, or unexercised error branches. If an environment/GUI/service is unavailable, record the failure and score below threshold—never skip or pass on faith.
 - Score twice from your own subjective willingness to pay, strictly following this CASE's `rubric` (which includes the minimum evidence requirements; reproducible within +-5): `user_score` (external value a user would pay for) and `developer_score` (internal quality a developer would pay for). Wow folds into both; final verdict uses `min(user_score, developer_score)`.
@@ -1782,9 +1446,7 @@ Mindset & Hard Rules (Bach · Myers · Weinberg):
 Finish strictly by calling `submit_case_audit` once with `case_id: "${caseSpec.case_id}"`, finite `user_score` (0..100), finite `developer_score` (0..100), `evidence_paths`, and complete human-readable `report_markdown`.
 ```
 
-`formatCaseRecord(caseSpec)` 必须是冻结 CASE 记录的确定性 EDN + UFSS 渲染：不得增删字段、改写阈值或重排步骤；它不是第二份数据，只是同一记录的只读呈现。`mission.s1Summary` 必须来自 `.herd/missions/<slug>/s1-summary.md` 的冻结文本，不得从 `s1-brainstorm.md` 提取。
-
-### 8.5 请求尾部与运行时接线
+`formatCaseRecord(caseSpec)` 必须是 CASE 记录的确定性 EDN + UFSS 渲染：不得增删字段、改写阈值或重排步骤；它不是第二份数据，只是同一记录的只读呈现。审计员不读整份 `s2-cases.edn`；S1 背景直接读 `s1-brainstorm.md`。\n\n### 8.5 请求尾部与运行时接线
 
 #### 8.5.1 语言纪律后缀
 
@@ -1836,7 +1498,7 @@ export function buildUnattendedNudge({ stage, expectedTool, openItems = [], park
     `[UNATTENDED NUDGE — STAGE ${stage}]`,
     "思考过程与全部对外输出，一律用简体中文。",
     `当前阶段尚未到达合法出口，严禁以纯聊天正文自然停止！所有结构化推进与长文档保存必须调用专用工具（当前应调用：\`${expectedTool}\`）。`,
-    "系统处于常授权无人值守模式（仅 S1 的 `advance_s1` 手工批准、`ask_user` 澄清与 S5 初任空账的一次性询问例外）：禁止等待用户决策或授权，禁止半途而废，禁止退回舒适区！",
+    "系统处于常授权无人值守模式（仅 S1 的 `attach_brainstorm` 手工批准、`ask_user` 澄清与 S5 初任空账的一次性询问例外）：禁止等待用户决策或授权，禁止半途而废，禁止退回舒适区！",
   ];
   if (openItems.length > 0) {
     lines.push(`未结义务台账（立刻逐项销账）：\n${openItems.map((item) => `- ${item}`).join("\n")}`);
@@ -1856,12 +1518,12 @@ export function buildUnattendedNudge({ stage, expectedTool, openItems = [], park
 - 必须点名当前应调用的出口工具；不要让模型自己猜。
 - 必须列出未结义务与未恢复的 `park` 程序；没有则省略对应段落。
 - 不把 Nudge 写成新的用户需求；它是系统督促，不改变使命目标。
-- `ask_user` 挂起（含 S5 初任空账一次性询问）、`advance_s1` 手工批准确认面板、`/herd-cancel` 确认期间不注入。
+- `ask_user` 挂起（含 S5 初任空账一次性询问）、`attach_brainstorm` 手工批准确认面板、`/herd-cancel` 确认期间不注入。
 
 ### 8.6 提示词维护纪律
 
 1. **不得静默改写**：修改 `COMMON`、S1–S5 简报或角色提示词，必须先改本文件，再改实现；同一次变更内确认测试仍只验证机制，不新增 LLM-facing 文本断言。删掉的旧文案若仍有历史价值，写入 `HISTORY.md`。
-2. **零剧透检查**：由代码评审与人工/运行时观察确认 S1 出站请求不含 `James Bach`、`case_id`、`rubric`、`cases.edn`、`mapped_cases`、`submit_case_audit`；`advance_s1` 成功后 S2 简报出现；`advance_s2` 成功后 S3 简报出现，且 S2 专属字段名（`case_id`、`rubric`、`cases.edn`）不再出现。测试禁止断言 LLM-facing 的文本内容，代码是唯一真理。
+2. **零剧透检查**：由代码评审与人工/运行时观察确认 S1 出站请求不含 `James Bach`、`case_id`、`rubric`、`s2-cases.edn`、`submit_case_audit`；`attach_brainstorm` 成功后 S2 简报出现；`attach_manual_tests` 成功后 S3 简报出现，且 S2 专属字段名（`case_id`、`rubric`、`s2-cases.edn`）不再出现。测试禁止断言 LLM-facing 的文本内容，代码是唯一真理。
 3. **工具名一致性检查**：提示词中出现的工具名必须在扩展注册表中存在；不存在的工具名视为提示词 bug。该检查由代码评审与人工/运行时观察完成；测试不得断言 LLM-facing 文本内容。
 4. **长度纪律**：`COMMON` 已很长，不要继续堆叠通用工程建议。新规则只在它能改变一个具体决策或检查项时加入；否则放进本文件，不放进系统提示词。
 5. **语言纪律**：英文提示词保留原文，中文纪律保留原文；不要为了“统一语言”把两者互相翻译，翻译会丢失语气与判准。
@@ -1879,19 +1541,19 @@ export function buildUnattendedNudge({ stage, expectedTool, openItems = [], park
 
 ```text
 HerdchestraLite/
-├── AGENTS-LITE.md                # 本文件：Lite 最高规格说明书 (SSOT)
+├── AGENTS.md                     # 本文件：Lite 最高规格说明书 (SSOT)
 ├── DEBT.md                       # 相对本规格的已知缺口队列（做完即删）
 ├── HACK.md                       # omp 宿主深路径、cherry-cljs 与平台实测记录
-├── HISTORY.md                    # 可选：历史取舍与被拒方案；当前规格不依赖
+├── HISTORY.md                    # 可选：历史取舍与被拒方案
 ├── package.json                  # dependencies: { "cherry-cljs": "<exact>" }；声明清单入口
 ├── biome.json
-├── .herd/                        # 运行期权威控制态 (missions/<slug>/mission.edn、s1-summary.md、cases.edn 等)
-├── plans/                        # 运行期用户可见交付物 (plans/<slug>/s1..s5-*.md 与 evidence/)
+├── .herd/                        # 运行期控制态 (mission.edn、board.edn、boards/、s2-cases.edn 等)
+├── plans/                        # 用户可见交付物 (plans/<slug>/s1..s4、s5-report.md 与 evidence/)
 └── src/
     ├── AGENTS.md                 # 全局架构师装配笔记与模块单向依赖图
     ├── bootstrap-main.mjs        # 清单入口 1：惰性 import("./main.mjs")
     ├── clj-main.mjs              # 当前清单入口：默认模式，只暴露 clj_devops + wait + time_leap + ask_beacon
-    ├── main.mjs                  # 主装配器：连接提示词、门禁、沙箱、蜂群、TUI 与命令
+    ├── main.mjs                  # 主装配器：提示词、review/attach、沙箱、蜂群、TUI 与命令
     ├── host/
     │   ├── imports.mjs           # 宿主与 cherry-cljs 的唯一导入集中处
     │   └── subprocess.mjs        # runSubprocess 封装（超时、递归 AbortSignal、Agent Hub 产物）
@@ -1910,16 +1572,17 @@ HerdchestraLite/
     │   ├── ariadne.mjs           # Ariadne's Thread（O(1) 最小到期栈 + 软门）与 Time Leap
     │   └── beacon-query.mjs      # 只读 Beacon 查询（ask_beacon）
     ├── stages/
-    │   ├── disclosures.mjs       # S1–S5 简报（只由门禁 handler 读取下一阶段）
-    │   ├── parsers.mjs           # S1–S4 结构校验、S2 CASE 数据集 Schema 校验与序列化（不从 Markdown 解析 CASE）
-    │   ├── contract.mjs          # 阶段文档、S1 摘要、S2 CASE 数据集与 S3 modules 的 SHA-256 冻结、重对齐、前后复核
-    │   ├── gate-tools.mjs        # advance_s1..s4、ask_user、devops、submit_review
-    │   └── scores.mjs            # 从冻结 CASE 数据集进行 K 路审计汇总、min(U,D) 裁决、s5-report.md 生成
+    │   ├── disclosures.mjs       # S1–S5 简报（只由 attach successor 初始化读取）
+    │   ├── parsers.mjs           # S1–S4 结构校验、S2 CASE Schema 校验与序列化（不从 Markdown 解析 CASE）
+    │   ├── tenure.mjs            # Plan tenure、review-ready、attach barrier 与 successor 描述
+    │   ├── contract.mjs          # 原子写、S2 CASE 持久化、阶段文档路径推导（无 frozen 哈希）
+    │   ├── gate-tools.mjs        # review、attach_*、ask_user、devops
+    │   └── scores.mjs            # 从 s2-cases.edn 做 K 路审计汇总、min(U,D) 裁决、s5-report.md
     ├── swarm/
-    │   ├── board.mjs             # board.edn 锁内短事务与 board_* 工具
-    │   ├── worktree.mjs          # fork_slices/join_slice、集成锁、rebase + --ff-only、GC
-    │   ├── runner.mjs            # Reviewer ⇄ Swarm 槽位调度、无记忆转世、Nudge、Blocker Oracle
-    │   └── auditors.mjs          # K 路审计隔离、主工作区快照、汇总与返工闭环
+    │   ├── board.mjs             # board.edn 短事务与 board_* 工具（S5 唯一 board lock）
+    │   ├── worktree.mjs          # 休眠：fork_slices/join_slice、集成锁、rebase + --ff-only、GC
+    │   ├── runner.mjs            # 单工作区 Reviewer ⇄ Swarm 槽位调度、接力、Nudge、Blocker Oracle
+    │   └── auditors.mjs          # K 路审计隔离、主工作区观察、汇总与返工闭环
     ├── prompts/
     │   ├── common.mjs            # COMMON（无 S2–S5 剧透）
     │   ├── roles.mjs             # 角色提示词与 buildCaseAuditorPrompt
@@ -1937,9 +1600,7 @@ host/util → clj-sandbox → stages/swarm → prompts/tui → main
 scope → main
 ```
 
-底层模块不得 import 上层；`main.mjs` 只装配，不实现看板/门禁逻辑。任何循环依赖视为设计缺陷。
-
-### 9.2 文档与实现同步纪律
+底层模块不得 import 上层；`main.mjs` 只装配，不实现看板/门禁逻辑。任何循环依赖视为设计缺陷。`src/swarm/worktree.mjs` 保留为休眠代码，当前 dogfood 不加载、不注册。\n\n### 9.2 文档与实现同步纪律
 
 1. **本文件是唯一根规格**。不设根 `README.md` 代替规格；外部库/平台/宿主的实测限制、源码行号、测量数据与复检步骤统一记入 `HACK.md`。
 2. `src/AGENTS.md` 存放全局架构师笔记（模块划分、装配边界、单向依赖图）；各子目录可建局部 `AGENTS.md`，体例参照本文件。AI 有权利和义务直接同步局部规格与源码，无需请示。
@@ -1951,28 +1612,30 @@ scope → main
 ### 9.3 编程范式与属性测试
 
 1. **数据导向与显式状态机**：业务境况用不可变数据与明确的代数状态标识（Keyword/Schema）建模，让非法状态在结构上不可表示；严禁在业务流中藏匿隐式程序计数器。
-2. **纯函数优先**：看板转换、UFSS 读写、评分汇总、契约解析都是纯函数或“读状态 → 返回新状态”的函数；I/O 在边界层。
+2. **纯函数优先**：看板转换、UFSS 读写、评分汇总、review/attach 状态转换都是纯函数或“读状态 → 返回新状态”的函数；I/O 在边界层。
 3. **属性测试**（`bun test`）：
    - **UFSS 双射**：随机字符串（含引号、反斜杠、`"""`、`#`、多级缩进、尾随换行与控制字符）满足 `readUfss(writeUfss(s)) === s`。
-   - **渐进披露/出站投影联动**：测试只验证机制（简报常量被门禁 handler 选中、跨 `time_leap` 的保留/退役逻辑），不得断言或逐字比对 LLM-facing 文本内容；S1 出站请求不含 S2–S5 关键词由代码评审与人工/运行时观察确认。
-   - **CASE 数据集**：`cases` 严格 Schema 的 valid/invalid 双向用例；ID 重复、未知字段、阈值越界（0–100 有限数之外）、空 `steps`/`expected`/`rubric`、正常/错误/边界/并发/恢复必需路径缺失均拒绝；`.herd/missions/<slug>/cases.edn` 落盘后回读哈希稳定；Markdown 中的 CASE 文本不影响数据。
-   - **S1 摘要**：`advance_s1.summary` 原样落盘并作为原已批准背景；S1 文档变更不触发摘要重生成或新增人类等待；摘要缺失/哈希不符时按冻结边界 fail closed；摘要始终不从 `s1-brainstorm.md` 提取。
-   - **S3/S4 映射**：S3 `modules[].mapped_cases` 与 S4 `slices[].mapped_cases` 的未知 ID、缺失覆盖、重复规则均按门禁拒绝；合法并集覆盖全部冻结 CASE；完整 `modules` 持久化在 `mission.edn` 的 `:s3-modules` 并有 inline 哈希，CASE realign 后重新校验/更新，不读取 S3 Markdown 表。CASE ID 变化导致映射失效时，必须由自动结构化 realign 提交完整 `modules`（及必要 `slices`）并逐项校验；禁止猜造/自动分配或只重算哈希，无有效映射时以 `:MAPPING_REALIGN_REQUIRED` 停止推进并报告缺口。
-   - **冻结契约**：`:frozen` 的路径/哈希是唯一权威；从 `:frozen` 渲染 `contract-line` 确定且可重放；篡改 `contract-line` 不改变 `:frozen`，只触发 `:CONTRACT_LINE_STALE` 与重渲染。
+   - **渐进披露/出站投影联动**：测试只验证机制（简报常量被 attach successor 选中、跨 `time_leap` 的保留/退役逻辑），不得断言或逐字比对 LLM-facing 文本内容；S1 出站请求不含 S2–S5 关键词由代码评审与人工/运行时观察确认。
+   - **CASE 数据集**：`cases` 严格 Schema 的 valid/invalid 双向用例；ID 重复、未知字段、阈值越界（0–100 有限数之外）、空 `steps`/`expected`/`rubric`、正常/错误/边界/并发/恢复必需路径缺失均拒绝；`.herd/missions/<slug>/s2-cases.edn` 落盘后回读稳定；Markdown 中的 CASE 文本不影响数据。
+   - **S1 材料**：`attach_brainstorm.markdown` 是唯一 S1 材料；没有 `s1-summary.md`、没有 `summary`/`non_goals` 参数；approve 后 barrier，revise 清 attach-ready 且不换 tenure。
+   - **S3/S4 材料**：S3 只收 `markdown`，不解析模块或 `mapped_cases`；S4 只收 `markdown` + 非空 `promela`，`.pml` 不解析、不运行 Spin、不做模型检查；没有 `slices` 或 Slice DAG。
+   - **review 台账**：findings `value` 非空 upsert、`nil` 删除、`[]` 保持原样；board 为空才 attach-ready；attach 前置不满足时拒绝且 stage/tenure 不变。
+   - **attach/barrier**：四个 attach 的路径、原子写、barrier、tenure 退休、successor 启动、简报只注入一次；同 call-id 重放与服务重启恢复。
+   - **无 frozen 哈希**：`:frozen`/`contract-line`/`realign` 不存在；外部编辑不被机器检测，审计只依赖现场观察。
    - **看板依赖**：`board_finish.dependency_paths` 只接受工作区路径；`wait_for` 只接受任务 ID 或 `condition:` 键，孤立裸条件键被拒；既有条件满足语义保持不变。
    - **沙箱隔离**：`js/*`、`process`、`globalThis`、`require`、`import`、`eval`、`read-string` 访问一律 `:CAPABILITY_DENIED`；无逃逸路径。
    - **续体恢复**：嵌套在 `let`/`loop`/`mapv`/`reduce` 内的 `where` 零/多匹配挂起后，批内 VFS 不落盘；`unpark` 注入区间后恢复局部变量与 VFS 并完整落盘。
    - **VFS**：顺序语义、异常/park 不落盘、上限、非 UTF-8、结构冲突。
-   - **看板/令牌/文件门**：V01–V08、T01–T13、F01–F15 的确定性交错。
-   - **审计汇总**：相对冻结 CASE 数据集的缺失/未知/重复/越界/空报告/主工作区或 CASE 数据篡改全部拒绝；报告顺序等于 `cases` 数组顺序；审计员只消费自己的记录，不交叉对照数据集；全 PASS 才签发批准。
-   - **Nudge**：除合法出口外，任何回合结束都注入；等待人类或手工批准交互时抑制；退避序列正确。
+   - **看板/令牌/文件门**：V01–V08、T01–T13、F01–F15 的确定性交错；S5 单工作区无 worktree/fork/join。
+   - **审计汇总**：相对 `s2-cases.edn` 的缺失/未知/重复/越界/空报告/主工作区篡改全部拒绝；报告顺序等于 `cases` 数组顺序；审计员只消费自己的记录，不交叉对照数据集；全 PASS 才签发批准。
+   - **Nudge**：除合法出口外，任何回合结束都注入；等待人类、attach 确认面板或取消确认时抑制；退避序列正确。
 4. **测试不构成验收证据**：属性测试保护内部不变量，但不能提高任何 CASE 的 `user_score`/`developer_score`，也不能替代 S2/S5 手工实操。
 5. **确定性交错驱动**：并发测试使用可控事件驱动器，逐条覆盖暂停点/注入，不用随机调度“偶尔不出错”代替边界检查。
-6. **共享路径删除纪律**：绝不删除非本回合自己创建并逐一具名的共享路径；`.herd/`、`.herd-worktrees/`、`plans/` 与 `/tmp` 审计副本按各自规则对待；删除必须是独立单次调用，严禁在复合 shell 命令中夹带 `rm -rf`。脏文件比丢失证据便宜。
+6. **共享路径删除纪律**：绝不删除非本回合自己创建并逐一具名的共享路径；`.herd/`、`plans/` 与 `/tmp` 审计副本按各自规则对待；删除必须是独立单次调用，严禁在复合 shell 命令中夹带 `rm -rf`。脏文件比丢失证据便宜。
 
 ### 9.4 控制性质（V01–V08）与文件/Shell 交错矩阵（F01–F15）
 
-共同前提：`ls` 不产生结构依赖；`board_finish` 不 drain；`board_take_or_die` 使用固定 `confirm` 令牌；任务状态只有 `:ready`/`:waiting`/`:done`；多 Worktree 的 `fork_slices`/`join_slice`、主分支集成锁与 rebase 循环见 §2.5；T01–T13 见 §3.5。
+共同前提：`ls` 不产生结构依赖；`board_finish` 不 drain；`board_take_or_die` 使用固定 `confirm` 令牌；任务状态只有 `:ready`/`:waiting`/`:done`；单工作区 S5 的 Reviewer/Swarm 接力见 §2.5；worktree/fork/join 暂不进入 dogfood 面；T01–T13 见 §3.5。
 
 #### 持续保持的控制性质（V01–V08）
 
@@ -2010,23 +1673,15 @@ scope → main
 | F13 | 已完成整批预演，实际应用到第二个文件时进程崩溃 | 子进程硬失败注入 | 留下第一文件已变、第二不确定、第三未变的现场；恢复后保留动作标识、最后已知阶段与预期描述供后继者核对 | 自动重放同一请求覆盖崩溃后他人已作的修正；直接标整批完成 |
 | F14 | A 持有 $W$ 并已完成锁内 `stamp` 校验；不受协议约束的外部程序随后改同一文件，A 再落盘 | 锁内校验与落盘之间 | 明确标为外部 best-effort 边界内的覆盖风险，观察到外部影响时给出事实 | 把外部程序的自由写入误判为两个受保护提交互斥失效 |
 | F15 | A 观察全局无非阻塞工作准备 `board_park_slot`，用户随后追加新输入；另测 A 已阻塞在等 $W$ 的工具调用中 | 观察后、登记前 / 等 $W$ 中 | 输入先提交则拒绝 A 休眠；休眠先提交则输入的 `wake-all` 必覆盖 A。等 $W$ 的工具阻塞收到通知但不承诺立即释放 $W$ | 检查与登记分离导致漏唤醒；把工具阻塞当主动休眠任意取消 |
-
 ### 9.5 K 路审计与汇总验收
 
-1. **冻结 CASE 数据集是唯一权威**：框架读取 `.herd/missions/<slug>/cases.edn`，用同一字节视图完成哈希校验、EDN 解析、Schema 校验与 `case_id` 唯一性检查；**不解析** `s2-manual-tests.md`。S1 背景只来自 `.herd/missions/<slug>/s1-summary.md` 的原已批准冻结副本。未知、缺失、重复、越界、空报告、证据路径不存在，全部拒绝；审计员提交的 `case_id` 只用于对账，数据集校验由框架负责，审计员只消费注入的单条记录。
-2. **并发**：K 个 CASE 对应 K 名审计员，全部同时启动；运行时限制可以排队，但不得串行跳过。
-3. **隔离**：
-   - 每名审计员独立的 `tmux` 会话名、`/tmp` 副本、证据目录；
-   - 主工作区只读；启动前后 `stamp` 快照比对；`clj_auditor` 读取白名单排除 `.herd/missions/<slug>/cases.edn`，只注入本 CASE 记录；
-   - 禁止 spawn 子代理；
-   - 硬超时 30 分钟；父级取消递归传播。
-4. **评分**：`final = min(user_score, developer_score)`；两个分数都必须是有限数且在 0..100；不提交总分。阈值与 `rubric` 来自冻结 CASE 记录，不来自审计员自报。
-5. **报告**：框架按 `cases` 数组的冻结顺序合成 `s5-report.md`，包含契约行、CASE 数据集哈希、环境、逐 CASE 得分表（`case_id`/`path`/`user_score`/`developer_score`/`final`/`threshold`/`PASS|FAIL`）、证据路径、审计员报告全文、总判定、限制与教训。审计员不得直接写 `s5-report.md`。
-6. **结案**：全部 PASS → 以 `:frozen` 再次复核 S1/摘要/S2/CASE/S3/S3 modules/S4 哈希与主工作区快照 → 签发 `(missionId, revision)` 一次性批准 → `:completed`。任何绕过批准直接改状态的调用拒绝 `:APPROVAL_REQUIRED`。
-7. **返工**：任一 FAIL 或审计异常 → 不写“已交付”报告 → 未达标 `case_id`（冻结数据集与回执的交集）转为修复 Slice/根任务 → 重新 join → 重新审计同一条冻结记录 → 递增 `revision`。循环直到全 PASS 或人类取消；不得修改冻结的 `s4-coordination.md` 或 `.herd/missions/<slug>/cases.edn`。
-8. **审计异常**：超时、崩溃、空报告、证据缺失、主工作区或 CASE 数据篡改 → 该 CASE 视为未完成；重试或整批重跑。不得把“审计员没跑完”解释为通过。
-9. **审计员不得自证**：审计员只提交自己负责的 CASE；不得评论其他 CASE，不得修改 S1/S2 文档、S1 摘要或 CASE 数据集，不得要求放宽阈值。
-
+1. **`s2-cases.edn` 是唯一 CASE 权威**：框架读取 `.herd/missions/<slug>/s2-cases.edn`，校验 Schema 与 `case_id` 唯一，然后为每个 CASE 启动一名 Auditor。不再计算或比对 frozen 哈希。
+2. **并发**：K 个 CASE 对应 K 名审计员，同时启动；运行时限制可排队，但不得串行跳过。
+3. **隔离**：每名审计员独立 tmux 会话、`/tmp` 副本、`plans/<slug>/evidence/<case_id>/`；主工作区只读；审计员只消费注入的单条 CASE 记录，不读整份数据集。
+4. **评分**：`final = min(user_score, developer_score)`；阈值与 `rubric` 来自 CASE 记录，不来自审计员自报。
+5. **报告**：按 `s2-cases.edn` 顺序合成 `s5-report.md`，包含得分表、证据路径、审计员报告全文与总判定。
+6. **结案**：全部 PASS → 写报告并签发 `(mission-id, revision)` 批准；任何 FAIL 或审计异常 → 未达标 CASE 转为 board 根任务，修复后重跑同一 CASE，循环直到全 PASS 或人类取消。审计员失败不是通过理由。
+7. **无哈希复核**：审计前后不比对 frozen 哈希；工作区或 CASE 数据是否被改，由审计员观察并记录。审计员不得修改主工作区。
 ### 9.6 实施顺序与旧实现迁移
 
 **建议实施顺序**（每步可独立验证）：
@@ -2034,39 +1689,39 @@ scope → main
 1. `util/atomic-write`、`util/file-lock`、`clj-sandbox/ufss`：先把原子写、锁、UFSS 双射打牢。
 2. `clj-sandbox/evaluator`、`where`、`vfs`、`tools`：沙箱隔离、VFS、续体、能力矩阵。
 3. `scope`：Ariadne 锚点、Time Leap、Beacon 查询。
-4. `stages`：disclosures、parsers（CASE Schema 校验与序列化）、contract、gate-tools、scores；先用假文档与严格 `cases` 数据跑通 S1–S4 门禁。
-5. `swarm`：board、worktree、runner、auditors；先单 Slice 双个体，再多 Slice。
+4. `stages`：disclosures、parsers（CASE Schema 校验与序列化）、tenure、contract（无 frozen 哈希）、gate-tools（`review` + `attach_*`）、scores；先用假文档与严格 `cases` 数据跑通 S1–S4 的 review/attach 闭环。
+5. `swarm`：board（与 review 合一）、单工作区 runner、auditors；`worktree.mjs` 保持休眠，不接线。先单工作区双个体，再扩槽位。
 6. `prompts`、`tui`、命令：最后接上人机界面；核心协议不依赖 TUI。
-7. 端到端：真实 `omp` + `tmux` + `/tmp`，按冻结 CASE 数据集定义的全部正常、错误、并发、恢复、破坏性隔离分支放行。
+7. 端到端：真实 `omp` + `tmux` + `/tmp`，按 `s2-cases.edn` 定义的全部正常、错误、并发、恢复、破坏性隔离分支放行。
 
 **旧实现迁移（clean-break）**：
 
 1. 删除 `pi-goal-x` 与 `pi-context` 依赖；删除 `src/pi-goal/`、`src/pi-context/`、`src/editor-theme/`、`bootstrap-editor-theme.mjs` 及其入口。
 2. 删除所有猴子补丁：`AgentSession.prototype.getContextUsage`、`TUI.prototype` 主题 getter、`_goalCore` 私有属性、`xd://context_compact` 历史改写、`goalService.apply` 替换、Proxy UI 垫片。
-3. 删除旧 CASE Markdown 解析路径：`parseS2Cases`、`extractCaseBlocks`、`extractCaseBlock`、`loadS2Markdown`、`rubric_summary`、`rawBlock` 及任何 Markdown 回退分支；把旧 `s2-manual-tests.md` 中的可执行 CASE 一次性迁移到 `.herd/missions/<slug>/cases.edn`，Markdown 只保留方法论。迁移只由离线迁移工具执行一次，**不进入运行时**；迁移后不得双写、不得从 Markdown 提取或对照 CASE，也不得保留运行时 Markdown 解析回退。旧产物保留只读。
+3. 删除旧 CASE Markdown 解析路径：`parseS2Cases`、`extractCaseBlocks`、`extractCaseBlock`、`loadS2Markdown`、`rubric_summary`、`rawBlock` 及任何 Markdown 回退分支；把旧 `s2-manual-tests.md` 中的可执行 CASE 一次性迁移到 `.herd/missions/<slug>/s2-cases.edn`，Markdown 只保留方法论。迁移只由离线迁移工具执行一次，**不进入运行时**；迁移后不得双写、不得从 Markdown 提取或对照 CASE，也不得保留运行时 Markdown 解析回退。旧产物保留只读。
 4. 把 `docs/manual-acceptance/<slug>/requirements.md` 等旧流程迁移为 `plans/<slug>/s1..s5`；旧产物保留只读，不静默删除。
 5. 更新 `package.json`：运行时依赖只保留 `cherry-cljs`；`omp.extensions` / `pi.extensions` 只声明单主入口（`clj-main.mjs` 或 `bootstrap-main.mjs`）；`engines.bun` 保留。
-6. 重新 `omp plugin link`；用 `/herd` 跑一个小型真实使命，验证 S1 门禁、S2–S4 自动、S5 单 Slice、K=1 审计、结案。
+6. 重新 `omp plugin link`；用 `/herd` 跑一个小型真实使命，验证 S1 `attach_brainstorm` 手工批准、S2–S4 自动、单工作区 S5、K=1 审计、结案。
 7. 迁移后删除旧路径别名、旧工具名与兼容 shim；不留“先走旧路”的隐藏分支。
 
 ### 9.7 放行标准与阻断缺陷
 
 **放行标准**：
 
-- 本文件要求的所有阶段、门禁、看板、沙箱、UFSS、审计路径都有实现或明确记入 `DEBT.md`；
+- 本文件要求的所有阶段、review/attach、看板、沙箱、UFSS、审计路径都有实现或明确记入 `DEBT.md`；
 - 内部属性/交错测试全绿；
-- 本产品自身的迭代用手工验收走完冻结 CASE 数据集定义的全部正常、错误、边界、并发、恢复与适用路径分支；S1 摘要、CASE 数据哈希与 `:frozen` 一致，且不存在从 Markdown 提取或对照 CASE 的路径；
-- 真实 `omp` + `tmux` 中完成至少一次端到端使命：S1 手工批准（真实产品运行由人类操作员明确批准；隔离测试可由获用户授权的 AI 操作员操作真实确认界面模拟，见 §2.2）→ S2–S4 自动 → 多 Slice → K 路审计 → 结案/返工；
+- 本产品自身的迭代用手工验收走完 `s2-cases.edn` 定义的全部正常、错误、边界、并发、恢复与适用路径分支；不依赖 frozen 哈希，且不存在从 Markdown 提取或对照 CASE 的路径；
+- 真实 `omp` + `tmux` 中完成至少一次端到端使命：S1 `attach_brainstorm` 手工批准（真实产品运行由人类操作员明确批准；隔离测试可由获用户授权的 AI 操作员操作真实确认界面模拟，见 §2.2）→ S2–S4 自动 → 单工作区 S5 → K 路审计 → 结案/返工；
 - 无阻断缺陷。
 
-**本产品自身开发的验收路径**：本仓库的迭代验收遵循 `omp` 的 MANUAL ACCEPTANCE 协议，产物写入 `docs/manual-acceptance/<goal>/requirements.md`、`development-guide.md`、`coordination.md` 与 `report.md`；这是“开发本产品”的验收，不是“产品运行时”的使命验收。产品运行时仍使用 `plans/<slug>/s1..s5`、`.herd/missions/<slug>/s1-summary.md`、`.herd/missions/<slug>/cases.edn` 与 `plans/<slug>/evidence/`。两套路径不得混用：不得把 `docs/manual-acceptance/` 当成 Lite 使命的交付物，也不得把 `plans/<slug>/` 当成开发验收报告。
+**本产品自身开发的验收路径**：本仓库的迭代验收遵循 `omp` 的 MANUAL ACCEPTANCE 协议，产物写入 `docs/manual-acceptance/<goal>/requirements.md`、`development-guide.md`、`coordination.md` 与 `report.md`；这是“开发本产品”的验收，不是“产品运行时”的使命验收。产品运行时仍使用 `plans/<slug>/s1..s5`、`.herd/missions/<slug>/s2-cases.edn` 与 `plans/<slug>/evidence/`。两套路径不得混用。
 
 **阻断放行的最高优先级缺陷**：
 
 1. 跳过 S2/S5 手工验收，或用自动化测试/CI/构建替代；
 2. 主工作区在审计期间被修改却仍结案；
 3. 绕过批准凭证直接标 `:completed`；
-4. 冻结契约哈希不一致却继续；
+4. review 未空账或 attach 前置不满足却推进阶段；board 非空却 attach；旧 tenure 继续写；
 5. 审计沙箱逃逸、审计员写产品代码；
 6. 双持令者、死身份提交、父项自动完成；
 7. 普通写与 `call` 同时越过 $W$；预演与实际应用之间释放 $W$；
@@ -2077,14 +1732,9 @@ scope → main
 12. 密钥/私人数据写入 `plans/`、`evidence/` 或日志；
 13. S1 出站请求泄露 S2–S5 方法论；
 14. UFSS 解析损坏或静默吞字；
-15. `board_park_slot` 在全局有可推进工作时被接受，导致睡死。
+15. `board_park_slot` 在全局有可推进工作时被接受，导致睡死；
 16. 从 `s2-manual-tests.md` 提取、对照或重建 CASE，或在 CASE 数据集之外维护第二份可执行定义；
 17. 审计员读取整份 CASE 数据集或其他 CASE，或审计期间 CASE 数据被修改却仍结案。
-18. `:s3-modules` 缺失、被静默编辑或 inline 哈希不符却继续；丢弃结构化 `modules` 后从 S3 Markdown 重建映射；或 CASE ID 变化时猜造/自动分配映射、只重算哈希伪装对齐。
-
----
-
-## 10 附录
 
 ### 10.1 与独立标准版（`FullRef.md`）的边界与差异
 
@@ -2094,11 +1744,12 @@ scope → main
 | 运行时依赖 | Clojure/Java 生态 | 仅 `cherry-cljs` | 否 |
 | 仓库守望 | `Steward` + `Standing Sphinx` 常驻 | 无；人类 `/herd` 准入，使命结束即空闲 | 否（Lite 非目标） |
 | 规划阶段 | S1 → S2 → S3 → 待执行 | S1 → S2 → S3 → S4 → S5 | 是（Lite 把测试/协调显式化） |
-| 规划底稿 | 单文件 `plans/<name>.md` | 五阶段文件 `plans/<slug>/s1..s5-*.md` + S1 摘要副本 + CASE 数据集 `.herd/missions/<slug>/cases.edn` + `mission.edn` 的 `:s3-modules` | 同构，外皮不同 |
-| 规划手工门禁 | 常授权，S1 `ask` + 初任空账 `ask` | `advance_s1` 手工批准（生产须人类操作员；隔离测试可由获授权 AI 操作员模拟）；S5 初任空账一次询问；其余自动 | 否（Lite 更集中） |
-| 方法论披露 | 系统提示词含全阶段 | 门禁回执渐进披露 | 否（Lite 独有） |
-| 中心化评审 | `review` 台账，Plan/执行层各自 | `submit_review` findings，每 Slice | 是 |
-| 微观看板 | 内存 STM + Datalevin | `.herd/.../board.edn` + `wx` 锁 | 是（事务语义同构） |
+| 规划底稿 | 单文件 `plans/<name>.md` | 阶段文件 `plans/<slug>/s1..s4-*.md` + `s4-coordination.pml` + `.herd/missions/<slug>/s2-cases.edn` | 同构，外皮不同 |
+| 规划手工门禁 | 常授权，S1 `ask` + 初任空账 `ask` | `attach_brainstorm` 手工批准（生产须人类操作员；隔离测试可由获授权 AI 操作员模拟）；S5 初任空账一次询问；其余自动 | 否（Lite 更集中） |
+| 方法论披露 | 系统提示词含全阶段 | attach successor 渐进披露 | 否（Lite 独有） |
+| 中心化评审 | `review` 台账，Plan/执行层各自 | `review` findings 直接写入唯一 board | 是 |
+| 微观看板 | 内存 STM + Datalevin | `.herd/.../board.edn` + `wx` 锁；S5 单工作区 | 是（事务语义同构） |
+| 多 worktree | Steward 按 Slice fork/join | 暂不进入 dogfood 面；`worktree.mjs` 休眠 | 否（当前裁剪） |
 | 令牌 | `take-or-die` | `board_take_or_die` | 是（T01–T13 共享） |
 | 文件提交 | 批内 VFS + `stamp` + $W$ | 同构；`stamp` 用 BigInt 纳秒 | 是 |
 | 沙箱 | JVM Clojure | `cherry-cljs` + Promise-CPS | 是（EDN/UFSS/续体同构） |
@@ -2107,7 +1758,7 @@ scope → main
 | 环境供应 | Pixi + MSYS2 | 宿主环境；`HACK.md` 记录 | 否 |
 | 暂停语义 | 无协议 `paused`；Esc 取消 | 同 | 是 |
 | 模型归属 | 主模型判断；`@task` 施工 | 同 | 是 |
-| 交付路径 | `plans/<name>.md` + 报告产物 | `plans/<slug>/` + `.herd/missions/<slug>/cases.edn` + `evidence/` | 否（外皮不同） |
+| 交付路径 | `plans/<name>.md` + 报告产物 | `plans/<slug>/` + `.herd/missions/<slug>/s2-cases.edn` + `evidence/` | 否（外皮不同） |
 
 **共同灵魂**：五阶段打磨、中心化换任、拆分优先、父项保留实质、`take_or_die`、受保护提交、Ariadne、EDN + UFSS、双视角 WTP、手工实操验收。**不可互相替代**：Lite 不因为“标准版有 Steward”就偷偷加常驻守望；标准版不因为“Lite 有渐进披露”就删掉自己的完整提示词。两版共享语义，不共享物理实现。
 
@@ -2124,155 +1775,116 @@ scope → main
 | `_goalCore` 私有属性、`goalService.apply` 替换 | 删除；完成闸门由 Lite 自己的审计/批准状态机实现。 |
 | `xd://context_compact` 分支改写、`PENDING_XDEV_COMPACTS` | 删除；只做 `context` 出站投影，不改写历史。 |
 | `docs/manual-acceptance/<slug>/` 四文件 | `plans/<slug>/s1..s5` 五阶段文件；旧产物保留只读。 |
-| 从 `s2-manual-tests.md` 解析 `### CASE-*`、阈值与 `rubric_summary`，再与结构化数组逐项对账 | CASE 作为严格 Schema 的 `cases` 参数提交，独立持久化为 `.herd/missions/<slug>/cases.edn`；Markdown 只写方法论；不解析、不双写、不对照。 |
+| 从 `s2-manual-tests.md` 解析 `### CASE-*`、阈值与 `rubric_summary`，再与结构化数组逐项对账 | CASE 作为严格 Schema 的 `cases` 参数提交，独立持久化为 `.herd/missions/<slug>/s2-cases.edn`；Markdown 只写方法论；不解析、不双写、不对照。 |
 | 单一 auditor 串行跑全部 CASE，60 分钟 | K 名 auditor 并发，一 CASE 一名，30 分钟；框架汇总。 |
 | 无 Nudge 实现 | Nudge + 空转退避 + 上游退避是核心协议。 |
 | `tool-gate` 只注入两个字段，无 Scope/intent | 删除 tool-gate 与旧 Scope 注解；语言约束由 `context` 尾注承担，Ariadne 归属 `src/scope/`。 |
-| 无多 Worktree 编排 | `fork_slices`/`join_slice` + FIFO + 集成锁 + 7 天 GC。 |
+| 无多 Worktree 编排 | 当前 dogfood 单工作区；`fork_slices`/`join_slice` 保留为后续完整装配。 |
 | 无 `cherry-cljs` 沙箱 | REPL、VFS、`where`/`park`/`unpark`。 |
 | 同目录多子代理无写锁 | 单 Worktree 写锁 $W$ + 批内 VFS + `stamp` 复核。 |
 | 验收失败只写 FAIL 报告 | 未达标 CASE 自动转修复 Slice/根任务，循环到全 PASS。 |
 
 **保留的旧实现优点**：工具门的中文锚点与并发自检、manual acceptance 的双视角 WTP 与 `min` 裁决、审计员只读/隔离/`/tmp` 破坏实验、Agent Hub 可见性、CASE 数据集 Schema 校验的 `cases[i].<field>` 精确报错与独立哈希、批准只能由审计结果签发的 fail-closed 思路。这些在新规格中被继承并强化。
-
 ### 10.3 错误码与状态词
 
-错误码是实现契约；返回时用 EDN + UFSS，带具体路径、原值、当前值与可执行的下一步。大小写与命名必须与源码常量一致。下表“来源”标注：**设计** = 设计讨论明确出现；**补充** = 为自包含而补齐，语义不得与设计冲突。
+错误码是实现契约；返回时用 EDN + UFSS，带具体路径、原值、当前值与可执行的下一步。大小写与命名必须与源码常量一致。
 
-#### 阶段/契约
+#### 阶段 / review / attach
 
-| 错误码 | 含义 | 来源 |
-|---|---|---|
-| `:SLUG_TAKEN` | slug 已被另一个使命占用 | 补充 |
-| `:STAGE_MISMATCH` | 门禁工具与当前阶段不匹配 | 补充 |
-| `:CALL_REPLAY_MISMATCH` | 同一 `call-id` 换用不同载荷 | 设计 |
-| `:CONTRACT_HASH_MISMATCH` | 冻结哈希（含 CASE 数据集）与磁盘文件不一致且未重对齐 | 设计（语义） |
-| `:S1_SUMMARY_HASH_MISMATCH` | S1 摘要冻结副本缺失或与 `:frozen` 的 `:s1-summary` 哈希不符；不得从文档重生成或要求人类补写 | 补充 |
-| `:CONTRACT_LINE_STALE` | `contract-line` 与 `:frozen` 的确定性渲染不一致；以 `:frozen` 为准并重渲染 | 补充 |
-| `:S3_MODULES_HASH_MISMATCH` | `mission.edn` 的 `:s3-modules` 规范字节哈希与 `:frozen` 的 inline 哈希不一致 | 补充 |
-| `:CASE_SCHEMA_INVALID` | `cases` 数组或 CASE 字段不符合严格 Schema；返回 `cases[i].<field>` | 补充 |
-| `:CASE_DUPLICATE_ID` | `cases` 中 `case_id` 重复 | 补充 |
-| `:CASE_THRESHOLD_INVALID` | `threshold` 非 0–100 有限数 | 补充 |
-| `:CASE_REQUIRED_PATH_MISSING` | 正常、错误、边界、并发、恢复中某一必需路径类别没有 CASE | 补充 |
-| `:CASE_HASH_MISMATCH` | `.herd/missions/<slug>/cases.edn` 与冻结哈希不一致且未重对齐 | 补充 |
-| `:MAPPED_CASE_UNKNOWN` | S3 `modules[].mapped_cases` 或 S4 `slices[].mapped_cases` 引用冻结数据集中不存在的 `case_id` | 补充 |
-| `:MAPPED_CASE_MISSING` | 冻结 CASE 未被 S3 模块或 S4 Slice 的 `mapped_cases` 覆盖 | 补充 |
-| `:MAPPING_REALIGN_REQUIRED` | CASE ID 集合变化使冻结 modules/slices 映射失效；需由现有自动结构化 realign 提交完整记录，禁止猜造/自动分配或只重算哈希 | 补充 |
-| `:APPROVAL_REQUIRED` | 没有绑定 `(mission-id, revision)` 的批准却试图结案 | 设计 |
-| `:INSUFFICIENT_WORKTREES` | 资源不足，无法创建请求的 worktree 数 | 设计 |
-| `:RESOURCES_NOT_QUIESCENT` | 任期仍有在途动作/令牌责任/写锁 | 设计 |
-| `:FF_NOT_READY` | worktree 无法 `--ff-only` 合入 | 设计 |
-| `:NO_RESULTS` | 全部 Slice abandon，join 队列为空 | 补充 |
+| 错误码 | 含义 |
+|---|---|
+| `:ATTACH_NOT_READY` | board 未空或未完成空账 review |
+| `:REVIEW_LEDGER_NOT_EMPTY` | attach 时仍有未结 task |
+| `:ATTACH_STAGE_MISMATCH` | attach 工具与当前 stage 不匹配 |
+| `:ATTACH_ALREADY_PENDING` | 另一个 attach 正在等待/执行 |
+| `:TENURE_RETIRED` | 旧 tenure 的迟到 review/attach |
+| `:CALL_REPLAY_MISMATCH` | 同一 call-id 换用不同载荷 |
+| `:STAGE_MISMATCH` | 工具与当前阶段不匹配 |
+| `:APPROVAL_REQUIRED` | 没有审计批准却试图结案 |
+| `:HOST_API_MISMATCH` | 宿主确认面板、子会话等端口缺失 |
 
-#### 看板/令牌
+删除：`:CONTRACT_HASH_MISMATCH`、`:S1_SUMMARY_HASH_MISMATCH`、`:S3_MODULES_HASH_MISMATCH`、`:CASE_HASH_MISMATCH`、`:MAPPING_REALIGN_REQUIRED`、`:CONTRACT_LINE_STALE`。
 
-| 错误码 | 含义 | 来源 |
-|---|---|---|
-| `:BOARD_CONFLICT` | `expected_board_version` 或父项条件已变 | 补充 |
-| `:TASK_NOT_READY` | 任务不是 `:ready`，不能认领/完成 | 补充 |
-| `:CLAIM_CONFLICT` | 任务已被他人认领或 `claim_id` 不匹配 | 补充 |
-| `:PARENT_NOT_READY` | 同一回合内连带关闭刚恢复的父项 | 设计（语义） |
-| `:TOKEN_REQUIRED` | 普通个体调用 `call` 或认领令牌任务 | 设计 |
-| `:CONFIRMATION_REQUIRED` | `confirm` 缺失或值不符 | 设计 |
-| `:TENURE_RETIRED` | 旧任期/旧身份迟到请求 | 设计 |
-| `:ACTOR_DEAD` | 已死身份提交 | 补充 |
-| `:CLAIM_CHANGED` | 认领已变化，旧结果不能提交 | 补充 |
-| `:NO_PROGRESSABLE_WORK` | `board_park_slot` 被拒时实际无工作（正向回执，不一定是错误） | 设计（语义） |
-| `:TASK_HAS_CHILDREN` | 取消/替代非叶子 | 补充 |
-| `:NAME_TAKEN` | 同名程序仍在活动期 | 设计 |
+#### 看板 / 令牌
 
-#### 文件/VFS/沙箱
+| 错误码 | 含义 |
+|---|---|
+| `:BOARD_CONFLICT` | 观察到的 board-version 已过期 |
+| `:BOARD_NOT_QUIESCENT` | 接力/审计前仍有在途动作或未结 task |
+| `:TASK_NOT_READY` | 任务不是 `:ready` |
+| `:CLAIM_CONFLICT` | 认领冲突或 claim-id 不匹配 |
+| `:PARENT_NOT_READY` | 同一回合内连带关闭刚恢复的父项 |
+| `:TOKEN_REQUIRED` | 普通 Worker 调用 `call` 或认领令牌子任务 |
+| `:CONFIRMATION_REQUIRED` | `confirm` 缺失或值不符 |
+| `:ACTOR_DEAD` | 已死身份提交 |
+| `:TASK_HAS_CHILDREN` | 取消/替代非叶子 |
+| `:NAME_TAKEN` | 同名程序仍在活动期 |
 
-| 错误码 | 含义 | 来源 |
-|---|---|---|
-| `:FILE_CONFLICT` | `read-set` 的 `stamp` 不匹配 | 设计 |
-| `:STRUCTURE_CONFLICT` | 存在性/类型/路径结构条件不成立 | 设计 |
-| `:PREPARE_REJECTED` | 批内预演发现可拒绝错误 | 设计 |
-| `:LIMIT_EXCEEDED` | 单文件/单批/操作数超限 | 设计 |
-| `:changed-during-read` | 单次读取前后 `stamp` 变化 | 设计 |
-| `:PATH_ESCAPE` | 审计沙箱、证据目录或冻结数据集的路径结构冲突；普通 VFS 路径不再设边界 | 补充 |
-| `:NOT_UTF8` | 无法无损解码为 UTF-8 | 补充 |
-| `:OUTPUT_TRUNCATED` | `call` 输出超过内联/日志上限 | 设计 |
-| `:CAPABILITY_DENIED` | 角色无此沙箱能力或访问未绑定符号 | 设计 |
-| `:PROGRAM_UNKNOWN` | `unpark` 目标不存在 | 设计 |
-| `:STALE_CONTROL` | 挂起点已恢复/已失效 | 设计 |
-| `:INVALID_ARGUMENT` | 参数非法（含 `removeLast` 无上一拍） | 设计 |
-| `:UFSS_INDENT_VIOLATION` | 多行围栏缩进不足 | 设计 |
-| `:UFSS_UNCLOSED` | 围栏未闭合 | 补充 |
+#### 文件 / VFS / 沙箱
 
-#### 上下文/审计/运行
+| 错误码 | 含义 |
+|---|---|
+| `:FILE_CONFLICT` | read-set 的 stamp 不匹配 |
+| `:STRUCTURE_CONFLICT` | 存在性/类型/路径结构不成立 |
+| `:PREPARE_REJECTED` | 批内预演发现可拒绝错误 |
+| `:LIMIT_EXCEEDED` | 单文件/单批/操作数超限 |
+| `:changed-during-read` | 单次读取前后 stamp 变化 |
+| `:NOT_UTF8` | 无法无损解码为 UTF-8 |
+| `:OUTPUT_TRUNCATED` | `call` 输出超过上限 |
+| `:CAPABILITY_DENIED` | 角色无此能力或访问未绑定符号 |
+| `:PROGRAM_UNKNOWN` | `unpark` 目标不存在 |
+| `:STALE_CONTROL` | 挂起点已恢复/已失效 |
+| `:INVALID_ARGUMENT` | 参数非法 |
+| `:UFSS_INDENT_VIOLATION` | 多行围栏缩进不足 |
+| `:UFSS_UNCLOSED` | 围栏未闭合 |
 
-| 错误码 | 含义 | 来源 |
-|---|---|---|
-| `:SCOPE_UNINITIALIZED` | 遗留错误码：旧 Scope 冷启门禁；当前无门禁使用 | 历史 |
-| `:SCOPE_BUDGET_SPENT` | 遗留错误码：旧 Scope 预算耗尽；当前无门禁使用 | 历史 |
-| `:INTENT_REQUIRED` | sandbox `call` 缺少 call-id/deadline 元数据 | 补充 |
-| `:SCOPE_INVALID` | 遗留错误码：旧 Scope 形状/字段非法；当前无门禁使用 | 历史 |
-| `:ASK_FORBIDDEN_OUTSIDE_S1` | 非 S1 且非 S5 初任空账例外调用 `ask_user` | 设计 |
-| `:AUDIT_MISSING` | 相对冻结 CASE 数据集缺少某个 CASE 的审计回执 | 补充 |
-| `:AUDIT_UNKNOWN_CASE` | 审计员提交了冻结 CASE 数据集中不存在的 `case_id` | 补充 |
-| `:AUDIT_DUPLICATE_CASE` | 同一 CASE 多次有效提交 | 补充 |
-| `:AUDIT_INVALID_SCORE` | 分数非有限/越界 | 补充 |
-| `:AUDIT_EVIDENCE_MISSING` | 证据路径不存在或越界 | 补充 |
-| `:AUDIT_WORKSPACE_MUTATED` | 审计期间主工作区或 CASE 数据集被修改 | 设计（语义） |
-| `:AUDIT_TIMEOUT` | 审计员超时 | 补充 |
-| `:AUDIT_ABORTED` | 审计员被取消/崩溃 | 补充 |
-| `:STALLED` | 上游配额/计费/模型确定性错误，停止重试 | 设计 |
-| `:UPSTREAM_ABORTED` | 上游断流，进入退避 | 设计 |
+#### 上下文 / 审计 / 运行
 
-**状态词**：
+| 错误码 | 含义 |
+|---|---|
+| `:ASK_FORBIDDEN_OUTSIDE_S1` | 非 S1 且非 S5 初任空账调用 `ask_user` |
+| `:AUDIT_MISSING` | 缺少某个 CASE 的审计回执 |
+| `:AUDIT_UNKNOWN_CASE` | 提交了不存在的 case_id |
+| `:AUDIT_DUPLICATE_CASE` | 同一 CASE 多次有效提交 |
+| `:AUDIT_INVALID_SCORE` | 分数非有限/越界 |
+| `:AUDIT_EVIDENCE_MISSING` | 证据路径不存在或越界 |
+| `:AUDIT_TIMEOUT` | 审计员超时 |
+| `:AUDIT_ABORTED` | 审计员被取消/崩溃 |
+| `:STALLED` | 上游配额/计费/模型确定性错误 |
+| `:UPSTREAM_ABORTED` | 上游断流，进入退避 |
 
-- 任务：`:ready` / `:waiting` / `:done`。
-- 动作：`:claimed` / `:preparing` / `:waiting-gate` / `:applying` / `:running` / `:finished` / `:uncertain`。
-- 个体：`:alive` / `:dead` / `:terminated`。
-- 令牌：`:free` / `:held`。
-- Slice：`:running` / `:queued` / `:joined` / `:abandoned` / `:failed`。
-- 任期：`:active` / `:retired`。
-- 使命：`:s1` / `:s2` / `:s3` / `:s4` / `:s5` / `:completed`。
-- 用户侧：**进行中** / **已交付** / **未交付（附理由与教训）**。
-
+**状态词**：任务 `:ready`/`:waiting`/`:done`；动作 `:claimed`/`:preparing`/`:waiting-gate`/`:applying`/`:running`/`:finished`/`:uncertain`；个体 `:alive`/`:dead`/`:terminated`；令牌 `:free`/`:held`；阶段 `:s1`…`:s5`/`:completed`；用户侧 **进行中**/**已交付**/**未交付（附理由与教训）**。
 ### 10.4 设计裁决索引
 
 本表记录“为什么当前规格是这样”，尤其是设计讨论中曾经出现、后来被收敛的方案。它不构成新义务；当前行为以正文为准。
 
 | 裁决 | 决定 | 理由 | 被替换/拒绝的方案 |
 |---|---|---|---|
-| 规划手工门禁 | S1 门禁手工批准（生产由人类操作员明确批准；隔离测试可由获授权 AI 操作员模拟）；S5 初任空账允许一次询问 | 人类的信息价值最高点在 S1 意图与边界；S5 初任空账需要人类决定后续，而不是让系统空转；测试模拟不改变生产授权 | 每阶段人工点头（`/herd-pair`）；独立 Plan Reviewer 互审 |
-| S2–S5 基本自动 | S2–S4 门禁校验通过即自动批准；S5 除初任空账外自动 | 长程无人值守；避免把审批当成验收；初任空账是唯一需要人类意图的例外 | 每阶段弹确认框；等待用户“继续” |
-| 方法论披露 | 下一阶段大师只在上一门禁回执中出现 | 防止模型在 S1 就写测试表、在 S2 就切 Slice；保护缓存前缀 | 一次性把 S1–S5 全部塞进系统提示词 |
-| 终局审计 | K 个 CASE 并发，一 CASE 一审计员 | 消除单审计员注意力衰减；墙钟压到最慢 CASE | 单审计员串行跑完全部 CASE |
+| 阶段生命周期 | `review` 空账只置 attach-ready；必须显式调用按材料命名的 `attach_*`，才写交付物、退休 tenure、写 barrier、启动 successor 并注入下一阶段简报 | 把“判断达标”和“物理提交+换任”分开；避免门禁工具一次动作过重 | `advance_s1..s4` 一次完成校验/保存/冻结/晋级/披露 |
+| 工具命名 | `attach_brainstorm` / `attach_manual_tests` / `attach_dev_guide` / `attach_coordination` | 工具名表达提交材料，不表达阶段编号 | `attach_s1..s4`；按目标阶段命名 |
+| S1 材料 | 只提交 `brainstorm_markdown` 一个 md；无 `summary`、`non_goals` 参数 | S1 交付物就是需求文档；Non-Goals 写在文档内 | `s1-summary.md` 冻结副本；独立 `non_goals` 数组 |
+| 规划手工门禁 | S1 `attach_brainstorm` 手工批准（生产由人类操作员明确批准；隔离测试可由获授权 AI 操作员模拟）；S5 初任空账允许一次询问 | 人类信息价值最高点在 S1 意图与边界；S5 初任空账需要人类决定后续 | 每阶段人工点头；独立 Plan Reviewer 互审 |
+| S2–S5 基本自动 | S2–S4 attach 校验通过即自动晋级；S5 除初任空账外自动 | 长程无人值守；避免把审批当成验收 | 每阶段弹确认框；等待用户“继续” |
+| 方法论披露 | 下一阶段大师只在 attach successor 初始化中出现 | 防止模型在 S1 就写测试表、在 S2 就切任务；保护缓存前缀 | 一次性把 S1–S5 全部塞进系统提示词 |
+| review 与 board | 每个 tenure 只有一张 `board.edn`，review findings 就是 board 任务；扁平 map，允许 `:waiting`/父子引用 | 消除两套台账；编辑与 diff 友好 | 独立 review ledger + board 双写 |
+| 终局审计 | K 个 CASE 并发，一 CASE 一审计员；`s2-cases.edn` 是唯一 CASE 权威 | 消除单审计员注意力衰减；墙钟压到最慢 CASE | 单审计员串行跑完全部 CASE |
 | 结构化交付 | 一切结构化数据/长文走工具参数 | 杜绝正则抠正文、`<approved/>` 伪标记 | 从聊天正文正则抠取结构化数据或伪标记 |
-| CASE 数据集 | `advance_s2` 的 `cases` 参数是唯一来源；严格 Schema 校验后独立持久化为 `.herd/missions/<slug>/cases.edn` 并冻结 SHA-256；S3 只引用 `case_id`，S4 校验覆盖，S5 逐条分发，报告与返工以该数据集为准 | 单一权威、可哈希、可重对齐、可按 ID 分发；避免从 Markdown 解析 CASE 与双源漂移 | 从 `s2-manual-tests.md` 解析 `### CASE-*`；`rubric_summary` 与正文逐项对账；保留 Markdown 回退 |
-| S3 模块映射 | `advance_s3` 的完整 `modules`（含 `mapped_cases: string[]`）持久化到 `mission.edn` 的 `:s3-modules` 并冻结 inline 哈希；只引用冻结 `case_id`，全部 CASE 必须被至少一个模块覆盖，未知/缺失拒绝；S3 Markdown 只是说明。CASE ID 变化导致映射失效时，由自动结构化 realign 提交完整 `modules`（及必要 `slices`）并逐项校验，禁止猜造/自动分配或只重算哈希；无有效映射则停止并报告缺口 | 在实现前确认模块确实承接验收责任；下游读结构化记录，不读 Markdown 表；与 S4 Slice 映射同源 | 只在 S3 文档写自由文本映射，不做结构化覆盖校验；丢弃 `modules` 后从 Markdown 重建；按哈希重算伪装对齐 |
-| S1 摘要 | `advance_s1.summary` 原样冻结为 `.herd/missions/<slug>/s1-summary.md`，作为原已批准背景；审计员只读该副本，不从 `s1-brainstorm.md` 提取；S1 文档编辑不触发摘要重生成或新增人类等待 | 摘要稳定、可哈希；避免审计员从长文档重新解释；避免新增 S2–S5 人工门 | 审计时临时从 S1 文档摘录；把摘要当作可自动生成文本；因文档编辑要求人类补写摘要 |
-| 冻结契约 | `:frozen` 是机器哈希与路径的唯一权威；`contract-line` 从 `:frozen` 确定性渲染，仅作人类可读摘要 | 消除“契约行与哈希表两套真相”；重对齐后重渲染即可 | 手工维护 `contract-line`；以 `contract-line` 反向覆盖 `:frozen` |
-| 看板依赖 | `board_finish.dependency_paths` 是 `string[]` 工作区路径；`wait_for` 是任务 ID 或带 `condition:` 前缀的条件键 | 明确文件依赖与任务等待是两种对象；条件键仍由既有看板事件满足 | 把任务 ID 放进 `dependency_paths`；用无法判别的裸字符串表示条件 |
-| 沙箱语言 | 保留 ClojureScript/EDN/UFSS/VFS/park | 与标准版同构；模型可写真正的数据变换，而非拼 shell | 退回零散 read/write/bash 工具；纯 JSON 工具 |
-| 运行时依赖 | 只保留 `cherry-cljs` | 无 JVM、无构建、无猴子补丁；EDN 玩法保留 | 继续依赖 `pi-goal-x`/`pi-context`；引入重型 JS 框架 |
-| 清单入口 | 单一主入口；Ariadne 归属 `src/scope/` | 去除冗余的 `tool-gate` 第 4 项角色守卫与双入口开销 | 三个入口（含独立 `workspace-gate`）；独立 `tool-gate` 双入口 |
-| 工作区保护 | 并入 `clj-sandbox/vfs` 与 `swarm/board` | 写入必须经沙箱能力；独立入口无法拦截所有子代理 | 独立 `workspace-gate` 插件入口；只靠提示词自觉 |
-| 规划文档 | 阶段文档 `plans/<slug>/s1..s5-*.md` + S1 摘要副本 + CASE 数据集 `.herd/missions/<slug>/cases.edn` + `mission.edn` 的 `:s3-modules` | 阶段文档、摘要、CASE 数据与 S3 modules 分别冻结；文档用户可见，控制态数据可哈希、可按 ID 分发 | 单文件 `plans/<name>.md`；把 CASE 定义写进 Markdown；丢弃 `modules` 后从文档重建 |
-| 规划换任 | S1–S4 同一个 `Plan`，不换任 | 保留需求上下文与人类澄清；换任无包袱验收放在 S5 | 每阶段换干净 `Plan Reviewer` 互审 |
-| S5 评审 | 每个 Slice 一个 `Reviewer` 任期循环 | Slice 是并行单位；每 Slice 需要独立验收 | 主工作区单一 Reviewer 串行审所有 Slice |
-| S5 初任空账 | 主工作区已满足契约且无 Slice 可做时，一次性 `ask_user`；问完即恢复无人值守 | 系统无法替人类决定“契约已满足后做什么”；问一次比空转或擅自结案更诚实 | 直接结案；无限 Nudge；把 `ask_user` 当常规评审出口 |
+| CASE 数据集 | `attach_manual_tests.cases` 是唯一来源；严格 Schema 校验后持久化为 `s2-cases.edn`；不冻结哈希 | 单一权威、可按 ID 分发；避免 Markdown 解析与双源漂移 | 从 `s2-manual-tests.md` 解析 CASE；哈希冻结；`rubric_summary` 对账 |
+| S3 开发指南 | `attach_dev_guide` 只收 `markdown`；模块组织由文档内容自行决定 | 避免把说明性结构变成机器门禁 | `modules` 数组、`:s3-modules`、模块覆盖校验、inline 哈希 |
+| S4 协调手册 | `attach_coordination` 收 `markdown + promela`；无 `slices`/Slice DAG；`.pml` 必填但只保存观察，不解析/不跑 Spin | 形式模型作为唯一形式真理，但系统不承担模型检查工具链 | `slices` 参数、Slice DAG、CASE-to-Slice 覆盖校验、Spin 门禁 |
+| S5 编排 | 单工作区、一个 Reviewer、一个 Swarm board；非空 findings `wake-all`；空账 + quiescence 后审计 | 先把单工作区闭环跑通；多 worktree 是后续完整装配 | `fork_slices`/`join_slice`/worktree/rebase/ff 进入 dogfood 面 |
+| frozen | `frozen` 只是提示词约定；无 `:frozen` 哈希、无 `contract-line`、无 `realign`、无哈希不匹配错误 | 减少控制态复杂度，信任模型与审计员观察 | SHA-256 冻结、contract-line、realign、哈希门禁 |
+| 锁 | S1–S4 单写者不加 mission 锁；S5 只保留一个 `board.lock`；原子写防损坏 | 轻量、信任；只防文件损坏，不做重型互斥 | mission.lock、master-integration.lock、worktree 锁、到处加锁 |
 | 模型归属 | 主模型判断/验收；`@task` 施工/调查 | 成本与能力匹配；审计需要最强证伪 | 全体主模型；全体 `@task` |
-| 锁顺序 | 集成锁 → $W$ → board lock | 防止反向等待死锁；与提交路径一致 | 先 board 后 $W$；无固定顺序 |
-| join 语义 | FIFO 队列；空队列有 running 则阻塞，无 running 返回 `:none` | 避免竞速与赢家通吃；主分支只 ff | 兄弟取消/竞速；并行 join |
-| worktree 生命周期 | join/abandon 后保留 7 天再 GC | 保留证据；可复查 | 立即删除；永久保留 |
-| 死结会诊 | 同一阻塞指纹连续失败达阈值，启动只读 `Blocker Oracle` | 防止 `@task` 模型原地转世烧额度 | 让蜂群无限重试；主模型直接改代码 |
-| 审计隔离 | 独立 tmux/`/tmp`/证据目录；主工作区只读 + 快照；单 CASE 记录注入 | 防止串扰与审计员改代码自证；防止读取其他 CASE | 共用主工作区；审计员可写产品代码；把整份 CASE 数据集交给审计员 |
-| 审计证据 | 启动前后 `stamp` 快照；篡改则整批作废 | 防止“审计期间代码被改”导致报告失真 | 只信审计员口头声明 |
+| 审计隔离 | 独立 tmux/`/tmp`/证据目录；主工作区只读；单 CASE 记录注入 | 防止串扰与审计员改代码自证；防止读取其他 CASE | 共用主工作区；审计员可写产品代码；把整份 CASE 数据集交给审计员 |
+| 审计证据 | 审计员观察主工作区与 CASE 数据；不依赖 frozen 哈希 | 与去 frozen 的设计一致；报告基于现场 | 启动前后哈希快照；哈希不符即整批作废 |
 | 结案 | 全 PASS 才签发 `(mission-id, revision)` 批准 | 防止绕过审计直接完成 | 允许手工标完成；允许 skipAuditor |
 | 停不停 | 无协议暂停态；Esc 递归取消 | 与标准版一致；避免半暂停状态 | `paused` 状态、逐阶段 resume |
-| 旧实现补丁 | 全部归零 | 宿主升级即碎；不可维护；违反零篡改 | 继续拦截 `_goalCore`、改写历史、TUI 垫片 |
-| 守望层 | Lite 不含 Steward/Sphinx | 插件不应 7×24 常驻；人类 `/herd` 准入足够 | 在 Lite 里复刻常驻守望 |
 | 父项 | 子项全完只回 `:ready` | 防止把父项当分组标题顺手勾掉 | 子项计数等于总数即自动完成 |
 | 看板原语 | 独立 `board_*` 工具，不塞进 REPL | 结构化数据走工具；沙箱只做工作区/续体 | 沙箱内 `(split ...)` 与工具双入口 |
 | 审计员写权限 | 只写 `evidence/<case_id>/` 与专属 `/tmp` | 既保留证据，又不污染主工作区 | 完全只读导致无法抓屏；开放全仓写 |
-| S2 评分 | 每个 CASE 记录内置专属 `rubric` + 双视角 WTP `min`；`rubric` 存于 `.herd/missions/<slug>/cases.edn`，是唯一评分来源 | 防止通用权重与单视角掩盖；不做 Markdown 摘要对账 | 统一权重模板；只打一个总分；把 rubric 写在 Markdown 再解析 |
-| 与标准版关系 | 同构语义，不同物理实现 | 共享验收语料与术语，降低双线维护 | 把 Lite 做成标准版的裁剪；把标准版机制硬塞进 Lite |
-
-### 10.5 参考索引
+| S2 评分 | 每个 CASE 内置专属 `rubric` + 双视角 WTP `min`；`rubric` 存于 `s2-cases.edn` | 防止通用权重与单视角掩盖；不做 Markdown 摘要对账 | 统一权重模板；只打一个总分；把 rubric 写在 Markdown 再解析 |
+| 与标准版关系 | 同构语义，不同物理实现 | 共享验收语料与术语，降低双线维护 | 把 Lite 做成标准版的裁剪；把标准版机制硬塞进 Lite |### 10.5 参考索引
 
 外部权威只用于支撑方法与工程判据，不替代本规格。实现时以本文件与宿主类型声明为准。
 
@@ -2317,11 +1929,11 @@ scope → main
 每次修改本文件或实现后，至少检查：
 
 1. 十条铁律是否仍互相兼容；新增条款是否与某条冲突。
-2. S1 出站请求是否仍不含 S2–S5 关键词；门禁披露是否仍逐阶段。
+2. S1 出站请求是否仍不含 S2–S5 关键词；attach 披露是否仍逐阶段。
 3. 工具名、状态词、错误码是否在正文、提示词、源码、测试中一致。
 4. 新增“结构化数据”是否有专用工具；是否又出现从正文正则抠取。
 5. 新增文件写入是否经过 VFS + `stamp` + $W$；是否有人绕过沙箱直接用宿主写工具。
-6. 新增并发路径是否遵守“集成锁 → $W$ → board”的顺序。
+6. 并发方案是否保持“S1–S4 单写者、S5 单 board lock”；是否又引入 mission 锁或 worktree 锁。
 7. 新增看板操作是否保持父项只回 `:ready`、令牌不可逆、死身份禁写。
 8. 新增审计路径是否仍是“一 CASE 一审计员、只注入该 CASE 记录、主工作区只读、框架汇总”。
 9. 新增 Ariadne/Time Leap 语义是否只在 `COMMON` 讲一次；工具 schema 是否只留形状。
@@ -2331,10 +1943,24 @@ scope → main
 13. 旧规则被删除时，是否在同一次修改中把历史价值写入 `HISTORY.md` 或本附录。
 14. `DEBT.md` 是否只记缺口；关闭项是否删除。
 15. 文档中的断言是否都能指向代码、测试或手工证据；没有证据的强断言是否标为设计目标。
-16. CASE 是否只从冻结的 `.herd/missions/<slug>/cases.edn` 读取；`s2-manual-tests.md` 是否只写方法论；是否仍存在 Markdown 提取、双写、对照，或 `rubric_summary`/`rawBlock` 回退；CASE 哈希是否进入 `:frozen` 并由其渲染契约行；审计员是否只收到单条 CASE 记录。
-17. `:frozen` 是否仍是唯一机器哈希权威；`contract-line` 是否由其确定性渲染；S1 摘要是否保持原已批准背景并明确标注、未因文档编辑重生成或要求人类输入；S3 完整 `modules` 是否持久化在 `mission.edn` 的 `:s3-modules`、有 inline 哈希且覆盖全部冻结 CASE，CASE ID 变化时是否由自动结构化 realign 提交完整 `modules`/必要 `slices` 而非猜造或只重算哈希；`board_finish.dependency_paths` 是否只含工作区路径，`wait_for` 是否用任务 ID 或 `condition:` 键表达。
+16. CASE 是否只从 `.herd/missions/<slug>/s2-cases.edn` 读取；`s2-manual-tests.md` 是否只写方法论；是否仍存在 Markdown 提取、双写或对照；审计员是否只收到单条 CASE 记录。
+17. `mission.edn` 是否不含 `:frozen`/`contract-line`；S3 是否没有 `modules`、S4 是否没有 `slices`；S5 是否没有 worktree/fork/join；`board_finish.dependency_paths` 是否只含工作区路径，`wait_for` 是否用任务 ID 或 `condition:` 键表达。
 
----
+### 10.7 方法论名人复盘（2026-11-13）
+
+| 阶段 | 名人 | 原职责 | 新设计下的定位 | 结论 |
+|---|---|---|---|---|
+| S1 | Howard / Dalio / Bezos / Munger / Taleb | 决策框架、根因、逆向工作、事前验尸、否定法 | 全部保留；Non-Goals 必须写进唯一 markdown，不再有独立 `non_goals` 参数 | 保留 |
+| S2 | Bach / Myers / Weinberg | Testing != Checking、证伪路径、质量与 WTP | 全部保留；CASE 权威改为 `s2-cases.edn`，不再冻结哈希 | 保留 |
+| S3 | Polya / Schoenfeld | 理解、计划、执行、回看；资源与元认知 | 保留为写作与自检透镜 | 保留 |
+| S3 | Parnas / Hickey / Ousterhout | 信息隐藏、de-complect、深模块 | 从“结构化 modules 门禁”降为 prose 设计透镜；系统不解析模块、不校验覆盖 | 重构定位 |
+| S4 | Knuth | 文学化伪代码 | 提升为 S4 的主纪律：markdown + Promela 是唯一形式真理；Promela 表达力不足时，用注释嵌入 Knuth 风格伪代码 | 提升 |
+| S4 | Lamport / Dijkstra | Safety / Liveness、守卫命令 | 提升为 Promela 模型的内容纪律；但系统不跑 Spin，模型只保存观察 | 提升 |
+| S4 | Brooks | 人月神话、沟通成本 | 从 Worktree Slice 切分改为单 board 任务边界与 O(1) 沟通；不再用多 worktree 并行 | 重构定位 |
+| S4 | Amdahl / Reinertsen | 关键路径、锁争用、批次流 | 只用于单 board 锁与审计批次；不存在 worktree/rebase/ff 拓扑 | 收窄适用域 |
+| S5 | 无固定名人 | — | 补入 Lamport/Dijkstra 的 board 安全/活性、Brooks 的单 board 沟通、Weinberg/Myers/Bach 的审计证伪 | 补入透镜 |
+
+**原则**：名人提供判断透镜，不提供机器门禁。任何“因为某名人所以必须存在 modules/slices/worktree”的推论都不再成立；反过来，删掉结构化门禁也不等于删掉这些人的问题意识。
 
 ## 结语
 
@@ -2344,16 +1970,3 @@ scope → main
 
 让一万只大象一起跳舞。更快，更好，更省。
 万象皆可用，众智自成事。
-
-
-
-
-
-
-
-
-
-
-
-
-
