@@ -8,6 +8,9 @@
 (def ^:private fs-promises (js/require "node:fs/promises"))
 
 (defn- resolve-path [p]
+  (when-not (or (nil? p) (string? p))
+    (throw (ex-info "path must be a string"
+                    {:code :INVALID_ARGUMENT :field :path})))
   (path/resolve (or p ".")))
 
 (def ^:private lock-path

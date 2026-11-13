@@ -124,9 +124,9 @@
                               (cond
                                 (nil? value) nil
                                 (text? value) (string/trim value)
-                                :else ::invalid))
+                                :else :invalid-summary))
                             (if (string? (:review-summary board)) (:review-summary board) nil))]
-              (if (= summary ::invalid)
+              (if (= summary :invalid-summary)
                 (invalid "summary_markdown must be a non-empty string or nil"
                          {:field :summary_markdown})
                 (let [open (count tasks)
