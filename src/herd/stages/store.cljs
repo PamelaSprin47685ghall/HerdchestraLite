@@ -59,6 +59,32 @@
                  :path (:path written)
                  :existed (:existed written)}))))))))
 
+(defn- board-path [root slug]
+  (path/join root ".herd" "missions" slug "board.edn"))
+
+(defn- archive-path [root slug tenure-id]
+  (path/join root ".herd" "missions" slug "boards" (str tenure-id ".edn")))
+
+(defn ^:async read-board [root slug]
+  (let [target (board-path (or root ".") slug)]
+    (try
+      (ufss/read (await (.readFile fs target "utf8")))
+      (catch :default error
+        (if (= "ENOENT" (.-code error))
+          nil
+          (throw error))))))
+
+(defn ^:async write-board! [root slug board]
+  (let [written (await (atomic/write-edn-atomic!
+                         (board-path (or root ".") slug)
+                         board))]
+    {:path (:path written) :existed (:existed written)}))
+
+(defn ^:async archive-board! [root slug tenure-id board]
+  (let [written (await (atomic/write-edn-atomic!
+                         (archive-path (or root ".") slug tenure-id)
+                         board))]
+    {:path (:path written) :existed (:existed written)}))
 (declare read-mission)
 
 (def ^:private protected-keys
