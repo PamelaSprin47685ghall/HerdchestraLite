@@ -12,6 +12,7 @@
  */
 
 import { readEdn } from "./edn-reader.mjs";
+import { ufssToCljs } from "./ufss-source.mjs";
 
 export { EdnKeyword, EdnList, EdnSymbol } from "./edn-value.mjs";
 export { printUfss, renderReceipt } from "./edn-writer.mjs";
@@ -23,11 +24,14 @@ export function readUfss(text) {
 }
 
 /**
- * Read a ClojureScript source form. The fence hook is shared with `readUfss`;
- * official `#` reader macros belong to the CLJS reader, not to this shim.
+ * Read a ClojureScript source form.
+ *
+ * UFSS is a pre-pass, not a second reader: fences become standard strings and
+ * every official `#` dispatch passes through byte for byte. The EDN reader
+ * consumes the rewritten form until an official CLJS reader is wired in.
  */
 export function readCljs(text) {
-	return readEdn(text);
+	return readEdn(ufssToCljs(text).source);
 }
 
 export const UFSS_PROMPT_NOTE = [

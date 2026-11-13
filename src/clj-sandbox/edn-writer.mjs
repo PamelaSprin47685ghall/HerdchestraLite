@@ -74,7 +74,7 @@ function smallestMultiFence(text) {
 	return maxHashRunAfterQuotes(text, 3) + 1;
 }
 
-function escapeStandardString(text) {
+export function escapeStandardString(text) {
 	let output = '"';
 	for (let index = 0; index < text.length; index += 1) {
 		const code = text.charCodeAt(index);
