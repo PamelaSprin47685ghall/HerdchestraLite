@@ -90,16 +90,21 @@
 
 ## 4 当前验证
 
-- `env -u BUN_OPTIONS bun test tests`：166 pass / 1 skip / 0 fail。
-- 新增 `tests/cljs-sandbox.test.mjs`：CLJS/nbb 工具注册、EDN 回执、UFSS fence、`cat`、`where`、错误回执。
+- `env -u BUN_OPTIONS bun test tests`：184 pass / 1 skip / 0 fail，19 files。
+- 真实 `omp 18.20.0` 已加载本工作区；`omp -p` 两次成功调用 `clj_devops` 并取得 EDN 回执。
+- `tests/cljs-sandbox.test.mjs`：CLJS/nbb 工具注册、EDN 回执、UFSS fence、`cat`、`where`、`park`/`wait`、`call`、call-id 重放、错误回执、工具面黑名单。
+- `tests/cljs-parsers.test.mjs`：S1 八段校验、CASE 严格 Schema、重复 ID、未知字段、阈值越界、S4 Promela 必填。
+- `tests/ufss-cljs.test.mjs`：数据双射与六个业务源码的 `canonical-source` 幂等。
 - 旧 evaluator/repl 测试已暂停：`tests/{clj-core,clj-core-eval,clj-core-wait,clj-workers,ariadne,ufss-where,repl}.test.mjs.disabled`。原因：绑定旧 CEK 解释器与 Cherry API；最终以 CLJS 测试替代，不恢复旧断言。
 - `tests/sandbox-isolation.test.mjs` 的宿主包用例在 `~/node_modules/@oh-my-pi/pi-coding-agent` 缺失时跳过；其余 bwrap 用例继续运行。
 
 ## 5 已知偏差
 
-- `wait` 的期限仍是固定 30s，未按 `1000ms + bytes × 50ms` 计算；超时不 park-all。
-- `/clj-status` 已取消；`time_leap`、`ask_beacon` 与提示词注入已迁移。
-- 标准化错误码未迁移；`call` 的输出上限、日志、写锁未迁移。
+- `wait` 期限已按 `1000ms + bytes × 50ms` 计算并触发 `park-all`；runtime-parked 没有 `:resolve`，`unpark` 不能恢复，见 `DEBT.md` D22。
+- `/clj-status` 已取消；`time_leap`、`ask_beacon` 与提示词注入已迁移；`ask_beacon` 仍只回显描述，见 D21。
+- 错误回执已统一为 EDN `:code`；错误路径的 call-id 重放会返回成功形状，见 D23。
+- `call` 已有 1 MiB 内联上限、完整日志与跨进程写锁；日志命名、64 MiB 会话上限、`read` 宿主代理、`ls` entry schema、`glob` worker pool 与批量写上限仍未迁移，见 D24–D31。
+- 多程序并发共享 SCI 全局 ctx、`__run` 与单例 notifier，见 D20。
 - 旧 `src/*.mjs` 模块仍存在但不再由默认入口加载；最终删除。
 
 ## 6 人类批准记录（2026-11-13）
@@ -110,8 +115,8 @@
 2. §4.1 的 Air-Gapped 符号表放宽为**基本防呆**：`nbb` 默认暴露 `js/` 与 `globalThis`，不承诺逃逸不可能；不主动注入 `process`/`require`/`fs`。剩余风险记入 `DEBT.md` D18。
 3. UFSS 读取宽容化：闭合围栏允许尾随文本；body 短缩进不再报错。
 4. UFSS 输出策略：数据与代码统一 `wrap(format(...))`；多行 body 顶格，`""",` 与后续 entry 同行。
-5. `wait` 的期限暂为固定 30s；旧 evaluator/repl 测试暂停，最终以 CLJS 测试替代。
+5. `wait` 的期限暂为固定 30s（后续已按 `1000ms + bytes × 50ms` 实现并接入 `park-all`，见 §5）；旧 evaluator/repl 测试暂停，最终以 CLJS 测试替代。
 6. `/clj-status` 取消，不再实现或注入。
-9. 入口从命名导出 `activate` 改为 omp 18.x 要求的 default factory；`setActiveTools` 属 runtime action，从模块顶层移到 `session_start` 与 `before_agent_start`，避免 load phase 抛 `ExtensionRuntimeNotInitializedError`。
 7. 所有业务 CLJS 源码（`prompts`、`sandbox`、`repl`、`main`）的字符串字面量按 UFSS 规范书写：普通文本用标准字符串，含引号/反斜杠用最小 fence，多行用顶格三引号。`ufss.cljs` 与 `bootstrap.cljs` 是自举内核，保持标准字符串。
 8. `time_leap` 的上下文裁剪在 `context` 钩子内完成：按锚点 `toolCallId` 截断，并追加 `experience` 作为 user message。
+9. 入口从命名导出 `activate` 改为 omp 18.x 要求的 default factory；`setActiveTools` 属 runtime action，从模块顶层移到 `session_start` 与 `before_agent_start`，避免 load phase 抛 `ExtensionRuntimeNotInitializedError`。

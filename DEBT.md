@@ -4,7 +4,7 @@
 
 ## D0 默认面仍只有 clj 执行器
 
-- **缺口**：`package.json` 的 `omp.extensions` / `pi.extensions` 只声明 `./src/clj-main.mjs`，注册 `clj_devops`、`wait`、`time_leap`、`ask_beacon` 与 `/clj-status`。`/herd`、`review`、`attach_*`、`ask_user`、`devops` 子代理、S1 人工确认、看板、K 路审计、TUI 均未装配。
+- **缺口**：`package.json` 的 `omp.extensions` / `pi.extensions` 只声明 `./src/clj-main.mjs`，注册 `clj_devops`、`wait`、`time_leap`、`ask_beacon`。`/herd`、`review`、`attach_*`、`ask_user`、`devops` 子代理、S1 人工确认、看板、K 路审计、TUI 均未装配。
 - **影响**：当前产品只能验证执行器，不能执行 S1–S5 使命。
 - **下一步**：按 §2.3 落地 `review` + `attach_*`，再恢复完整入口。
 
@@ -16,8 +16,8 @@
 
 ## D3 真实宿主加载与端到端手工验收未完成
 
-- **缺口**：`HACK.md` 记录 `omp plugin list` 指向 `/home/kunweiz/public/HerdchestraLite`，本工作区尚未证明被真实 `omp` 加载；没有真实 tmux 中的 S1→S5 小型使命，没有 `plans/<slug>/s5-report.md`，没有 `docs/manual-acceptance/clean-break/report.md`。
-- **已有观察**：18.16.0 隔离副本曾观察到 S1 面板批准、S2 CASE 冻结、S3/S4 成功与 S5 fork；这些只覆盖旧 `advance` 面，且不是验收。
+- **缺口**：没有真实 tmux 中的 S1→S5 小型使命，没有 `plans/<slug>/s5-report.md`，没有 `docs/manual-acceptance/clean-break/report.md`。
+- **已有观察**：本工作区已被真实 `omp 18.20.0` 加载（`omp plugin list` 指向本目录；`omp -p` 两次成功调用 `clj_devops` 并得到 EDN 回执）。18.16.0 隔离副本曾观察到 S1 面板批准、S2 CASE 冻结、S3/S4 成功与 S5 fork；这些只覆盖旧 `advance` 面，且不是验收。
 - **下一步**：重新 link 本工作区；按新 `review`/`attach` 生命周期跑最小使命（S1 人工批准 → S2–S4 自动 → 单工作区 S5 → K=1 审计）。证据写入 `docs/manual-acceptance/clean-break/`，不得用 `bun test` 代替。
 
 ## D4 S1 人工批准与新 attach 的接线未验证
@@ -62,3 +62,75 @@
 - **现状**：默认面已接通 `clj_devops`、`wait`、`time_leap`、`ask_beacon`、提示词注入与宿主工具黑名单。
 - **缺口**：完整装配（`review`/`attach_*`、看板、S5 runner、K 路审计、TUI）仍未迁移到 CLJS；旧 `src/*.mjs` 模块仍存在但不由默认入口加载。
 - **下一步**：按 `MIGRATION.md` 台账继续迁移完整装配，完成后删除旧模块。
+
+## D20 多程序并发共享 SCI 全局 ctx
+
+- **缺口**：`herd.repl` 每次用 `nbb/load-string` 在同一个 SCI ctx 内定义 `__run`，`sandbox/current-name` 与 `current-notifier` 也是全局单例；两个 `clj_devops` 并发运行会互相覆盖 `__run`，后启动者还会覆盖 `park` 的归属。
+- **影响**：默认面通常串行，但宿主并行工具调用下可能串名、串停靠点。
+- **下一步**：为每个程序创建独立 SCI ctx（或至少独立 `__run` 命名空间），把 `current-name`/notifier 改为按 `agent_id` 或程序名分区。
+
+## D21 `ask_beacon` 只回显描述
+
+- **缺口**：`ariadne/ask-beacon` 直接返回 `beacon_description`，没有启动只读模型查询被封存枝桠的细节；规格要求向灯塔提问并得到回答。
+- **影响**：`time_leap` 后的细节检索退化为回显，灯塔内容不会参与推理。
+- **下一步**：接入一次只读子会话或 `ctx.runEphemeralTurn`，把 beacon 摘要与问题交给模型，返回回答；失败时保留回显降级并标 health。
+
+## D22 `wait` 超时的 runtime-parked 无法 `unpark`
+
+- **缺口**：`wait` 超时的 `park-all!` 只把运行中程序在 `programs` 表标为 `:parked :deadline`，这些程序没有 `sandbox/parked` 的 `:resolve`；`unpark` 对它们抛 `:PROGRAM_UNKNOWN`，程序实际继续运行，只能等它完成或 `abandon`。
+- **影响**：模型收到 `:parked` 后可能尝试恢复而失败；`park-all` 不是真正的表达式级挂起。
+- **下一步**：在 Promise 模型内明确 `:deadline` 与显式 `park` 的区别（回执字段区分），或为超时程序注入可暂停的 await 点；在此之前不得把 deadline 标记宣传为可恢复挂起。
+
+## D23 错误回执的 call-id 重放不一致
+
+- **缺口**：`execute` 在失败路径缓存 `(ufss/print {:state :failed ...})`，但实际返回的是 `tool-error` 包出的 `{:isError true :code ...}`；同一 call-id 重放会返回成功形态的 `tool-result`。
+- **影响**：重放错误调用时回执形状变化，消费者可能误判成功。
+- **下一步**：缓存完整的 `tool-error` 文本与 `isError` 标志，重放时原样返回。
+
+## D24 `stamp` 的 nsec 由浮点 `mtimeMs` 推导
+
+- **缺口**：`stamp-of` 用 `(mod mtimeMs 1000) * 1e6` 计算 `:mtimeNsec`，精度低于旧实现的 bigint `mtimeNs`；极端情况下同一 `(sec, nsec, size)` 可能碰撞。
+- **影响**：`__expectedStamp` 的冲突检测弱于旧 mjs；默认面 LLM 不传该字段，影响面小。
+- **下一步**：改用 `fs.statSync(path, #js {:bigint true})` 的 `mtimeNs`，按 bigint 拆分秒与纳秒。
+
+## D25 `read` 未代理宿主 native 工具
+
+- **缺口**：`sandbox/read` 与 `cat` 同为 `fs.readFile`；规格要求 `read` 代理宿主官方 native `read`，宿主入口不可用即 fail-closed。
+- **影响**：`read` 的宿主解码/格式化语义与旧完整装配不同；两者都读真实文件，但 `read` 的“只保证可读”边界未兑现。
+- **下一步**：通过受控 Runner 捕获调用 `invokeNativeTool("read", ...)`；不可用时返回 `:HOST_API_MISMATCH`，不回退 `node:fs`。
+
+## D26 `ls` 返回字符串数组
+
+- **缺口**：`ls` 现在返回 `{:exists true :entries ["name" ...]}`；旧实现返回带 `isDir`/`isFile`/`isSymlink` 的 entry 对象。
+- **影响**：模型无法从 `ls` 判断目录/文件/符号链接，只能再逐项 `stat`。
+- **下一步**：按旧 schema 返回 entry 对象，保留缺失目录的 `{:exists false :entries []}`。
+
+## D27 `where` 最近行诊断未做完整带宽优化
+
+- **缺口**：`nearest-line` 对每行做全行 Levenshtein（K=64、10M 单元预算），未做公共前后缀裁剪，也未按 Ukkonen 带状 DP 只填对角线带。
+- **影响**：大文件或长行下会提前耗尽 10M 预算，最近行可能不完整；正确性边界未用属性测试覆盖。
+- **下一步**：先裁剪公共前后缀，再只计算带宽 $2K+1$ 的单元；补大文件预算测试。
+
+## D28 `call` 日志命名与上限
+
+- **缺口**：日志文件名用 `Date.now()`，同一毫秒内两次 `call` 可能写到同一路径；单会话 64 MiB 日志上限未实现，`append-capped` 只限制内联输出。
+- **影响**：并发 `call` 的完整日志可能互相覆盖；长会话日志无界增长。
+- **下一步**：文件名加入 `action_id`/`request_id` 或随机后缀；实现会话级日志配额并在超限时显式标 `:output-truncated`。
+
+## D29 `glob` 的并发与条目语义
+
+- **缺口**：`:exec` 用 `Promise.all` 并发调用，没有旧实现的 worker pool；`onlyFiles` 为 false 时目录条目只返回路径，不带类型；`dot` 只过滤 basename。
+- **影响**：大量匹配时占满单线程；目录/符号链接的 glob 结果弱于旧实现。
+- **下一步**：评估 worker pool 或受控并发上限；把 `walk-entries` 的 `[full is-file]` 扩展为完整 entry 信息。
+
+## D30 `before_agent_start` 的工具面更新未 await
+
+- **缺口**：`apply-tool-surface!` 调 `setActiveTools` 后只挂 `.catch`，`before_agent_start` 不等待其完成；工具面变更可能在当前请求之后才生效。
+- **影响**：真实 `omp -p` smoke 通过，但“本次 prompt 前已完成收窄”没有强保证。
+- **下一步**：让 `before-agent-start` 返回的 handler 等待 `setActiveTools`，或把工具面收窄固定在 `session_start` 后不再逐回合变更。
+
+## D31 预算与批量上限未实现
+
+- **缺口**：`write` 有单文件 2 MiB 上限，但 `mkdir`/`rm`/`mv` 的 256 路径操作、单次调用 16 MiB 总量与多路径批量预算未实现；`call` 的 64 MiB 会话日志上限也未实现。
+- **影响**：超出规格上限的批量写不会被 `:LIMIT_EXCEEDED` 拒绝；依赖宿主/OS 报错。
+- **下一步**：在 `repl.run` 的每程序记账里累计路径操作与字节数，超限时拒绝后续步骤并保留已写部分。
