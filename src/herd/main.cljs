@@ -30,9 +30,16 @@
         (.then (fn [result] (clj->js (tool-result (ufss/print result)))))
         (.catch (fn [error] (clj->js (tool-error error)))))))
 
-(defn- wait-execute [_tool-call-id _params _signal]
-  (-> (js/Promise.resolve (repl/wait-for-result))
-      (.then (fn [result] (clj->js (tool-result (ufss/print result)))))))
+(defn- wait-execute [_tool-call-id params _signal]
+  (let [work (.-otherwise_independent_work params)]
+    (-> (repl/wait-for-result (sandbox-deadline work))
+        (.then (fn [result] (clj->js (tool-result (ufss/print result)))))
+        (.catch (fn [error]
+                  (clj->js
+                    (tool-result
+                      (ufss/print {:state :waiting
+                                   :reason :deadline
+                                   :message (str error)}))))))))
 
 (defn- time-leap-execute [_tool-call-id params _signal]
   (clj->js

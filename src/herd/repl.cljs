@@ -140,5 +140,7 @@
           (.catch (fn [_] (collect-or-wait))))
       (idle-receipt))))
 
-(defn wait-for-result []
-  (collect-or-wait))
+(defn wait-for-result
+  ([] (wait-for-result 30000))
+  ([deadline-ms]
+   (with-deadline (js/Promise.resolve (collect-or-wait)) (or deadline-ms 30000))))
