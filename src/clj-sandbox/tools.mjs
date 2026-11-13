@@ -13,16 +13,13 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, unlinkSync } from "node:fs";
+import { lstat, mkdir, readdir, readFile, rename, rmdir, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { ERROR_CODES, herdError, isHerdError, messageOf, renderError } from "../util/errors.mjs";
 import { abandonedCapabilities, abortProgram, createSandboxSession, runProgram } from "./evaluator.mjs";
 import { createObservationLedger, createStampFromStats } from "./observations.mjs";
 import { EdnKeyword, renderReceipt } from "./ufss.mjs";
-import {
-	createBatch,
-	runCall,
-} from "./vfs.mjs";
+import { runCall } from "./vfs.mjs";
 
 const KW_CACHE = new Map();
 
@@ -145,6 +142,12 @@ function invalidArgument(message, data = {}) {
 	return herdError("INVALID_ARGUMENT", message, data);
 }
 
+function requireArgumentString(args, field) {
+	const value = args?.[field];
+	if (typeof value !== "string") throw invalidArgument(`${field} must be a string`, { field, value });
+	return value;
+}
+
 function isPlainObject(value) {
 	if (value === null || typeof value !== "object") {
 		return false;
@@ -199,23 +202,16 @@ function resolveAgainst(root, value) {
 	return isAbsolute(value) ? resolve(value) : resolve(root, value);
 }
 
-function hasOverlay(context) {
-	return context.primary.overlay.size > 0 || (context.tmp !== null && context.tmp.overlay.size > 0);
-}
-
 function normalizeRoots(role, roots) {
 	const source = typeof roots === "string" ? { writeRoot: roots } : roots;
 	if (!isPlainObject(source)) {
 		throw invalidArgument("roots must be a path string or an object", { roots });
 	}
-
 	const writeRoot = requireRootPath(source.writeRoot, "roots.writeRoot");
-
 	const evidenceRoot =
 		role === "auditor" ? resolveAgainst(writeRoot, requirePath(source.evidenceRoot, "roots.evidenceRoot")) : null;
 	const auditTmp =
 		role === "auditor" ? resolveAgainst(writeRoot, requirePath(source.auditTmp, "roots.auditTmp")) : null;
-
 	let callLogDir = null;
 	if (source.callLogDir !== undefined) {
 		callLogDir = resolveAgainst(writeRoot, requirePath(source.callLogDir, "roots.callLogDir"));
@@ -224,17 +220,11 @@ function normalizeRoots(role, roots) {
 		source.callCwd === undefined || source.callCwd === null
 			? null
 			: resolveAgainst(writeRoot, requirePath(source.callCwd, "roots.callCwd"));
-
 	const limits = source.limits === undefined ? {} : source.limits;
-	if (!isPlainObject(limits)) {
-		throw invalidArgument("roots.limits must be an object", { limits });
-	}
+	if (!isPlainObject(limits)) throw invalidArgument("roots.limits must be an object", { limits });
 	const baseLimits = { ...limits };
-
 	const callLimits = source.callLimits === undefined ? {} : source.callLimits;
-	if (!isPlainObject(callLimits)) {
-		throw invalidArgument("roots.callLimits must be an object", { callLimits });
-	}
+	if (!isPlainObject(callLimits)) throw invalidArgument("roots.callLimits must be an object", { callLimits });
 	const normalizedCallLimits = { ...callLimits };
 	if (normalizedCallLimits.logPath !== undefined && normalizedCallLimits.logPath !== null) {
 		normalizedCallLimits.logPath = resolveAgainst(
@@ -242,7 +232,6 @@ function normalizeRoots(role, roots) {
 			requirePath(normalizedCallLimits.logPath, "roots.callLimits.logPath"),
 		);
 	}
-
 	return {
 		writeRoot,
 		evidenceRoot,
@@ -257,255 +246,17 @@ function normalizeRoots(role, roots) {
 	};
 }
 
-function kebabKey(key) {
-	return key
-		.replace(/([a-z0-9])([A-Z])/g, "$1-$2")
-		.replace(/_/g, "-")
-		.toLowerCase();
-}
-
-function codeValue(code) {
-	if (typeof code !== "string") {
-		return null;
-	}
-	const name = code.startsWith(":") ? code.slice(1) : code;
-	return Object.hasOwn(ERROR_CODES, name) ? kw(name) : code;
-}
-
-/**
- * Convert a VFS result into an EDN value.
- *
- * VFS returns plain objects with camelCase keys and, on rejection, a real
- * `HerdError`. Neither is a valid EDN capability result. This conversion is
- * deliberately explicit: keywords for status/code/phase, kebab-case keys, and
- * error code/message/data without a stack or a live Error object.
- */
-function toEdn(value, seen = new WeakSet()) {
-	if (value === undefined || value === null) {
-		return null;
-	}
-	if (
-		typeof value === "string" ||
-		typeof value === "boolean" ||
-		typeof value === "number" ||
-		typeof value === "bigint"
-	) {
-		return value;
-	}
-	if (value instanceof EdnKeyword) {
-		return value;
-	}
-	if (value instanceof Error) {
-		const data = isHerdError(value) ? value.data : undefined;
-		return new Map([
-			[kw("code"), codeValue(value.code)],
-			[kw("message"), messageOf(value)],
-			[kw("data"), toEdn(data ?? {}, seen)],
-		]);
-	}
-	if (Array.isArray(value)) {
-		if (seen.has(value)) {
-			throw invalidArgument("cycle in sandbox result", { kind: "array" });
-		}
-		seen.add(value);
-		try {
-			return value.map((entry) => toEdn(entry, seen));
-		} finally {
-			seen.delete(value);
-		}
-	}
-	if (value instanceof Set) {
-		if (seen.has(value)) {
-			throw invalidArgument("cycle in sandbox result", { kind: "set" });
-		}
-		seen.add(value);
-		try {
-			return new Set([...value].map((entry) => toEdn(entry, seen)));
-		} finally {
-			seen.delete(value);
-		}
-	}
-	if (value instanceof Map) {
-		if (seen.has(value)) {
-			throw invalidArgument("cycle in sandbox result", { kind: "map" });
-		}
-		seen.add(value);
-		try {
-			const result = new Map();
-			for (const [key, entry] of value) {
-				result.set(toEdn(key, seen), toEdn(entry, seen));
-			}
-			return result;
-		} finally {
-			seen.delete(value);
-		}
-	}
-	if (isPlainObject(value)) {
-		if (seen.has(value)) {
-			throw invalidArgument("cycle in sandbox result", { kind: "object" });
-		}
-		seen.add(value);
-		try {
-			const result = new Map();
-			for (const [key, entry] of Object.entries(value)) {
-				const plainKey = kebabKey(key);
-				let converted = toEdn(entry, seen);
-				if (
-					typeof entry === "string" &&
-					entry.startsWith(":") &&
-					(plainKey === "status" ||
-						plainKey === "code" ||
-						plainKey === "phase" ||
-						plainKey === "reported-status" ||
-						plainKey === "reported-code")
-				) {
-					converted = kw(entry.slice(1));
-				}
-				result.set(kw(plainKey), converted);
-			}
-			return result;
-		} finally {
-			seen.delete(value);
-		}
-	}
-	return String(value);
-}
-
-function stampValue(stamp) {
-	if (stamp === null || stamp === undefined) {
-		return null;
-	}
-	return new Map([
-		[kw("mtime-sec"), stamp.mtimeSec],
-		[kw("mtime-nsec"), stamp.mtimeNsec],
-		[kw("size"), stamp.size],
-	]);
-}
-
-function statValue(snapshot) {
-	return new Map([
-		[kw("exists"), snapshot.exists],
-		[kw("size"), snapshot.size],
-		[kw("mtime-sec"), snapshot.mtimeSec],
-		[kw("mtime-nsec"), snapshot.mtimeNsec],
-		[kw("is-dir"), snapshot.isDir],
-		[kw("is-file"), snapshot.isFile ?? false],
-		[kw("is-symlink"), snapshot.isSymlink ?? false],
-		[kw("virtual"), snapshot.virtual],
-		[
-			kw("stamp"),
-			snapshot.exists && !snapshot.virtual && snapshot.size !== null
-				? stampValue({
-						mtimeSec: snapshot.mtimeSec,
-						mtimeNsec: snapshot.mtimeNsec,
-						size: snapshot.size,
-					})
-				: null,
-		],
-	]);
-}
-
-function listValue(result) {
-	return new Map([
-		[kw("exists"), result.exists],
-		[
-			kw("entries"),
-			result.entries.map(
-				(entry) =>
-					new Map([
-						[kw("name"), entry.name],
-						[kw("is-dir"), entry.isDir],
-						[kw("is-file"), entry.isFile],
-						[kw("is-symlink"), entry.isSymlink],
-						[kw("virtual"), entry.virtual],
-					]),
-			),
-		],
-	]);
-}
-
-function operationPath(result, keys) {
-	const value = new Map();
-	for (const key of keys) {
-		if (Object.hasOwn(result, key)) {
-			value.set(kw(kebabKey(key)), result[key]);
-		}
-	}
-	return value;
-}
-
-function requireArgumentString(args, field) {
-	const value = args[field];
-	if (typeof value !== "string") {
-		throw invalidArgument(`${field} must be a string`, { field, value });
-	}
-	return value;
-}
-
-function tokenRequired(role) {
-	return herdError("TOKEN_REQUIRED", "call is available only to the current Swarm Holder", {
-		role,
-		next: "call board_take_or_die, win the token, and retry as Holder",
-	});
-}
-
-function callNeedsLog() {
-	return invalidArgument("call requires roots.callLogDir or roots.callLimits.logPath", {
-		field: "roots.callLogDir",
-		next: "give the sandbox a control-plane artifacts directory",
-	});
-}
-
 async function resolvePort(value) {
 	return typeof value === "function" ? await value() : value;
 }
 
-function combinedCommit(results, failed) {
-	const applied = results.filter((entry) => entry.result.status === ":applied");
-	const written = results.flatMap((entry) => entry.result.written ?? []);
-	const pending = failed?.result.pending ?? [];
-	const uncertain = failed?.result.uncertain ?? [];
-	const conflicts = failed?.result.conflicts ?? [];
-	const actionIds = results.map((entry) => entry.result.actionId).filter(Boolean);
-	const recorded = results.every((entry) => entry.result.recorded !== false);
-	const recordErrors = results
-		.filter((entry) => entry.result.recorded === false)
-		.map((entry) => `${entry.kind}: ${recordErrorText(entry.result.recordError)}`);
-	const combined = {
-		status: failed?.result.status ?? ":applied",
-		code: failed?.result.code ?? null,
-		actionId: actionIds[0] ?? null,
-		actionIds,
-		written,
-		pending,
-		uncertain,
-		conflicts,
-		recorded,
-		partial: failed !== undefined && applied.length > 0,
-		batches: results.map((entry) => ({
-			kind: entry.kind,
-			status: entry.result.status,
-			actionId: entry.result.actionId ?? null,
-			written: entry.result.written ?? [],
-		})),
-	};
-	if (!recorded) {
-		combined.recordError = recordErrors.join("; ");
-	}
-	return combined;
+function hasOverlay() {
+	return false;
 }
 
-function recordErrorText(value) {
-	if (typeof value === "string" && value.length > 0) {
-		return value;
-	}
-	if (value && typeof value === "object" && typeof value.message === "string") {
-		return value.message;
-	}
-	if (value === undefined || value === null) {
-		return "control publication failed";
-	}
-	return String(value);
+async function commitContext() {
+	// Writes already hit the host as each step executes; there is no overlay.
+	return null;
 }
 
 function commitFailure(combined) {
@@ -528,66 +279,6 @@ function commitFailure(combined) {
 		batches: combined.batches,
 		next: "inspect disk, Git, and external effects; re-read before any new program",
 	});
-}
-
-async function commitContext(context, ports, signal) {
-	const entries = [];
-	if (context.primary.overlay.size > 0 || context.primary.readSet.size > 0) {
-		entries.push({ kind: "primary", batch: context.primary });
-	}
-	if (context.tmp !== null && (context.tmp.overlay.size > 0 || context.tmp.readSet.size > 0)) {
-		entries.push({ kind: "tmp", batch: context.tmp });
-	}
-	const results = [];
-	let failed;
-	for (const entry of entries) {
-		if (!ports.writeGate) {
-			throw invalidArgument("commit requires a writeGate port", {
-				missing: "writeGate",
-				next: "pass the Slice write-gate port when building the sandbox",
-			});
-		}
-		const result = await vfsCommit({
-			batch: entry.batch,
-			writeGate: ports.writeGate,
-			control: ports.control,
-			identity: await resolvePort(ports.identity),
-			claim: await resolvePort(ports.claim),
-			signal,
-		});
-		results.push({ kind: entry.kind, result });
-		if (result.status !== ":applied") {
-			failed = results[results.length - 1];
-			break;
-		}
-	}
-
-	const combined = combinedCommit(results, failed);
-	if (failed !== undefined && failed.result.status === ":cancelled") {
-		throw herdError(
-			"UPSTREAM_ABORTED",
-			combined.written.length > 0
-				? "protected commit was cancelled after an earlier batch applied"
-				: "protected commit was cancelled before applying",
-			{
-				status: ":cancelled",
-				actionId: combined.actionId,
-				written: combined.written,
-				pending: combined.pending,
-				uncertain: combined.uncertain,
-				conflicts: combined.conflicts,
-				partial: combined.partial,
-				next: "inspect disk before any new program; do not replay the cancelled batch",
-			},
-		);
-	}
-	if (failed !== undefined) {
-		throw commitFailure(combined);
-	}
-	if (results.length === 1) {
-		return toEdn(results[0].result);
-	}
-	return toEdn(combined);
 }
 
 function planRepositoryRoot(context) {
@@ -750,6 +441,15 @@ function hostResultText(result) {
 	return "";
 }
 
+async function lstatIfExists(path) {
+	try {
+		return await lstat(path, { bigint: true });
+	} catch (error) {
+		if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return null;
+		throw error;
+	}
+}
+
 function makeCapabilityTable(context, ports, execution) {
 	const table = {};
 	const capabilities = new Set(CAPABILITY_MATRIX[context.role]);
@@ -761,9 +461,9 @@ function makeCapabilityTable(context, ports, execution) {
 				throw herdError("HOST_API_MISMATCH", "host read is unavailable; VFS fallback is disabled", { capability: "read" });
 			}
 			const absolute = isAbsolute(requested) ? resolve(requested) : resolve(context.roots.writeRoot, requested);
-			const before = lstatSync(absolute, { bigint: true });
+			const before = await lstatIfExists(absolute);
 			const result = await ports.hostRead(ednArgsToObject(args));
-			const after = lstatSync(absolute, { bigint: true });
+			const after = await lstatIfExists(absolute);
 			const stampOf = (stats) => ({
 				mtimeSec: Number(stats.mtimeNs / 1000000000n),
 				mtimeNsec: Number(stats.mtimeNs % 1000000000n),
@@ -785,7 +485,7 @@ function makeCapabilityTable(context, ports, execution) {
 		};
 	}
 	if (capabilities.has("cat")) {
-		table.cat = (args) => {
+		table.cat = async (args) => {
 			const requested = requireArgumentString(args, "path");
 			if (context.role === "plan") {
 				const frozen = readPlanCases(context, requested);
@@ -796,7 +496,7 @@ function makeCapabilityTable(context, ports, execution) {
 			const absolute = isAbsolute(requested) ? resolve(requested) : resolve(context.roots.writeRoot, requested);
 			let stats;
 			try {
-				stats = lstatSync(absolute, { bigint: true });
+				stats = await lstat(absolute, { bigint: true });
 			} catch {
 				throw herdError(":STRUCTURE_CONFLICT", `file does not exist: ${requested}`, { path: requested });
 			}
@@ -809,7 +509,7 @@ function makeCapabilityTable(context, ports, execution) {
 					limit: context.primary.limits.fileBytes,
 				});
 			}
-			const bytes = readFileSync(absolute);
+			const bytes = await readFile(absolute);
 			let content;
 			try {
 				content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
@@ -830,11 +530,11 @@ function makeCapabilityTable(context, ports, execution) {
 		};
 	}
 	if (capabilities.has("stat")) {
-		table.stat = (args) => {
+		table.stat = async (args) => {
 			const requested = requireArgumentString(args, "path");
 			const absolute = isAbsolute(requested) ? resolve(requested) : resolve(context.roots.writeRoot, requested);
 			let stats = null;
-			try { stats = lstatSync(absolute, { bigint: true }); } catch (error) { if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error; }
+			try { stats = await lstat(absolute, { bigint: true }); } catch (error) { if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error; }
 			if (stats === null) return statValue({ exists: false, size: null, mtimeSec: null, mtimeNsec: null, isDir: false, isFile: false, isSymlink: false, virtual: false });
 			const mtimeSec = Number(stats.mtimeNs / 1000000000n);
 			const mtimeNsec = Number(stats.mtimeNs % 1000000000n);
@@ -844,18 +544,19 @@ function makeCapabilityTable(context, ports, execution) {
 		};
 	}
 	if (capabilities.has("ls")) {
-		table.ls = (args) => {
+		table.ls = async (args) => {
 			const requested = requireArgumentString(args, "path");
 			const absolute = isAbsolute(requested) ? resolve(requested) : resolve(context.roots.writeRoot, requested);
 			let stats = null;
-			try { stats = lstatSync(absolute, { bigint: true }); } catch (error) { if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error; }
+			try { stats = await lstat(absolute, { bigint: true }); } catch (error) { if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error; }
 			if (stats === null) return listValue({ exists: false, entries: [] });
 			if (!stats.isDirectory()) throw herdError(':STRUCTURE_CONFLICT', `path is not a directory: ${requested}`, { path: requested });
-			const entries = readdirSync(absolute).sort().map((name) => {
+			const names = (await readdir(absolute)).sort();
+			const entries = await Promise.all(names.map(async (name) => {
 				let child = null;
-				try { child = lstatSync(join(absolute, name), { bigint: true }); } catch { child = null; }
+				try { child = await lstat(join(absolute, name), { bigint: true }); } catch { child = null; }
 				return { name, isDir: Boolean(child?.isDirectory()), isFile: Boolean(child?.isFile()), isSymlink: Boolean(child?.isSymbolicLink()), virtual: false };
-			});
+			}));
 			return listValue({ exists: true, entries });
 		};
 	}
@@ -870,7 +571,7 @@ function makeCapabilityTable(context, ports, execution) {
 			const onlyFiles = args.onlyFiles !== false && args["only-files"] !== false;
 			const absolute = isAbsolute(requested) ? resolve(requested) : resolve(context.roots.writeRoot, requested);
 			let stats = null;
-			try { stats = lstatSync(absolute, { bigint: true }); } catch (error) { if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error; }
+			try { stats = await lstat(absolute, { bigint: true }); } catch (error) { if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error; }
 			if (stats === null) return new Map([[kw('exists'), false], [kw('entries'), []]]);
 			if (!stats.isDirectory()) throw herdError(':STRUCTURE_CONFLICT', `path is not a directory: ${requested}`, { path: requested });
 			const entries = [];
@@ -892,12 +593,16 @@ function makeCapabilityTable(context, ports, execution) {
 				throw herdError("HOST_API_MISMATCH", "host write is unavailable; VFS fallback is disabled", { capability: "write" });
 			}
 			const bytes = Buffer.byteLength(content, "utf8");
-			if (bytes > 2 * 1024 * 1024) {
-				throw herdError(":LIMIT_EXCEEDED", `fileBytes limit exceeded: ${requested}`, { path: requested, bytes });
+			if (bytes > context.primary.limits.fileBytes) {
+				throw herdError(":LIMIT_EXCEEDED", `fileBytes limit exceeded: ${requested}`, {
+					path: requested,
+					bytes,
+					limit: context.primary.limits.fileBytes,
+				});
 			}
 			const absolute = isAbsolute(requested) ? resolve(requested) : resolve(context.roots.writeRoot, requested);
 			const parent = dirname(absolute);
-			const parentStats = lstatSync(parent);
+			const parentStats = await lstat(parent);
 			if (!parentStats || !parentStats.isDirectory()) {
 				throw herdError(":STRUCTURE_CONFLICT", `parent directory is missing: ${parent}`, { path: requested });
 			}
@@ -909,6 +614,16 @@ function makeCapabilityTable(context, ports, execution) {
 				const expected = context.stamps.get(absolute);
 				if (expected !== undefined) hostParams.__expectedStamp = expected;
 				const result = await ports.hostWrite(hostParams);
+				try {
+					const after = await lstat(absolute, { bigint: true });
+					context.stamps.set(absolute, {
+						mtimeSec: Number(after.mtimeNs / 1000000000n),
+						mtimeNsec: Number(after.mtimeNs % 1000000000n),
+						size: Number(after.size),
+					});
+				} catch {
+					context.stamps.delete(absolute);
+				}
 				return new Map([
 					[kw("path"), requested],
 					[kw("content"), hostResultText(result)],
@@ -923,7 +638,7 @@ function makeCapabilityTable(context, ports, execution) {
 			const absolute = isAbsolute(requested) ? resolve(requested) : resolve(context.roots.writeRoot, requested);
 			return await ports.pathGate.runExclusive([absolute], async () => {
 				try {
-					mkdirSync(absolute);
+					await mkdir(absolute);
 				} catch (error) {
 					throw herdError(":STRUCTURE_CONFLICT", messageOf(error), { path: requested });
 				}
@@ -937,11 +652,12 @@ function makeCapabilityTable(context, ports, execution) {
 			const absolute = isAbsolute(requested) ? resolve(requested) : resolve(context.roots.writeRoot, requested);
 			return await ports.pathGate.runExclusive([absolute], async () => {
 				try {
-					if (lstatSync(absolute).isDirectory()) rmdirSync(absolute);
-					else unlinkSync(absolute);
+					if ((await lstat(absolute)).isDirectory()) await rmdir(absolute);
+					else await unlink(absolute);
 				} catch (error) {
 					throw herdError(":STRUCTURE_CONFLICT", messageOf(error), { path: requested });
 				}
+				context.stamps.delete(absolute);
 				return new Map([[kw("path"), requested]]);
 			});
 		};
@@ -954,10 +670,12 @@ function makeCapabilityTable(context, ports, execution) {
 			const targetPath = isAbsolute(requested) ? resolve(requested) : resolve(context.roots.writeRoot, requested);
 			return await ports.pathGate.runExclusive([sourcePath, targetPath], async () => {
 				try {
-					renameSync(sourcePath, targetPath);
+					await rename(sourcePath, targetPath);
 				} catch (error) {
 					throw herdError(":STRUCTURE_CONFLICT", messageOf(error), { source, target: requested });
 				}
+				context.stamps.delete(sourcePath);
+				context.stamps.delete(targetPath);
 				return new Map([[kw("source"), source], [kw("target"), requested]]);
 			});
 		};
@@ -1048,7 +766,7 @@ function makeCapabilityTable(context, ports, execution) {
 			const actionId = randomUUID();
 			const limits = { ...context.roots.callLimits, actionId };
 			if (context.roots.callLogDir) {
-				mkdirSync(context.roots.callLogDir, { recursive: true });
+				await mkdir(context.roots.callLogDir, { recursive: true });
 				limits.logRoot = context.roots.callLogDir;
 				limits.logPath = join(context.roots.callLogDir, `${actionId}.log`);
 			}
@@ -1060,9 +778,10 @@ function makeCapabilityTable(context, ports, execution) {
 						argv,
 					});
 				}
-				drainedFacts = hasOverlay(context) ? await commitContext(context, ports, execution.signal ?? undefined) : null;
+				drainedFacts = null;
 				const result = await runCall({
-					batch: context.primary,
+					io: context.primary.io,
+					writeRoot: context.roots.writeRoot,
 					argv,
 					cwd: targetCwd,
 					writeGate: ports.globalGate ?? ports.writeGate,
@@ -1137,20 +856,15 @@ function observationScopeFor(ports, roots) {
 }
 
 function createContext(role, roots, observations = null, observationScope = null, programName = null) {
-	const primary = createBatch({
-		writeRoot: roots.writeRoot,
-		limits: roots.limits,
-		io: roots.io,
-		observations,
-		observationScope,
-	});
 	return {
 		role,
 		roots,
-		primary,
+		primary: { writeRoot: roots.writeRoot, limits: { fileBytes: 2 * 1024 * 1024, batchBytes: 16 * 1024 * 1024, operations: 256, ...(roots.limits ?? {}) }, io: roots.io, overlay: new Map(), readSet: new Map() },
 		stamps: new Map(),
 		tmp: null,
-		sandbox: roots.sandbox, observations, observationScope,
+		sandbox: roots.sandbox,
+		observations,
+		observationScope,
 		programName,
 	};
 }
@@ -1473,30 +1187,8 @@ export function buildSandboxTools({ role, session, roots, ports = {} } = {}) {
 	};
 
 	const sessionPorts = {
-		commit: async ({ program }) => {
-			const context = contexts.get(program);
-			if (context === undefined) {
-				throw invalidArgument("program has no sandbox VFS context", {
-					program: program?.name ?? null,
-				});
-			}
-			try {
-				const hasOverlay = context.primary.overlay.size > 0 || (context.tmp !== null && context.tmp.overlay.size > 0);
-				const hasFacts =
-					hasOverlay || context.primary.readSet.size > 0 || (context.tmp !== null && context.tmp.readSet.size > 0);
-				if (!hasFacts) {
-					return null;
-				}
-				if (!hasOverlay && !WRITE_ROLES.has(context.role)) {
-					return null;
-				}
-				const execution = executionsByProgram.get(program) ?? { signal: null };
-				const result = await commitContext(context, ports, execution.signal ?? undefined);
-				return result;
-			} finally {
-				contexts.delete(program);
-			}
-		},
+		commit: async () => null,
+
 		discard: async ({ program }) => {
 			contexts.delete(program);
 		},
@@ -1705,4 +1397,186 @@ export function buildSandboxTools({ role, session, roots, ports = {} } = {}) {
 		retireSession: () =>
 			observationEnabled ? observationLedger.retireSession(observationScope.sessionKey) : { ok: true, retired: 0 },
 	};
+}
+
+function callNeedsLog() {
+	return invalidArgument("call requires roots.callLogDir or roots.callLimits.logPath", {
+		field: "roots.callLogDir",
+		next: "give the sandbox a control-plane artifacts directory",
+	});
+}
+
+function codeValue(code) {
+	if (typeof code !== "string") {
+		return null;
+	}
+	const name = code.startsWith(":") ? code.slice(1) : code;
+	return Object.hasOwn(ERROR_CODES, name) ? kw(name) : code;
+}
+
+/**
+ * Convert a VFS result into an EDN value.
+ *
+ * VFS returns plain objects with camelCase keys and, on rejection, a real
+ * `HerdError`. Neither is a valid EDN capability result. This conversion is
+ * deliberately explicit: keywords for status/code/phase, kebab-case keys, and
+ * error code/message/data without a stack or a live Error object.
+ */
+
+function kebabKey(key) {
+	return key
+		.replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+		.replace(/_/g, "-")
+		.toLowerCase();
+}
+
+function listValue(result) {
+	return new Map([
+		[kw("exists"), result.exists],
+		[
+			kw("entries"),
+			result.entries.map(
+				(entry) =>
+					new Map([
+						[kw("name"), entry.name],
+						[kw("is-dir"), entry.isDir],
+						[kw("is-file"), entry.isFile],
+						[kw("is-symlink"), entry.isSymlink],
+						[kw("virtual"), entry.virtual],
+					]),
+			),
+		],
+	]);
+}
+
+function stampValue(stamp) {
+	if (stamp === null || stamp === undefined) {
+		return null;
+	}
+	return new Map([
+		[kw("mtime-sec"), stamp.mtimeSec],
+		[kw("mtime-nsec"), stamp.mtimeNsec],
+		[kw("size"), stamp.size],
+	]);
+}
+
+function statValue(snapshot) {
+	return new Map([
+		[kw("exists"), snapshot.exists],
+		[kw("size"), snapshot.size],
+		[kw("mtime-sec"), snapshot.mtimeSec],
+		[kw("mtime-nsec"), snapshot.mtimeNsec],
+		[kw("is-dir"), snapshot.isDir],
+		[kw("is-file"), snapshot.isFile ?? false],
+		[kw("is-symlink"), snapshot.isSymlink ?? false],
+		[kw("virtual"), snapshot.virtual],
+		[
+			kw("stamp"),
+			snapshot.exists && !snapshot.virtual && snapshot.size !== null
+				? stampValue({
+						mtimeSec: snapshot.mtimeSec,
+						mtimeNsec: snapshot.mtimeNsec,
+						size: snapshot.size,
+					})
+				: null,
+		],
+	]);
+}
+
+function toEdn(value, seen = new WeakSet()) {
+	if (value === undefined || value === null) {
+		return null;
+	}
+	if (
+		typeof value === "string" ||
+		typeof value === "boolean" ||
+		typeof value === "number" ||
+		typeof value === "bigint"
+	) {
+		return value;
+	}
+	if (value instanceof EdnKeyword) {
+		return value;
+	}
+	if (value instanceof Error) {
+		const data = isHerdError(value) ? value.data : undefined;
+		return new Map([
+			[kw("code"), codeValue(value.code)],
+			[kw("message"), messageOf(value)],
+			[kw("data"), toEdn(data ?? {}, seen)],
+		]);
+	}
+	if (Array.isArray(value)) {
+		if (seen.has(value)) {
+			throw invalidArgument("cycle in sandbox result", { kind: "array" });
+		}
+		seen.add(value);
+		try {
+			return value.map((entry) => toEdn(entry, seen));
+		} finally {
+			seen.delete(value);
+		}
+	}
+	if (value instanceof Set) {
+		if (seen.has(value)) {
+			throw invalidArgument("cycle in sandbox result", { kind: "set" });
+		}
+		seen.add(value);
+		try {
+			return new Set([...value].map((entry) => toEdn(entry, seen)));
+		} finally {
+			seen.delete(value);
+		}
+	}
+	if (value instanceof Map) {
+		if (seen.has(value)) {
+			throw invalidArgument("cycle in sandbox result", { kind: "map" });
+		}
+		seen.add(value);
+		try {
+			const result = new Map();
+			for (const [key, entry] of value) {
+				result.set(toEdn(key, seen), toEdn(entry, seen));
+			}
+			return result;
+		} finally {
+			seen.delete(value);
+		}
+	}
+	if (isPlainObject(value)) {
+		if (seen.has(value)) {
+			throw invalidArgument("cycle in sandbox result", { kind: "object" });
+		}
+		seen.add(value);
+		try {
+			const result = new Map();
+			for (const [key, entry] of Object.entries(value)) {
+				const plainKey = kebabKey(key);
+				let converted = toEdn(entry, seen);
+				if (
+					typeof entry === "string" &&
+					entry.startsWith(":") &&
+					(plainKey === "status" ||
+						plainKey === "code" ||
+						plainKey === "phase" ||
+						plainKey === "reported-status" ||
+						plainKey === "reported-code")
+				) {
+					converted = kw(entry.slice(1));
+				}
+				result.set(kw(plainKey), converted);
+			}
+			return result;
+		} finally {
+			seen.delete(value);
+		}
+	}
+	return String(value);
+}
+
+function tokenRequired(role) {
+	return herdError("TOKEN_REQUIRED", "call is available only to the current Swarm Holder", {
+		role,
+		next: "call board_take_or_die, win the token, and retry as Holder",
+	});
 }

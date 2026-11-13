@@ -11,7 +11,7 @@
  * Only observed dependency paths are re-stamped.
  */
 
-import { lstatSync } from "node:fs";
+import { lstat as lstatAsync } from "node:fs/promises";
 import { herdError } from "../util/errors.mjs";
 
 const NS_PER_SECOND = 1_000_000_000n;
@@ -82,9 +82,9 @@ function copyEntry(entry) {
 	};
 }
 
-function defaultLstat(path) {
+async function defaultLstat(path) {
 	try {
-		return lstatSync(path, { bigint: true });
+		return await lstatAsync(path, { bigint: true });
 	} catch (error) {
 		if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return null;
 		throw error;
@@ -163,7 +163,7 @@ export function createObservationLedger({ lstat = defaultLstat } = {}) {
 		};
 	}
 
-	function verifyObservedFacts(credential, paths) {
+	async function verifyObservedFacts(credential, paths) {
 		if (credential === null || typeof credential !== "object" || Array.isArray(credential)) {
 			throw invalid("credential", "a credential object", credential);
 		}
@@ -201,7 +201,7 @@ export function createObservationLedger({ lstat = defaultLstat } = {}) {
 		const checked = [];
 		for (const path of unique) {
 			const expected = observed.get(path);
-			const stats = lstat(path);
+			const stats = await lstat(path);
 			const current = stats
 				? { exists: true, kind: observationKind(stats), stamp: createStampFromStats(stats) }
 				: { exists: false, kind: "missing", stamp: null };

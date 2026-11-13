@@ -425,7 +425,7 @@ export async function finishTask(args = {}) {
 					let writeLockHeld = true;
 					try {
 						writeLockHeld =
-							typeof runtime.deps.writeLock?.held === "function" ? runtime.deps.writeLock.held() === true : true;
+							typeof runtime.deps.writeLock?.held === "function" ? (await runtime.deps.writeLock.held()) === true : true;
 					} catch {
 						writeLockHeld = true;
 					}
@@ -617,7 +617,7 @@ export async function recover(args = {}) {
 		const boardState = missionLevel
 			? await readMissionActors(runtime)
 			: await readBoardState(runtime).catch(() => null);
-		scanned.locks = scanLocks(runtime, boardState);
+		scanned.locks = await scanLocks(runtime, boardState);
 		scanned.tmp = scanTmp(runtime, missionDir);
 		scanned.ledger = scanLedger(runtime);
 		scanned.worktree = missionLevel ? scanMissionWorktrees(runtime) : scanWorktree(runtime);
@@ -1749,7 +1749,7 @@ async function checkQuiescence(runtime, board, { ff }) {
 	}
 	let writeLockHeld;
 	try {
-		writeLockHeld = heldProbe() === true;
+		writeLockHeld = (await heldProbe()) === true;
 	} catch (error) {
 		return {
 			ok: false,
@@ -3437,7 +3437,7 @@ async function scanBoard(runtime) {
 	}
 }
 
-function scanLocks(runtime, boardState) {
+async function scanLocks(runtime, boardState) {
 	const paths = new Set();
 	for (const path of Object.values(runtime.slice.lock_paths ?? {})) {
 		if (typeof path === "string") paths.add(path);
@@ -3463,8 +3463,8 @@ function scanLocks(runtime, boardState) {
 		try {
 			result = normalizeLockInspection(
 				typeof runtime.deps.lock?.inspect === "function"
-					? runtime.deps.lock.inspect(path)
-					: inspectLock(path, { agentState }),
+					? await runtime.deps.lock.inspect(path)
+					: await inspectLock(path, { agentState }),
 			);
 		} catch (error) {
 			result = { state: "unknown", reason: messageOf(error) };

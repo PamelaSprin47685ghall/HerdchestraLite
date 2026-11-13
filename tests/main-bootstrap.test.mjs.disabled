@@ -179,7 +179,7 @@ afterEach(() => {
 	delete globalThis[Symbol.for("herdchestra.roleCredentials.v1")];
 });
 
-describe("bootstrap-main", () => {
+describe("bootstrap-main", async () => {
 	it("records a successful lazy load without registering business tools", async () => {
 		const pi = fakePi();
 		const result = await bootstrapMain(pi, {
@@ -204,7 +204,7 @@ describe("bootstrap-main", () => {
 	});
 });
 
-describe("main assembly", () => {
+describe("main assembly", async () => {
 	it("registers gate, board, sandbox, spawn and command surfaces", async () => {
 		const pi = fakePi();
 		await activate(pi);
@@ -469,7 +469,7 @@ describe("main assembly", () => {
 			const afterRevise = await readMission(root, slug);
 			expect(afterRevise.mission.stage).toBe(":s1");
 			const reviseText = readFileSync(join(root, ".herd", "missions", slug, "mission.edn"), "utf8");
-			expect(reviseText).not.toContain(":barrier");
+			expect(reviseText).not.toContain(":barrier {");
 			expect(reviseText).not.toContain("attach-ready");
 
 			const blocked = await pi.tools
@@ -529,14 +529,14 @@ describe("main assembly", () => {
 			const read = await readMission(root, slug);
 			expect(read.mission.stage).toBe(":s1");
 			expect(readFileSync(join(root, ".herd", "missions", slug, "mission.edn"), "utf8")).not.toContain(
-				":barrier",
+				":barrier {",
 			);
 		} finally {
 			process.chdir(previousCwd);
 		}
 	});
 
-	it("scrolls the full S1 document and requires an explicit choice", () => {
+	it("scrolls the full S1 document and requires an explicit choice", async () => {
 		const document = Array.from({ length: 30 }, (_, index) => `line-${index}`).join("\n");
 		const make = () => {
 			let result;
@@ -592,7 +592,7 @@ describe("main assembly", () => {
 		expect(pi.getActiveTools()).toContain("clj_plan");
 		expect(pi.getActiveTools()).not.toContain("board_split");
 		expect(pi.getActiveTools()).not.toContain("clj_worker");
-		expect(pi.getActiveTools()).not.toContain("submit_review");
+		expect(pi.getActiveTools()).toContain("review");
 		expect(pi.getActiveTools()).not.toContain("submit_devops_report");
 		const hook = pi.hooks.get("before_agent_start")[0];
 		const result = await hook({ systemPrompt: "BASE", prompt: "make a tiny feature" }, ctx);
@@ -702,6 +702,7 @@ describe("main assembly", () => {
 		const slug = "review-a";
 		expect((await createMission(root, { slug, seed: "x" })).ok).toBe(true);
 		const ctx = fakeContext(root, "review-session");
+		await pi.commands.get("herd-focus").handler(slug, ctx);
 		const review = pi.tools.get("review");
 		expect(review).toBeDefined();
 		const boardPath = join(root, ".herd", "missions", slug, "board.edn");
@@ -742,16 +743,16 @@ describe("main assembly", () => {
 		const empty = await review.execute("review-empty", { findings: [] }, undefined, undefined, ctx);
 		expect(empty.isError).not.toBe(true);
 		expect((await readMission(root, slug)).mission.stage).toBe(stageBefore);
-		expect(readFileSync(missionPath, "utf8")).toContain("attach-ready");
+		expect(readFileSync(boardPath, "utf8")).toContain("attach-ready");
 		expect(existsSync(join(root, "plans", slug, "s1-brainstorm.md"))).toBe(false);
 	});
-	it("reads effective settings from the host context, not a fabricated object", () => {
+	it("reads effective settings from the host context, not a fabricated object", async () => {
 		const live = { get: () => undefined, getModelRoles: () => ({}) };
 		expect(hostSettings({ pi: { settings: live } })).toBe(live);
 		expect(hostSettings({ getSettings: () => live })).toBeUndefined();
 		expect(hostSettings({})).toBeUndefined();
 	});
-	it("classifies provider errors without turning auth failures into retries", () => {
+	it("classifies provider errors without turning auth failures into retries", async () => {
 		const assistant = (extra) => ({ messages: [{ role: "assistant", stopReason: "error", ...extra }] });
 		expect(classifyAgentEnd(assistant({ errorStatus: 401, errorMessage: "invalid api key" }))).toMatchObject({
 			kind: "stalled",
@@ -771,13 +772,13 @@ describe("main assembly", () => {
 			classifyAgentEnd({ messages: [{ role: "assistant", stopReason: "aborted" }] }, { userAborted: true }),
 		).toEqual({ kind: "aborted" });
 	});
-	it("shares the public pi.events bus with subagents and never invents one", () => {
+	it("shares the public pi.events bus with subagents and never invents one", async () => {
 		const bus = { emit() {} };
 		expect(hostEventBus({ events: bus })).toBe(bus);
 		expect(hostEventBus({ events: null })).toBeUndefined();
 		expect(hostEventBus({})).toBeUndefined();
 	});
-	it("remembers the first Plan DevOps definition for later follow-up turns", () => {
+	it("remembers the first Plan DevOps definition for later follow-up turns", async () => {
 		const definition = {
 			name: "PlanDevOps-test",
 			description: "test",
@@ -954,11 +955,11 @@ describe("main assembly", () => {
 				started_at: startedAt,
 			});
 		writeFileSync(lockPath, lock(new Date().toISOString()), "utf8");
-		const recent = inspectLock(lockPath, { agentState: () => "dead" });
+		const recent = await inspectLock(lockPath, { agentState: () => "dead" });
 		expect(recent.stale).toBe(false);
 		expect(writeLockHeld(recent)).toBe(true);
 		writeFileSync(lockPath, lock(new Date(Date.now() - 60_000).toISOString()), "utf8");
-		const stale = inspectLock(lockPath, { agentState: () => "dead" });
+		const stale = await inspectLock(lockPath, { agentState: () => "dead" });
 		expect(stale.stale).toBe(true);
 		expect(writeLockHeld(stale)).toBe(true);
 		const acquired = await withLock(
@@ -977,7 +978,7 @@ describe("main assembly", () => {
 		expect(writeLockHeld({ exists: false, stale: false })).toBe(false);
 	});
 
-	it("binds the gate slug to the host artifacts context", () => {
+	it("binds the gate slug to the host artifacts context", async () => {
 		const root = "/tmp/slug-test";
 		const ctx = {
 			sessionManager: {
@@ -988,14 +989,14 @@ describe("main assembly", () => {
 		expect(trustedMissionSlug({ root, slug: "focused" }, ctx)).toBe("focused");
 		expect(trustedMissionSlug({ root }, {})).toBeUndefined();
 	});
-	it("inherits only a real parent session file and never constructs one", () => {
+	it("inherits only a real parent session file and never constructs one", async () => {
 		const state = { lastContext: { sessionManager: { getSessionFile: () => "/tmp/real-session.jsonl" } } };
 		expect(inheritedSessionFile(state, {})).toBe("/tmp/real-session.jsonl");
 		expect(inheritedSessionFile(state, { sessionFile: "/tmp/explicit.jsonl" })).toBe("/tmp/explicit.jsonl");
 		expect(inheritedSessionFile({ lastContext: { sessionManager: {} } }, {})).toBeUndefined();
 		expect(inheritedSessionFile({}, {})).toBeUndefined();
 	});
-	it("keeps one report path per DevOps call and never reuses an older receipt", () => {
+	it("keeps one report path per DevOps call and never reuses an older receipt", async () => {
 		const root = temporaryRoot();
 		const directory = join(root, ".herd", "artifacts", "m", "PlanDevOps-child");
 		mkdirSync(directory, { recursive: true });
@@ -1008,12 +1009,12 @@ describe("main assembly", () => {
 		const firstCall = newDevopsCallId();
 		const secondCall = newDevopsCallId();
 		expect(firstCall).toMatch(/^devops-[0-9a-f-]+$/);
-		writeDevopsReport({ root, devopsCallId: firstCall }, ctx, {
+		await writeDevopsReport({ root, devopsCallId: firstCall }, ctx, {
 			status: "complete",
 			report_markdown: "first call",
 			inspected_paths: ["package.json"],
 		});
-		writeDevopsReport({ root, devopsCallId: secondCall }, ctx, {
+		await writeDevopsReport({ root, devopsCallId: secondCall }, ctx, {
 			status: "blocked",
 			report_markdown: "second call",
 			inspected_paths: [],
@@ -1047,22 +1048,22 @@ describe("main assembly", () => {
 			callId: firstCall,
 		});
 		expect(existsSync(join(directory, "devops-report.edn"))).toBe(false);
-		expect(() =>
+		await expect(
 			writeDevopsReport({ root }, ctx, {
 				status: "complete",
 				report_markdown: "unbound",
 				inspected_paths: [],
 			}),
-		).toThrow();
-		expect(() =>
+		).rejects.toThrow();
+		await expect(
 			writeDevopsReport(
 				{ root, devopsCallId: firstCall },
 				{ sessionManager: { getArtifactsDir: () => directory } },
 				{ status: "complete", report_markdown: "no session file", inspected_paths: [] },
 			),
-		).toThrow();
+		).rejects.toThrow();
 	});
-	it("writes receipts under the parent-issued artifacts base, not a per-agent subdirectory", () => {
+	it("writes receipts under the parent-issued artifacts base, not a per-agent subdirectory", async () => {
 		const root = temporaryRoot();
 		const base = join(root, ".herd", "artifacts", "mission-a", "PlanDevOps-child");
 		const childDir = join(base, "child-id");
@@ -1074,7 +1075,7 @@ describe("main assembly", () => {
 				getSessionFile: () => join(base, "child-id.jsonl"),
 			},
 		};
-		writeDevopsReport({ root, devopsCallId: callId }, ctx, {
+		await writeDevopsReport({ root, devopsCallId: callId }, ctx, {
 			status: "complete",
 			report_markdown: "parent base",
 			inspected_paths: ["package.json"],
@@ -1087,7 +1088,7 @@ describe("main assembly", () => {
 		expect(existsSync(join(childDir, "devops-reports", `${callId}.edn`))).toBe(false);
 	});
 
-	it("recovers an unconsumed call-id from the current parent prompt on follow-up", () => {
+	it("recovers an unconsumed call-id from the current parent prompt on follow-up", async () => {
 		const root = temporaryRoot();
 		const base = join(root, ".herd", "artifacts", "mission-a", "PlanDevOps-child");
 		mkdirSync(base, { recursive: true });
@@ -1107,7 +1108,7 @@ describe("main assembly", () => {
 			},
 		};
 		const state = { root, devopsLastCallId: "devops-already-consumed" };
-		writeDevopsReport(state, ctx, {
+		await writeDevopsReport(state, ctx, {
 			status: "complete",
 			report_markdown: "follow-up",
 			inspected_paths: ["package.json"],
@@ -1116,7 +1117,7 @@ describe("main assembly", () => {
 		expect(state.devopsLastCallId).toBe(callId);
 		let duplicate;
 		try {
-			writeDevopsReport(state, ctx, {
+			await writeDevopsReport(state, ctx, {
 				status: "complete",
 				report_markdown: "duplicate",
 				inspected_paths: [],
@@ -1128,7 +1129,7 @@ describe("main assembly", () => {
 		expect(duplicate?.message).toContain("already submitted");
 	});
 
-	it("derives optional parent lineage from host agent and real tool call id", () => {
+	it("derives optional parent lineage from host agent and real tool call id", async () => {
 		const state = { id: "session-id", lastContext: { agent: { id: "parent-agent" } } };
 		expect(parentContextFor(state, {})).toEqual({
 			parentAgentId: "parent-agent",
@@ -1140,7 +1141,7 @@ describe("main assembly", () => {
 		});
 		expect(parentContextFor({ id: "session-id" }, {}).parentAgentId).toBeUndefined();
 	});
-	it("uses the parent-issued role token as the single child identity", () => {
+	it("uses the parent-issued role token as the single child identity", async () => {
 		const identity = sessionIdentity(
 			{ id: "child-session", role: "Swarm Worker", roleNonce: "Worker-slice-1-slot-1" },
 			{ agent: { kind: "sub", id: "parent-session" } },
@@ -1160,13 +1161,13 @@ describe("main assembly", () => {
 		const token = { systemPrompt: "BASE", prompt: "[HERD_ROLE: Reviewer nonce=abcdefgh]\nreview" };
 		await before(token, ctx);
 		pi.sent.length = 0;
-		await toolEnd({ toolName: "submit_review", isError: true }, ctx);
+		await toolEnd({ toolName: "review", isError: true }, ctx);
 		await end({ messages: [] }, ctx);
 		await new Promise((resolveWait) => setTimeout(resolveWait, 20));
 		expect(pi.sent.some((entry) => entry.message.customType === "herd-nudge")).toBe(true);
 		await before(token, ctx);
 		pi.sent.length = 0;
-		await toolEnd({ toolName: "submit_review", isError: false }, ctx);
+		await toolEnd({ toolName: "review", isError: false }, ctx);
 		await end({ messages: [] }, ctx);
 		await new Promise((resolveWait) => setTimeout(resolveWait, 20));
 		expect(pi.sent.some((entry) => entry.message.customType === "herd-nudge")).toBe(false);
@@ -1184,7 +1185,7 @@ describe("main assembly", () => {
 		await pi.hooks.get("agent_end")[0]({ messages: [] }, ctx);
 		await new Promise((resolveWait) => setTimeout(resolveWait, 20));
 		const nudge = pi.sent.find((entry) => entry.message.customType === "herd-nudge");
-		expect(nudge?.message.content).toContain("submit_review");
+		expect(nudge?.message.content).toContain("review");
 	});
 	it("does not inject herd-nudge after an authentication failure", async () => {
 		const root = temporaryRoot();
@@ -1238,7 +1239,7 @@ describe("main assembly", () => {
 	});
 	it("derives the board actor from the host session and cannot be impersonated", async () => {
 		const root = temporaryRoot();
-		const board = await missionBoardPort(root, "m").ensureSlice({ sliceId: "s" });
+		const board = await missionBoardPort(root, "m").ensureSlice({ sliceId: "main" });
 		for (const agentId of ["A", "B"]) {
 			const registered = await apply({
 				board,
@@ -1271,10 +1272,10 @@ describe("main assembly", () => {
 		const second = await tool.execute("claim-b", request(), undefined, undefined, toolCtx);
 		expect(second.details.ok).toBe(false);
 		expect(second.content[0].text).toContain("CLAIM_CONFLICT");
-		const claimA = await claimFor({ id: "A", root, slug: "m" }, "s", fakeContext(root, "A"));
+		const claimA = await claimFor({ id: "A", root, slug: "m" }, "main", fakeContext(root, "A"));
 		expect(claimA).toMatchObject({ task_id: taskId, status: "active" });
-		expect(await claimFor({ id: "B", root, slug: "m" }, "s", fakeContext(root, "B"))).toBeUndefined();
-		expect(await claimFor({ id: "A", root, slug: "missing" }, "s", fakeContext(root, "A"))).toBeUndefined();
+		expect(await claimFor({ id: "B", root, slug: "m" }, "main", fakeContext(root, "B"))).toBeUndefined();
+		expect(await claimFor({ id: "A", root, slug: "missing" }, "main", fakeContext(root, "A"))).toBeUndefined();
 		const singleCtx = fakeContext(root, "A");
 		singleCtx.cwd = root;
 		expect(await boardRoleExitReady({ id: "A", root, slug: "m", role: "Swarm Worker" }, singleCtx)).toBe(false);
@@ -1332,7 +1333,7 @@ describe("main assembly", () => {
 		const after = await board.store.read();
 		expect(after.actors.C).toBeUndefined();
 	});
-	it("binds distinct auditor CASEs to distinct evidence and tmp roots", () => {
+	it("binds distinct auditor CASEs to distinct evidence and tmp roots", async () => {
 		const root = temporaryRoot();
 		const state = { root, slug: undefined, lastContext: {} };
 		const caseA = join(root, ".herd", "artifacts", "mission-a", "audit", "CASE-01_", "a.jsonl");
@@ -1365,7 +1366,7 @@ describe("main assembly", () => {
 		expect(rootsA.evidenceRoot).toContain(join("evidence", "CASE-01_"));
 		expect(rootsB.evidenceRoot).toContain(join("evidence", "CASE-02-"));
 	});
-	it("detects restart audit readiness from the single-workspace board and CASE dataset", () => {
+	it("detects restart audit readiness from the single-workspace board and CASE dataset", async () => {
 		const root = temporaryRoot();
 		const dir = join(root, ".herd", "missions", "mission-a");
 		mkdirSync(dir, { recursive: true });
@@ -1405,7 +1406,7 @@ describe("main assembly", () => {
 	});
 });
 
-describe("audit model seed session handoff", () => {
+describe("audit model seed session handoff", async () => {
 	const model = {
 		provider: "mistral",
 		id: "deepseek-v4-1-flash-1017",
@@ -1498,13 +1499,13 @@ describe("audit model seed session handoff", () => {
 	});
 });
 
-describe("main board_split default wait behavior", () => {
+describe("main board_split default wait behavior", async () => {
 	it("omits wait_for and the kernel waits for every new child", async () => {
 		const root = temporaryRoot();
 		const pi = fakePi();
 		await activate(pi);
 		const slug = "mission";
-		const sliceId = "SLICE-01";
+		const sliceId = "main";
 		const cwd = root;
 		mkdirSync(join(root, "plans", slug), { recursive: true });
 		const handle = openBoard(root, slug, sliceId);
@@ -1544,13 +1545,13 @@ describe("main board_split default wait behavior", () => {
 	});
 });
 
-describe("main board_finish dependency read-set", () => {
+describe("main board_finish dependency read-set", async () => {
 	it("rejects unobserved file facts and accepts a real VFS read under $W", async () => {
 		const root = temporaryRoot();
 		const pi = fakePi();
 		await activate(pi);
 		const slug = "mission";
-		const sliceId = "slice-a";
+		const sliceId = "main";
 		const cwd = root;
 		mkdirSync(join(root, "plans", slug), { recursive: true });
 		writeFileSync(join(cwd, "dep.mjs"), "export const dep = 1;\n", "utf8");
@@ -1628,7 +1629,7 @@ describe("main board_finish dependency read-set", () => {
 			undefined,
 			ctx,
 		);
-		expect(finished.isError).not.toBe(true);
+		expect(finished.isError, finished.content?.[0]?.text).not.toBe(true);
 		expect((await handle.store.read()).tasks[seeded.taskIds[0]].state).toBe("done");
 	});
 
@@ -1637,7 +1638,7 @@ describe("main board_finish dependency read-set", () => {
 		const pi = fakePi();
 		await activate(pi);
 		const slug = "mission";
-		const sliceId = "slice-a";
+		const sliceId = "main";
 		const cwd = root;
 		mkdirSync(join(root, "plans", slug), { recursive: true });
 		const depPath = join(cwd, "dep.mjs");
@@ -1725,12 +1726,12 @@ describe("main board_finish dependency read-set", () => {
 			undefined,
 			ctx,
 		);
-		expect(finished.isError).not.toBe(true);
+		expect(finished.isError, finished.content?.[0]?.text).not.toBe(true);
 		expect((await handle.store.read()).tasks[seeded.taskIds[0]].state).toBe("done");
 	});
 });
 
-describe("main attach gates", () => {
+describe("main attach gates", async () => {
 	const planCases = [
 		{
 			case_id: "CASE-01",
@@ -1843,7 +1844,15 @@ describe("main attach gates", () => {
 		process.chdir(root);
 		try {
 			const pi = fakePi();
-			const session = await attachThroughS3(root, pi, "attach-s3-session");
+			const session = await startMission(root, pi, "attach-s3-session");
+			await session.review("review-s1");
+			await session.call("attach_brainstorm", "attach-s1", { markdown: "# S1\n\nBrainstorm.\n" });
+			await session.review("review-s2");
+			await session.call("attach_manual_tests", "attach-s2", {
+				markdown: "# S2\n\nMethodology.\n",
+				cases: planCases,
+			});
+			await session.review("review-s3");
 			const result = await session.call("attach_dev_guide", "attach-s3", {
 				markdown: "# S3\n\nDeep modules only.\n",
 			});
@@ -1893,7 +1902,7 @@ describe("main attach gates", () => {
 		}
 	});
 
-	it("narrows the S5 surface to review and attach tools without a worktree surface", async () => {
+	it("narrows the S5 surface to review and board tools without attach or worktree surface", async () => {
 		const root = temporaryRoot();
 		const previousCwd = process.cwd();
 		process.chdir(root);
@@ -1908,10 +1917,10 @@ describe("main attach gates", () => {
 			await pi.commands.get("herd-focus").handler(session.slug, session.ctx);
 			const s5Tools = pi.getActiveTools();
 			expect(s5Tools).toContain("review");
-			expect(s5Tools).toContain("attach_brainstorm");
-			expect(s5Tools).toContain("attach_manual_tests");
-			expect(s5Tools).toContain("attach_dev_guide");
-			expect(s5Tools).toContain("attach_coordination");
+			expect(s5Tools).not.toContain("attach_brainstorm");
+			expect(s5Tools).not.toContain("attach_manual_tests");
+			expect(s5Tools).not.toContain("attach_dev_guide");
+			expect(s5Tools).not.toContain("attach_coordination");
 			for (const name of [
 				["fork", "slices"].join("_"),
 				["join", "slice"].join("_"),

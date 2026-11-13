@@ -11,9 +11,9 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync } from "node:fs";
+import { lstat, mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { withLock } from "./util/file-lock.mjs";
+import { withLockWhenFree } from "./util/file-lock.mjs";
 import { getWriteActor } from "./util/broker.mjs";
 import { Worker } from "node:worker_threads";
 import { cherryStatus } from "./clj-sandbox/cherry.mjs";
@@ -46,7 +46,6 @@ const ROLE_LABELS = Object.freeze({
 	review: "Reviewer / read-only",
 	worker: "Worker / read-write",
 });
-const DEFAULT_FORK_DEADLINE_MS = 3_600_000;
 const SHARED_WORKER_SYMBOL = Symbol.for("herdchestra.sandboxWorker.v1");
 
 function getSharedWorkerHost() {
@@ -86,12 +85,12 @@ export function deadlineFor(text, now = Date.now(), baseMs = 1_000) {
 const SANDBOX_PARAMETERS = Object.freeze({
 	type: "object",
 	additionalProperties: false,
-	required: ["code", ARIADNE_BUDGET_FIELD, ARIADNE_GOAL_FIELD],
+	required: ["name", "code", ARIADNE_BUDGET_FIELD, ARIADNE_GOAL_FIELD],
 	properties: {
 		name: {
 			type: "string",
 			minLength: 1,
-			description: "Optional REPL name for park/unpark and for a later time_leap target; auto-generated when omitted.",
+			description: "Required unique REPL name for park/unpark and for a time_leap target. Names are never reused in a session, so every anchor stays addressable.",
 		},
 		code: {
 			type: "string",
@@ -269,6 +268,7 @@ function getPool(state, sessionKey) {
 			pendingForeground: new Map(),
 			pendingByExecId: new Map(),
 			pendingRoles: new Map(),
+			hostToolContexts: new Set(),
 			startingPromises: new Set(),
 			parkedList: [],
 		};
@@ -308,8 +308,8 @@ function validateForkParams(params) {
 			throw herdError("INVALID_ARGUMENT", `unknown sandbox tool field: ${key}`, { field: key });
 		}
 	}
-	if (params.name !== undefined && (typeof params.name !== "string" || params.name.length === 0)) {
-		throw herdError("INVALID_ARGUMENT", "name must be a non-empty string when provided", {
+	if (typeof params.name !== "string" || params.name.length === 0) {
+		throw herdError("INVALID_ARGUMENT", "name is required and must be a non-empty string", {
 			field: "name",
 		});
 	}
@@ -333,7 +333,7 @@ function validateForkParams(params) {
 		});
 	}
 	return {
-		programName: params.name ?? `repl-${randomUUID().slice(0, 12)}`,
+		programName: params.name,
 		code: params.code,
 		workers: parseWorkerCount(params),
 	};
@@ -362,7 +362,7 @@ function validateWaitParams(params) {
 }
 
 function formatForkReceipt({ toolName, programName, inFlight, backlog }) {
-	const text = `{:state :forked :tool ${JSON.stringify(toolName)} :program-name ${JSON.stringify(programName)} :in-flight ${inFlight} :backlog ${backlog}}`;
+	const text = `{:state :forked :tool ${printUfss(String(toolName))} :program-name ${printUfss(String(programName))} :in-flight ${inFlight} :backlog ${backlog}}`;
 	return {
 		content: [{ type: "text", text }],
 		details: { state: "forked", tool: toolName, programName, inFlight, backlog },
@@ -379,7 +379,7 @@ function formatIdleReceipt() {
 }
 
 function formatWaitingDeadlineReceipt(waitMs, pool) {
-	const running = [...pool.inFlight.values()].map((entry) => JSON.stringify(entry.programName)).join(" ");
+	const running = [...pool.inFlight.values()].map((entry) => printUfss(String(entry.programName))).join(" ");
 	const text = `{:state :waiting :reason :deadline :wait-ms ${waitMs} :in-flight ${pool.inFlight.size} :backlog ${pool.backlog.length} :running [${running}] :message "Wait deadline elapsed before any running sandbox finished; tasks continue in background. Dispatch more independent work or call wait again."}`;
 	return {
 		content: [{ type: "text", text }],
@@ -520,7 +520,6 @@ export function registerCljTools(pi, deps = {}) {
 		seq: 0,
 	};
 	const ownerId = deps.ownerId ?? `clj-core-${process.pid}`;
-	const forkDeadlineMs = Number.isFinite(deps.forkDeadlineMs) ? deps.forkDeadlineMs : DEFAULT_FORK_DEADLINE_MS;
 	const baseWaitMs = Number.isFinite(deps.baseWaitMs) && deps.baseWaitMs >= 0 ? deps.baseWaitMs : 1_000;
 	const ariadne = deps.ariadne !== false ? createAriadneStore() : null;
 	const failures = [];
@@ -538,6 +537,7 @@ export function registerCljTools(pi, deps = {}) {
 		}
 	};
 	const nativeRunnerProvider = typeof deps.nativeRunner === "function" ? deps.nativeRunner : null;
+	const workerFactory = typeof deps.workerFactory === "function" ? deps.workerFactory : null;
 	const nativeRunnerFor = (ctx) => nativeRunnerProvider?.(ctx) ?? runnerForContext(ctx) ?? getNativeRunner();
 	const detectHostTools = (ctx) => {
 		const runner = nativeRunnerFor(ctx);
@@ -553,9 +553,10 @@ export function registerCljTools(pi, deps = {}) {
 			return await runner.invokeNativeTool(name, params, {});
 		}
 		const lockDir = join(rootFor(ctx), ".herd", "locks");
-		mkdirSync(lockDir, { recursive: true });
-		const acquired = await withLock(
-			join(lockDir, "clj-core.cross-process.lock"),
+		await mkdir(lockDir, { recursive: true });
+		const lockPath = join(lockDir, "clj-core.cross-process.lock");
+		const acquired = await withLockWhenFree(
+			lockPath,
 			{
 				lock_id: "clj-core",
 				purpose: "clj-core cross-process write",
@@ -568,18 +569,19 @@ export function registerCljTools(pi, deps = {}) {
 					const absolute = resolve(ctx.cwd ?? process.cwd(), params.path);
 					let stats = null;
 					try {
-						stats = lstatSync(absolute, { bigint: true });
+						stats = await lstat(absolute, { bigint: true });
 					} catch (error) {
 						if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") throw error;
 					}
 					const expected = params.__expectedStamp;
-					const actual = stats === null
-						? null
-						: {
-								mtimeSec: Number(stats.mtimeNs / 1000000000n),
-								mtimeNsec: Number(stats.mtimeNs % 1000000000n),
-								size: Number(stats.size),
-							};
+					const actual =
+						stats === null
+							? null
+							: {
+									mtimeSec: Number(stats.mtimeNs / 1000000000n),
+									mtimeNsec: Number(stats.mtimeNs % 1000000000n),
+									size: Number(stats.size),
+								};
 					if (
 						actual === null ||
 						actual.mtimeSec !== expected.mtimeSec ||
@@ -592,10 +594,11 @@ export function registerCljTools(pi, deps = {}) {
 				}
 				return await runner.invokeNativeTool("write", params, {});
 			},
+			{ timeoutMs: deps.lockWaitMs ?? 10_000 },
 		);
 		if (acquired?.ok) return acquired.value;
 		throw herdError(acquired?.code ?? ":BOARD_CONFLICT", acquired?.message ?? "cross-process write lock is held", {
-			lock: ".herd/locks/clj-core.cross-process.lock",
+			lock: lockPath,
 		});
 	};
 
@@ -639,7 +642,7 @@ export function registerCljTools(pi, deps = {}) {
 		const pool = getPool(state, msg.sessionKey);
 		if (msg.type === "hostTool") {
 			const pool = getPool(state, msg.sessionKey);
-			const ctx = pool.hostToolContext;
+			const ctx = pool.hostToolContexts.values().next().value ?? null;
 			const worker = shared.worker;
 			if (!ctx || !worker) {
 				worker?.postMessage({ type: "hostToolDone", id: msg.id, error: "host tool context unavailable" });
@@ -723,9 +726,11 @@ export function registerCljTools(pi, deps = {}) {
 			}
 			return shared.worker;
 		}
-		const worker = new Worker(new URL("./clj-sandbox/sandbox-worker.mjs", import.meta.url), {
-			workerData: { __sandboxWorker: true },
-		});
+		const worker = workerFactory
+			? workerFactory()
+			: new Worker(new URL("./clj-sandbox/sandbox-worker.mjs", import.meta.url), {
+					workerData: { __sandboxWorker: true },
+				});
 		worker.unref?.();
 		worker.on("message", (msg) => {
 			for (const listener of shared.listeners) {
@@ -789,7 +794,7 @@ export function registerCljTools(pi, deps = {}) {
 					const root = rootFor(ctx);
 					const sessionKey = hostSessionKey(ctx);
 					const pool = getPool(state, sessionKey);
-					pool.hostToolContext = ctx;
+					pool.hostToolContexts.add(ctx);
 					if (ariadne) {
 						try {
 							recoverAriadneHistory(ariadne, sessionKey, ctx, callId);
@@ -934,13 +939,13 @@ export function registerCljTools(pi, deps = {}) {
 							callId,
 							programName: validated.programName,
 							code: validated.code,
-							deadlineAt: Date.now() + forkDeadlineMs,
+							deadlineAt: deadlineFor(validated.code, Date.now(), baseWaitMs),
 							hostTools: detectHostTools(ctx),
 						});
 					})
 						.catch((error) => toolFailure(error))
 						.then((result) => {
-							if (pool.hostToolContext === ctx) pool.hostToolContext = null;
+							pool.hostToolContexts.delete(ctx);
 							cleanupAbort();
 							clearGraceTimer();
 							pool.pendingForeground.delete(validated.programName);
@@ -1228,8 +1233,13 @@ export function registerCljTools(pi, deps = {}) {
 					await Promise.all([...pool.startingPromises]);
 				}
 				try {
-					const res = ariadne.timeLeap(sessionKey, params);
-					const text = `{:time-leap-pending true :target ${printUfss(String(res.target))} :beacon-name ${printUfss(String(res.beaconName))} :resume-note ${printUfss("time_leap 已登记；下一次 LLM 请求发出前会用实际上下文解析并剪裁。旧任务按 experience 记录的磁盘与测试最新状态继续。")}}`;
+					const parked = pool.parkedList ?? [];
+				if (parked.length > 0) {
+					return toolFailure(herdError("STALE_CONTROL", "time_leap is refused while sandbox programs are parked; unpark or abandon them first", { parked, next: "call (unpark {:name ... :value ...}) or (abandon {:name ...}) first" }));
+				}
+				recoverAriadneHistory(ariadne, sessionKey, ctx, typeof toolCallId === "string" ? toolCallId : null);
+				const res = ariadne.timeLeap(sessionKey, params);
+					const text = `{:time-leap-pending true :target ${printUfss(String(res.target))} :target-call-id ${printUfss(String(res.targetCallId))} :beacon-name ${printUfss(String(res.beaconName))} :resume-note ${printUfss("time_leap 已登记；下一次 LLM 请求发出前会用实际上下文解析并剪裁。旧任务按 experience 记录的磁盘与测试最新状态继续。")}}`;
 					return { content: [{ type: "text", text }], details: res };
 				} catch (error) {
 					return toolFailure(error);
@@ -1296,7 +1306,7 @@ export function registerCljTools(pi, deps = {}) {
 					}
 					const systemPrompt =
 						typeof ctx?.getSystemPrompt === "function"
-							? ctx.getSystemPrompt()
+							? ctx.getSystemPrompt().join(String.fromCharCode(10))
 							: `${COMMON_RULES_TEXT}`;
 					const res = await queryBeacon({
 						beacon,
@@ -1343,7 +1353,8 @@ export function registerCljTools(pi, deps = {}) {
 	});
 
 	if (typeof pi.on === "function") {
-		const resurface = async () => {
+		const resurface = async (_event, ctx) => {
+			if (ariadne && ctx) recoverAriadneHistory(ariadne, hostSessionKey(ctx), ctx);
 			const result = await applyCljToolSurface(pi);
 			if (result.ok !== true) {
 				recordHealth({
@@ -1391,7 +1402,7 @@ export function registerCljTools(pi, deps = {}) {
 				);
 				baseMessages = leap.messages;
 			} else if (leap) {
-				leapError = leap.target;
+				leapError = `${leap.target}: ${leap.reason ?? "unknown"}`;
 			}
 
 			const ariadneBlock = ariadne ? ariadne.formatAriadneBlock(sessionKey) : null;
@@ -1473,6 +1484,10 @@ export default async function activate(pi) {
 	// Register tools immediately without blocking the host main thread on
 	// cherry-cljs loading; pre-warm the sandbox Worker in the background.
 	const state = registerCljTools(pi);
+	// Make the registered clj tools active before the first model turn, not
+	// only on session_start. Registration alone does not activate an extension
+	// tool in every host version.
+	await applyCljToolSurface(pi);
 	state.warmup();
 	return state;
 }

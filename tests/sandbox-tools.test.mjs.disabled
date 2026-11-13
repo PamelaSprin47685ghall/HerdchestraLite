@@ -283,6 +283,7 @@ describe("capability matrix", () => {
 			name: "p",
 			code: "1",
 		});
+		if (keywordName(field(receipt, "state")) !== "completed") throw new Error(JSON.stringify(receipt));
 		expect(keywordName(field(receipt, "state"))).toBe("completed");
 		const error = caught(() =>
 			buildSandboxTools({
@@ -1034,14 +1035,14 @@ describe("observed read facts", () => {
 		const paths = snapshot.credential.entries.map((entry) => entry.path);
 		expect(paths).toContain(productPath);
 		expect(paths).toContain(docsPath);
-		const verified = bundle.verifyObservedFacts(snapshot.credential, [productPath, docsPath]);
+		const verified = await bundle.verifyObservedFacts(snapshot.credential, [productPath, docsPath]);
 		expect(verified.ok).toBe(true);
-		const unknown = bundle.verifyObservedFacts(snapshot.credential, [join(root, "missing.mjs")]);
+		const unknown = await bundle.verifyObservedFacts(snapshot.credential, [join(root, "missing.mjs")]);
 		expect(unknown.ok).toBe(false);
 		expect(unknown.code).toBe(":STALE_CONTROL");
 		expect(unknown.reason).toBe("unobserved-dependency");
 		file(root, "product.mjs", "value = 22");
-		const conflict = bundle.verifyObservedFacts(snapshot.credential, [productPath]);
+		const conflict = await bundle.verifyObservedFacts(snapshot.credential, [productPath]);
 		expect(conflict.ok).toBe(false);
 		expect(conflict.code).toBe(":FILE_CONFLICT");
 	});
@@ -1077,10 +1078,10 @@ describe("observed read facts", () => {
 		const paths = credential.credential.entries.map((entry) => entry.path);
 		expect(paths).toContain(join(root, "a.mjs"));
 		expect(paths).toContain(join(root, "b.mjs"));
-		expect(second.verifyObservedFacts(credential.credential, paths).ok).toBe(true);
+		expect((await second.verifyObservedFacts(credential.credential, paths)).ok).toBe(true);
 		second.retireActor();
 		expect(second.readSetForActor().ok).toBe(false);
-		const stale = second.verifyObservedFacts(credential.credential, paths);
+		const stale = await second.verifyObservedFacts(credential.credential, paths);
 		expect(stale.ok).toBe(false);
 		expect(stale.code).toBe(":STALE_CONTROL");
 		second.retireSession();
@@ -1108,7 +1109,7 @@ describe("observed read facts", () => {
 		expect(snapshot.ok).toBe(false);
 		expect(snapshot.code).toBe(":STALE_CONTROL");
 		expect(snapshot.reason).toBe("term-id-required");
-		const verified = bundle.verifyObservedFacts({}, [join(root, "a.mjs")]);
+		const verified = await bundle.verifyObservedFacts({}, [join(root, "a.mjs")]);
 		expect(verified.ok).toBe(false);
 		expect(verified.reason).toBe("term-id-required");
 		expect(bundle.retireActor().ok).toBe(false);

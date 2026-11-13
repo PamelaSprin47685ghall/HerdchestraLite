@@ -76,22 +76,91 @@ describe('Time Leap++ pending resolve + Ariadne thread + read-only beacons', () 
 		expect(store.listBeacons(sk).map((b) => b.name)).toEqual(['alpha']);
 		expect(() =>
 			store.timeLeap(sk, { target: 'alpha', experience: 'resurrect', beacon_name: 'b2', beacon_description: 'b2' }),
-		).toThrow(/NAME_TAKEN/);
+		).toThrow(/read-only/);
 	});
 
-	it('resolves only anchors present in the actual messages', () => {
+	it('rejects unknown and pre-compaction targets synchronously', () => {
 		const store = createAriadneStore();
 		const sk = 's-compact';
-		const pre = { role: 'assistant', content: [{ type: 'toolCall', id: 'c-pre', name: 'clj_plan', arguments: { name: 'pre-anchor' } }] };
-		const post = { role: 'assistant', content: [{ type: 'toolCall', id: 'c-post', name: 'clj_plan', arguments: { name: 'post-anchor' } }] };
+		const pre = { role: 'assistant', content: [{ type: 'toolCall', id: 'c-pre', name: 'clj_plan', arguments: { name: 'pre-anchor', ariadne_budget: 2, ariadne_goal: 'pre goal' } }] };
+		const post = { role: 'assistant', content: [{ type: 'toolCall', id: 'c-post', name: 'clj_plan', arguments: { name: 'post-anchor', ariadne_budget: 3, ariadne_goal: 'post goal' } }] };
 
-		store.timeLeap(sk, { target: 'pre-anchor', experience: 'back', beacon_name: 'b1', beacon_description: 'b' });
-		expect(store.resolvePendingLeap(sk, [post])).toMatchObject({ found: false, target: 'pre-anchor' });
+		expect(() =>
+			store.timeLeap(sk, { target: 'pre-anchor', experience: 'back', beacon_name: 'b1', beacon_description: 'b' }),
+		).toThrow(/not an anchor/);
 
-		store.timeLeap(sk, { target: 'post-anchor', experience: 'back', beacon_name: 'b2', beacon_description: 'b' });
-		const resolved = store.resolvePendingLeap(sk, [post]);
+		store.recoverHistory(sk, [pre, post], [pre, post]);
+		expect(store.status(sk).budgets.map((b) => b.programName)).toEqual(['pre-anchor', 'post-anchor']);
+
+		const pending = store.timeLeap(sk, { target: 'post-anchor', experience: 'back', beacon_name: 'b2', beacon_description: 'b' });
+		expect(pending.targetCallId).toBe('c-post');
+		const resolved = store.resolvePendingLeap(sk, [pre, post]);
 		expect(resolved.found).toBe(true);
-		expect(resolved.messages[0].content[0].text).toContain('back');
+		expect(resolved.messages).toHaveLength(2);
+		expect(resolved.messages[1].content[0].text).toContain('back');
+	});
+
+	it('rejects a second leap while one is pending and keeps the first pending record', () => {
+		const store = createAriadneStore();
+		const sk = 's-pending';
+		store.validateAndApplyFork(sk, { ariadne_budget: 2, ariadne_goal: 'first' }, 'p1', 'c1', 'clj_plan');
+		const pending = store.timeLeap(sk, { target: 'p1', experience: 'go', beacon_name: 'b1', beacon_description: 'b' });
+		expect(pending.pending).toBe(true);
+		expect(() =>
+			store.timeLeap(sk, { target: 'p1', experience: 'again', beacon_name: 'b2', beacon_description: 'b' }),
+		).toThrow(/already pending/);
+	});
+
+	it('does not let a pre-compaction anchor enter the active stack', () => {
+		const store = createAriadneStore();
+		const sk = 's-boundary';
+		const pre = { role: 'assistant', content: [{ type: 'toolCall', id: 'c-pre', name: 'clj_plan', arguments: { name: 'pre', ariadne_budget: 2, ariadne_goal: 'old' } }] };
+		const compaction = { type: 'compaction', id: 'compact-1', message: { role: 'compactionSummary' } };
+		const post = { role: 'assistant', content: [{ type: 'toolCall', id: 'c-post', name: 'clj_plan', arguments: { name: 'post', ariadne_budget: 2, ariadne_goal: 'new' } }] };
+		store.recoverHistory(sk, [pre, compaction, post], [pre, compaction, post]);
+		expect(store.status(sk).budgets.map((b) => b.programName)).toEqual(['post']);
+		expect(() =>
+			store.timeLeap(sk, { target: 'pre', experience: 'go', beacon_name: 'b1', beacon_description: 'b' }),
+		).toThrow(/not an anchor/);
+	});
+
+	it('clears a pending leap when the target toolCall is absent from the messages', () => {
+		const store = createAriadneStore();
+		const sk = 's-missing';
+		store.validateAndApplyFork(sk, { ariadne_budget: 2, ariadne_goal: 'x' }, 'p1', 'c1', 'clj_plan');
+		store.timeLeap(sk, { target: 'p1', experience: 'go', beacon_name: 'b1', beacon_description: 'b' });
+		const resolved = store.resolvePendingLeap(sk, [{ role: 'user', content: 'no anchors here' }]);
+		expect(resolved).toMatchObject({ found: false, target: 'p1', code: 'PROGRAM_UNKNOWN' });
+		expect(store.resolvePendingLeap(sk, [{ role: 'user', content: 'second pass' }])).toBeNull();
+	});
+
+	it('recovers an auto-named anchor from its tool result and cuts by toolCallId', () => {
+		const store = createAriadneStore();
+		const sk = 's-auto';
+		const entries = [
+			{ role: 'assistant', content: [{ type: 'toolCall', id: 'c-auto', name: 'clj_devops', arguments: { ariadne_budget: 3, ariadne_goal: 'recover me' } }] },
+			{
+				role: 'toolResult',
+				toolCallId: 'c-auto',
+				toolName: 'clj_devops',
+				details: { programName: 'repl-auto' },
+				content: [{ type: 'text', text: '{:state :forked}' }],
+			},
+			{ role: 'assistant', content: [{ type: 'text', text: 'later' }] },
+		];
+		store.recoverHistory(sk, entries, entries);
+		const pending = store.timeLeap(sk, {
+			target: 'repl-auto',
+			experience: 'continue from disk',
+			beacon_name: 'auto-beacon',
+			beacon_description: 'sealed',
+		});
+		expect(pending).toMatchObject({ pending: true, target: 'repl-auto', targetCallId: 'c-auto' });
+		const resolved = store.resolvePendingLeap(sk, entries);
+		expect(resolved.found).toBe(true);
+		expect(resolved.messages).toHaveLength(1);
+		expect(resolved.messages[0].content[0].text).toContain('recover me');
+		expect(store.getBeacon(sk, 'auto-beacon')?.description).toBe('sealed');
 	});
 
 	it('acts as a soft gate at remaining <= 0 without blocking tools', async () => {
@@ -117,6 +186,7 @@ describe('Time Leap++ pending resolve + Ariadne thread + read-only beacons', () 
 	it('rewrites messages forward-cleanly at resolve time', () => {
 		const store = createAriadneStore();
 		const sk = 's-cut';
+		store.validateAndApplyFork(sk, { ariadne_budget: 2, ariadne_goal: 'fix login' }, 'p1', 'call-p1', 'clj_plan');
 		store.timeLeap(sk, { target: 'p1', experience: 'use approach B', beacon_name: 'b1', beacon_description: 'b' });
 		const messages = [
 			{ role: 'user', content: 'go' },

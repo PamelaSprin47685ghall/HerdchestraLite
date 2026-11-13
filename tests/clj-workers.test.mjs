@@ -54,13 +54,13 @@ describe("Mythical Man-Month worker self-check", () => {
 		const tools = fakeHost();
 		const cljDevops = tools.get("clj_devops");
 
-		const withThree = await cljDevops.execute("w-3", { code: "1", ariadne_budget: 5, ariadne_goal: "test", [WORKERS]: 3 }, undefined, undefined, { cwd: root });
+		const withThree = await cljDevops.execute("w-3", { name: "w-3", code: "1", ariadne_budget: 5, ariadne_goal: "test", [WORKERS]: 3 }, undefined, undefined, { cwd: root });
 		expect(withThree.content.at(-1).text).toBe(nudgeFor(3));
 
-		const zero = await cljDevops.execute("w-0", { code: "1", ariadne_budget: 5, ariadne_goal: "test", [WORKERS]: 0 }, undefined, undefined, { cwd: root });
+		const zero = await cljDevops.execute("w-0", { name: "w-0", code: "1", ariadne_budget: 5, ariadne_goal: "test", [WORKERS]: 0 }, undefined, undefined, { cwd: root });
 		expect(zero.content.some((block) => typeof block.text === "string" && block.text.includes("立刻兑现"))).toBe(false);
 
-		const absent = await cljDevops.execute("w-none", { code: "1", ariadne_budget: 5, ariadne_goal: "test" }, undefined, undefined, { cwd: root });
+		const absent = await cljDevops.execute("w-none", { name: "w-none", code: "1", ariadne_budget: 5, ariadne_goal: "test" }, undefined, undefined, { cwd: root });
 		expect(absent.content.some((block) => typeof block.text === "string" && block.text.includes("立刻兑现"))).toBe(
 			false,
 		);
@@ -72,7 +72,7 @@ describe("Mythical Man-Month worker self-check", () => {
 		for (const [index, value] of [-1, 1.5, "3"].entries()) {
 			const result = await cljDevops.execute(
 				`w-bad-${String(index)}`,
-				{ code: "1", ariadne_budget: 5, ariadne_goal: "test", [WORKERS]: value },
+				{ name: `w-bad-${String(index)}`, code: "1", ariadne_budget: 5, ariadne_goal: "test", [WORKERS]: value },
 				undefined,
 				undefined,
 				{ cwd: root },

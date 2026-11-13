@@ -43,14 +43,14 @@ afterEach(() => {
 	}
 });
 
-describe("atomic write under the write gate", () => {
+describe("atomic write under the write gate", async () => {
 	it("publishes the complete new state and releases the lock", async () => {
 		const root = sandbox();
 		const lockPath = join(root, "locks", "writeW.lock");
 		const statePath = join(root, "board.edn");
 
-		const result = await withLock(lockPath, lockMeta(), () => {
-			const written = writeEdnAtomic(statePath, {
+		const result = await withLock(lockPath, lockMeta(), async () => {
+			const written = await writeEdnAtomic(statePath, {
 				":board-version": 2,
 				":tasks": [":ready", ":waiting"],
 			});
@@ -87,12 +87,12 @@ describe("atomic write under the write gate", () => {
 		expect(readFileSync(statePath, "utf8")).toBe("old-state\n");
 	});
 
-	it("leaves no temporary file after a successful replacement", () => {
+	it("leaves no temporary file after a successful replacement", async () => {
 		const root = sandbox();
 		const target = join(root, "mission.edn");
 		writeFileSync(target, "old\n", "utf8");
 
-		const result = writeFileAtomic(root, "mission.edn", "new\n");
+		const result = await writeFileAtomic(root, "mission.edn", "new\n");
 
 		expect(result).toEqual({ path: target, existed: true });
 		expect(readFileSync(target, "utf8")).toBe("new\n");
@@ -100,7 +100,7 @@ describe("atomic write under the write gate", () => {
 	});
 });
 
-describe("single writer lock", () => {
+describe("single writer lock", async () => {
 	it("lets only one of two OS processes acquire the same lock", async () => {
 		const root = sandbox();
 		const lockPath = join(root, "cross-process.lock");
@@ -111,7 +111,12 @@ describe("single writer lock", () => {
 			const root = ${JSON.stringify(root)};
 			const lockPath = ${JSON.stringify(lockPath)};
 			writeFileSync(root + "/attempt-" + process.pid, "");
-			const result = acquireLock(lockPath, {
+			const barrier = Date.now() + 3000;
+			while (Date.now() < barrier) {
+				if (readdirSync(root).filter((name) => name.startsWith("attempt-")).length >= 2) break;
+				await Bun.sleep(5);
+			}
+			const result = await acquireLock(lockPath, {
 				lock_id: crypto.randomUUID(),
 				purpose: "writeW",
 				slice_id: "slice-a",
@@ -127,12 +132,8 @@ describe("single writer lock", () => {
 				process.exit(0);
 			}
 			console.log("ok");
-			const deadline = Date.now() + 3000;
-			while (Date.now() < deadline) {
-				if (readdirSync(root).filter((name) => name.startsWith("attempt-")).length >= 2) break;
-				await Bun.sleep(10);
-			}
-			releaseLock(result.handle);
+			await Bun.sleep(50);
+			await releaseLock(result.handle);
 		`;
 		const spawn = () => Bun.spawn([process.execPath, "-e", script], { stdout: "pipe", stderr: "pipe" });
 		const children = [spawn(), spawn()];
@@ -143,37 +144,37 @@ describe("single writer lock", () => {
 		expect(existsSync(lockPath)).toBe(false);
 	});
 
-	it("lets exactly one contender hold the same lock path", () => {
+	it("lets exactly one contender hold the same lock path", async () => {
 		const root = sandbox();
 		const lockPath = join(root, "locks", "writeW.lock");
 
-		const first = acquireLock(lockPath, lockMeta());
+		const first = await acquireLock(lockPath, lockMeta());
 		expect(first.ok).toBe(true);
 
-		const second = acquireLock(lockPath, lockMeta({ owner_agent_id: "agent-b" }));
+		const second = await acquireLock(lockPath, lockMeta({ owner_agent_id: "agent-b" }));
 		expect(second.ok).toBe(false);
 		expect(second.busy).toBe(true);
 		expect(second.stale).toBe(false);
 		expect(second.lock.alive).toBe(true);
 		expect(second.lock.content.owner_agent_id).toBe("agent-a");
 
-		expect(releaseLock(first.handle)).toEqual({ released: true });
+		expect(await releaseLock(first.handle)).toEqual({ released: true });
 		expect(existsSync(lockPath)).toBe(false);
 	});
 
-	it("trusts agent state over a live shared PID", () => {
+	it("trusts agent state over a live shared PID", async () => {
 		const root = sandbox();
 		const lockPath = join(root, "locks", "writeW.lock");
-		const held = acquireLock(lockPath, staleMeta({ owner_agent_id: "dead-agent" }));
+		const held = await acquireLock(lockPath, staleMeta({ owner_agent_id: "dead-agent" }));
 		expect(held.ok).toBe(true);
 
-		const recent = inspectLock(lockPath, {
+		const recent = await inspectLock(lockPath, {
 			agentState: (agentId) => (agentId === "dead-agent" ? ":dead" : ":alive"),
 		});
 		expect(recent.alive).toBe(false);
 		expect(recent.stale).toBe(true);
 
-		const blocked = acquireLock(lockPath, {
+		const blocked = await acquireLock(lockPath, {
 			...lockMeta({ owner_agent_id: "agent-b" }),
 			agentState: (agentId) => (agentId === "dead-agent" ? ":dead" : ":alive"),
 		});
@@ -183,50 +184,50 @@ describe("single writer lock", () => {
 		expect(blocked.error.code).toBe(":LOCK_OWNER_DEAD");
 		expect(existsSync(lockPath)).toBe(true);
 
-		expect(releaseLock(held.handle).released).toBe(true);
+		expect((await releaseLock(held.handle)).released).toBe(true);
 	});
 
-	it("does not mark a dead owner stale inside thirty seconds", () => {
+	it("does not mark a dead owner stale inside thirty seconds", async () => {
 		const root = sandbox();
 		const lockPath = join(root, "locks", "writeW.lock");
-		const held = acquireLock(lockPath, lockMeta({ owner_agent_id: "dead-agent" }));
+		const held = await acquireLock(lockPath, lockMeta({ owner_agent_id: "dead-agent" }));
 		expect(held.ok).toBe(true);
 
-		const seen = inspectLock(lockPath, {
+		const seen = await inspectLock(lockPath, {
 			agentState: (agentId) => (agentId === "dead-agent" ? ":terminated" : ":alive"),
 		});
 		expect(seen.alive).toBe(false);
 		expect(seen.stale).toBe(false);
 		expect(seen.reason).toBe("owner-dead-recent");
 
-		expect(releaseLock(held.handle).released).toBe(true);
+		expect((await releaseLock(held.handle)).released).toBe(true);
 	});
 
-	it("never deletes a lock whose token does not match", () => {
+	it("never deletes a lock whose token does not match", async () => {
 		const root = sandbox();
 		const lockPath = join(root, "locks", "writeW.lock");
-		const held = acquireLock(lockPath, lockMeta());
+		const held = await acquireLock(lockPath, lockMeta());
 		expect(held.ok).toBe(true);
 
 		const forged = { ...held.handle, token: randomUUID() };
-		expect(releaseLock(forged)).toEqual({ released: false, reason: "token-mismatch" });
+		expect(await releaseLock(forged)).toEqual({ released: false, reason: "token-mismatch" });
 		expect(existsSync(lockPath)).toBe(true);
 
-		expect(releaseLock(held.handle)).toEqual({ released: true });
+		expect(await releaseLock(held.handle)).toEqual({ released: true });
 	});
 
-	it("treats corrupt lock content as an unknown live owner", () => {
+	it("treats corrupt lock content as an unknown live owner", async () => {
 		const root = sandbox();
 		const lockPath = join(root, "corrupt.lock");
 		writeFileSync(lockPath, "{not-json", "utf8");
 
-		const seen = inspectLock(lockPath);
+		const seen = await inspectLock(lockPath);
 		expect(seen.exists).toBe(true);
 		expect(seen.alive).toBe(false);
 		expect(seen.stale).toBe(false);
 		expect(seen.reason).toBe("corrupt");
 
-		const blocked = acquireLock(lockPath, lockMeta());
+		const blocked = await acquireLock(lockPath, lockMeta());
 		expect(blocked.ok).toBe(false);
 		expect(blocked.busy).toBe(true);
 		expect(existsSync(lockPath)).toBe(true);

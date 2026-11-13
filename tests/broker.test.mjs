@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { createWriteActor, normalizeLockPath } from "../src/util/broker.mjs";
 
-describe("write actor tokens", () => {
+describe("write actor tokens", async () => {
 	it("serializes the same path and runs distinct paths concurrently", async () => {
 		const actor = createWriteActor();
 		const first = await actor.acquire("a", "path", ["/tmp/x"]);
@@ -56,7 +56,7 @@ describe("write actor tokens", () => {
 		expect(actor.snapshot().kind).toBe("idle");
 	});
 
-	it("normalizes dot segments", () => {
-		expect(normalizeLockPath("/tmp/a/../b")).toBe("/tmp/b");
+	it("normalizes dot segments", async () => {
+		expect(await normalizeLockPath("/tmp/a/../b")).toBe("/tmp/b");
 	});
 });

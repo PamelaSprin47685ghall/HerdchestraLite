@@ -64,7 +64,7 @@ export const STAGE_DOCUMENTS = Object.freeze({
 	s2: Object.freeze({ stage: "s2", file: "s2-manual-tests.md" }),
 	s3: Object.freeze({ stage: "s3", file: "s3-dev-guide.md" }),
 	s4: Object.freeze({ stage: "s4", file: "s4-coordination.md" }),
-	"s4-promela": Object.freeze({ stage: "s4-promela", file: "s4-promela.md" }),
+	"s4-promela": Object.freeze({ stage: "s4-promela", file: "s4-coordination.pml" }),
 });
 
 export const DOCUMENT_STAGES = Object.freeze(["s1", "s2", "s3", "s4", "s4-promela"]);
@@ -609,7 +609,7 @@ function createDiskMissionStore(root, slug) {
 			const current = readDiskMission(path);
 			const outcome = await fn(current);
 			if (outcome && outcome.commit !== false && outcome.mission !== undefined) {
-				writeFileAtomic(dirname(path), "mission.edn", `${printEdn(outcome.mission, { indent: " " })}\n`);
+				await writeFileAtomic(dirname(path), "mission.edn", `${printEdn(outcome.mission, { indent: " " })}\n`);
 			}
 			return outcome?.response;
 		},
@@ -660,7 +660,7 @@ function createDiskDocuments() {
 		},
 		async writeText(path, text) {
 			try {
-				writeFileAtomic(dirname(path), basename(path), text);
+				await writeFileAtomic(dirname(path), basename(path), text);
 				return { ok: true, path };
 			} catch (error) {
 				return { ok: false, code: error?.code ?? "EIO", message: messageOf(error) };

@@ -5,11 +5,13 @@
  * the `omp` main thread so heavy CPU work cannot block UI rendering or input.
  */
 
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { mkdir } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { parentPort, workerData } from "node:worker_threads";
+
+let postFromWorker = parentPort ? (message) => postFromWorker?.(message) : null;
 import { herdError } from "../util/errors.mjs";
-import { withLock } from "../util/file-lock.mjs";
+import { withLockWhenFree } from "../util/file-lock.mjs";
 import { cherryStatus, loadCherry } from "./cherry.mjs";
 import { parkedNames, parkProgramOnDeadline } from "./evaluator.mjs";
 import { buildSandboxTools } from "./tools.mjs";
@@ -54,26 +56,26 @@ function requestToken(sessionKey, kind, paths) {
 	const id = `token-${++state.hostSeq}`;
 	return new Promise((resolve, reject) => {
 		state.pendingTokens.set(id, { resolve, reject });
-		parentPort.postMessage({ type: "tokenAcquire", id, sessionKey, kind, paths });
+		postFromWorker?.({ type: "tokenAcquire", id, sessionKey, kind, paths });
 	});
 }
 
 function releaseToken(sessionKey, token) {
 	if (!token || !Array.isArray(token.ids)) return;
-	parentPort.postMessage({ type: "tokenRelease", sessionKey, ownerId: token.owner, ids: token.ids });
+	postFromWorker?.({ type: "tokenRelease", sessionKey, ownerId: token.owner, ids: token.ids });
 }
 
 function createGlobalGate(root, ownerId, sessionKey, onWaitLock) {
 	const lockDir = join(root, ".herd", "locks");
-	mkdirSync(lockDir, { recursive: true });
 	const lockPath = join(lockDir, "clj-core.cross-process.lock");
 	return {
 		async runExclusive(run, signal) {
 			onWaitLock?.(true);
 			try {
+				await mkdir(lockDir, { recursive: true });
 				const token = await requestToken(sessionKey, "global", []);
 				try {
-					const acquired = await withLock(
+					const acquired = await withLockWhenFree(
 						lockPath,
 						{
 							lock_id: "clj-core",
@@ -83,6 +85,7 @@ function createGlobalGate(root, ownerId, sessionKey, onWaitLock) {
 							pid: process.pid,
 						},
 						run,
+						{ signal },
 					);
 					if (acquired?.ok) return acquired.value;
 					throw herdError(acquired?.code ?? ":BOARD_CONFLICT", acquired?.message ?? "cross-process lock is held", {
@@ -116,11 +119,11 @@ function createPathGate(sessionKey, onWaitLock) {
 	};
 }
 
-function createWriteGate(root, ownerId, onWaitLock) {
+function createWriteGate(root, ownerId, onWaitLock, lockWaitMs = 10_000) {
 	const lockPath = join(root, ".herd", "locks", "clj-core.write-w.lock");
-	mkdirSync(join(root, ".herd", "locks"), { recursive: true });
 	return {
 		async runExclusive(run, signal) {
+			await mkdir(dirname(lockPath), { recursive: true });
 			const prev = state.writeGateQueues.get(lockPath);
 			if (prev !== undefined) {
 				onWaitLock?.(true);
@@ -134,33 +137,23 @@ function createWriteGate(root, ownerId, onWaitLock) {
 				await prev;
 			}
 			try {
-				while (true) {
-					if (signal?.aborted) {
-						throw herdError("UPSTREAM_ABORTED", "write gate wait was cancelled", { lock: lockPath });
-					}
-					const acquired = await withLock(
-						lockPath,
-						{
-							lock_id: "clj-core",
-							purpose: "clj-core protected write",
-							slice_id: "clj-core",
-							owner_agent_id: ownerId,
-							pid: process.pid,
-						},
-						run,
-					);
-					if (acquired?.ok) {
-						return acquired.value;
-					}
-					if (acquired?.code !== ":BOARD_CONFLICT") {
-						throw herdError(acquired?.code ?? ":BOARD_CONFLICT", acquired?.message ?? "write gate is held", {
-							lock: lockPath,
-							next: "wait for the current holder to finish, then retry the same program",
-						});
-					}
-					onWaitLock?.(true);
-					await new Promise((resolveWait) => setTimeout(resolveWait, 15));
-				}
+				const acquired = await withLockWhenFree(
+					lockPath,
+					{
+						lock_id: "clj-core",
+						purpose: "clj-core protected write",
+						slice_id: "clj-core",
+						owner_agent_id: ownerId,
+						pid: process.pid,
+					},
+					run,
+					{ timeoutMs: lockWaitMs, signal },
+				);
+				if (acquired?.ok) return acquired.value;
+				throw herdError(acquired?.code ?? ":BOARD_CONFLICT", acquired?.message ?? "write gate is held", {
+					lock: lockPath,
+					next: "wait for the current holder to finish, then retry the same program",
+				});
 			} finally {
 				onWaitLock?.(false);
 				releaseQueue();
@@ -212,18 +205,18 @@ function createPorts(root, ownerId, withWriteGate, onCallActivity, onWaitLock, s
 function callHostTool(sessionKey, name, params) {
 	const id = `host-${++state.hostSeq}`;
 	return new Promise((resolve, reject) => {
-		if (!parentPort) {
+		if (postFromWorker === null) {
 			reject(herdError("HOST_API_MISMATCH", "host tool bridge is unavailable outside the sandbox worker"));
 			return;
 		}
 		state.pendingHostTools.set(id, { resolve, reject });
-		parentPort.postMessage({ type: "hostTool", id, sessionKey, name, params });
+		postFromWorker?.({ type: "hostTool", id, sessionKey, name, params });
 	});
 }
 
-function buildBundle(role, root, ownerId, onCallActivity, onWaitLock, sessionKey, hostTools = {}) {
+async function buildBundle(role, root, ownerId, onCallActivity, onWaitLock, sessionKey, hostTools = {}) {
 	const callLogDir = role === "devops" ? join(root, ".herd", "artifacts", "clj-core") : undefined;
-	if (callLogDir !== undefined) mkdirSync(callLogDir, { recursive: true });
+	if (callLogDir !== undefined) await mkdir(callLogDir, { recursive: true });
 	return buildSandboxTools({
 		role,
 		roots: {
@@ -245,11 +238,13 @@ function emitParkedList(sessionKey) {
 			list.push({ toolName, name });
 		}
 	}
-	parentPort?.postMessage({ type: "parkedList", sessionKey, list });
+	postFromWorker?.({ type: "parkedList", sessionKey, list });
 }
 
-if (parentPort && workerData?.__sandboxWorker === true) {
-	parentPort.on("message", async (msg) => {
+export function createSandboxRuntime(postMessage) {
+		postFromWorker = typeof postMessage === "function" ? postMessage : postFromWorker;
+		return async (msg) => {
+
 		if (!msg || typeof msg !== "object") return;
 
 		if (msg.type === "tokenGranted" || msg.type === "tokenFailed") {
@@ -277,7 +272,7 @@ if (parentPort && workerData?.__sandboxWorker === true) {
 
 		if (msg.type === "init") {
 			await loadCherry();
-			parentPort.postMessage({ type: "initDone", id: msg.id, cherry: cherryStatus() });
+			postFromWorker?.({ type: "initDone", id: msg.id, cherry: cherryStatus() });
 			return;
 		}
 
@@ -304,7 +299,7 @@ if (parentPort && workerData?.__sandboxWorker === true) {
 				? parkProgramOnDeadline(built.session, msg.programName)
 				: { ok: false, code: "PROGRAM_UNKNOWN", name: msg.programName };
 			emitParkedList(msg.sessionKey);
-			parentPort.postMessage({ type: "parkResult", id: msg.id, result });
+			postFromWorker?.({ type: "parkResult", id: msg.id, result });
 			return;
 		}
 
@@ -315,16 +310,16 @@ if (parentPort && workerData?.__sandboxWorker === true) {
 			try {
 				if (built === undefined) {
 					const onCallActivity = ({ active, program }) => {
-						parentPort.postMessage({ type: "callActivity", id, sessionKey, role, active, program });
+						postFromWorker?.({ type: "callActivity", id, sessionKey, role, active, program });
 					};
 					const onWaitLock = (waiting = true) => {
-						parentPort.postMessage({ type: "waitLock", id, sessionKey, role, waiting });
+						postFromWorker?.({ type: "waitLock", id, sessionKey, role, waiting });
 					};
-					built = buildBundle(role, root, `${ownerId}:${role}`, onCallActivity, onWaitLock, sessionKey, hostTools);
+					built = await buildBundle(role, root, `${ownerId}:${role}`, onCallActivity, onWaitLock, sessionKey, hostTools);
 					state.bundles.set(bundleKey, built);
 				}
 			} catch (error) {
-				parentPort.postMessage({ type: "execDone", id, result: toolFailure(error) });
+				postFromWorker?.({ type: "execDone", id, result: toolFailure(error) });
 				return;
 			}
 
@@ -341,7 +336,12 @@ if (parentPort && workerData?.__sandboxWorker === true) {
 				state.activeSignals.delete(callId);
 				emitParkedList(sessionKey);
 			}
-			parentPort.postMessage({ type: "execDone", id, result });
+			postFromWorker?.({ type: "execDone", id, result });
 		}
-	});
+		};
+	}
+
+if (parentPort !== null) {
+	const handle = createSandboxRuntime((message) => parentPort.postMessage(message));
+	parentPort.on("message", (msg) => { void handle(msg); });
 }

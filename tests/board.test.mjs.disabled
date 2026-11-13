@@ -2947,7 +2947,7 @@ describe("board kernel: durable file store", () => {
 		});
 		expect(registered.ok).toBe(true);
 
-		const lock = acquireLock(handle.lockPath, {
+		const lock = await acquireLock(handle.lockPath, {
 			lock_id: "test-board-lock",
 			purpose: "board",
 			slice_id: "s4",
@@ -2968,7 +2968,7 @@ describe("board kernel: durable file store", () => {
 			caught = error;
 		}
 		expect(caught?.code).toBe(":BOARD_CONFLICT");
-		expect(releaseLock(lock.handle).released).toBe(true);
+		expect((await releaseLock(lock.handle)).released).toBe(true);
 		const state = await readBoard(handle);
 		expect(state["board-version"]).toBe(1);
 		expect(state.actors.B).toBeUndefined();

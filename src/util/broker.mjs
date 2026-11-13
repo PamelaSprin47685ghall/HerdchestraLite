@@ -1,18 +1,23 @@
-import { realpathSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 const ACTOR_KEY = Symbol.for("herdchestra.writeActor.v1");
 
-export function normalizeLockPath(value) {
+/**
+ * Resolve one lock target to its real path without blocking the event loop.
+ * A missing target falls back to resolving its parent directory and appending
+ * the final component, so `..` and symlinks cannot bypass mutual exclusion.
+ */
+export async function normalizeLockPath(value) {
 	if (typeof value !== "string" || value.length === 0) return resolve(value ?? "");
 	try {
-		return realpathSync(value);
+		return await realpath(value);
 	} catch {
 		// Fall through to the parent-directory fallback.
 	}
 	const parent = dirname(value);
 	try {
-		return resolve(realpathSync(parent), value.slice(parent.length + 1));
+		return resolve(await realpath(parent), value.slice(parent.length + 1));
 	} catch {
 		return resolve(value);
 	}
@@ -90,7 +95,8 @@ export function createWriteActor() {
 			const id = await takeGlobal(ownerId);
 			return { ownerId, kind: "global", targets: [], ids: [id] };
 		}
-		const paths = [...new Set((Array.isArray(targets) ? targets : [targets]).map(normalizeLockPath))].sort();
+		const requested = (Array.isArray(targets) ? targets : [targets]).map((target) => normalizeLockPath(target));
+		const paths = [...new Set(await Promise.all(requested))].sort();
 		const ids = [];
 		for (const path of paths) ids.push(await takePath(ownerId, path));
 		return { ownerId, kind: "path", targets: paths, ids };
@@ -112,10 +118,11 @@ export function createWriteActor() {
 	function releaseOwner(ownerId) {
 		const ids = [];
 		for (const [id, holder] of holders) if (holder.ownerId === ownerId) ids.push(id);
-		for (const queue of pathQueues.values()) {
+		for (const [path, queue] of pathQueues) {
 			for (let index = queue.length - 1; index >= 0; index -= 1) {
 				if (queue[index].ownerId === ownerId) queue.splice(index, 1);
 			}
+			if (queue.length === 0) pathQueues.delete(path);
 		}
 		for (let index = globalQueue.length - 1; index >= 0; index -= 1) {
 			if (globalQueue[index].ownerId === ownerId) globalQueue.splice(index, 1);

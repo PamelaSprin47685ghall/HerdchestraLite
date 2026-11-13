@@ -3,24 +3,16 @@
  * rename it over the target.
  *
  * Inputs: a directory, a file name inside it, and complete text or bytes.
- * Output: `{ path, existed }`.
+ * Output: a Promise of `{ path, existed }`.
  *
  * Readers see either the complete old content or the complete new content.
  * A failure leaves the old target untouched and removes the temporary file.
+ * Every filesystem call is asynchronous, so a large or slow filesystem never
+ * blocks the host main thread or a shared sandbox worker.
  */
 
 import { randomUUID } from "node:crypto";
-import {
-	closeSync,
-	fchmodSync,
-	fsyncSync,
-	lstatSync,
-	mkdirSync,
-	openSync,
-	renameSync,
-	rmSync,
-	writeSync,
-} from "node:fs";
+import { lstat, mkdir, open, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { herdError, printEdn } from "./errors.mjs";
 
@@ -59,9 +51,9 @@ function toBytes(data) {
 	return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
 }
 
-function targetStat(path) {
+async function targetStat(path) {
 	try {
-		return lstatSync(path);
+		return await lstat(path);
 	} catch {
 		return undefined;
 	}
@@ -92,8 +84,8 @@ function tagSystemError(error, stage, path, temp) {
  * Inputs: the target directory (created when missing), a file name relative to
  * it, and the complete text or bytes to store.
  *
- * Output: `{ path, existed }`, where `path` is absolute and `existed` reports
- * whether the target was already there before this call.
+ * Output: a Promise of `{ path, existed }`, where `path` is absolute and
+ * `existed` reports whether the target was already there before this call.
  *
  * The temporary file lives in the target directory, so `rename` stays atomic on
  * the same filesystem. A write, flush, or rename failure removes the temporary
@@ -106,7 +98,7 @@ function tagSystemError(error, stage, path, temp) {
  * Invalid arguments throw `:INVALID_ARGUMENT` instead, because no file work has
  * started and no system error exists.
  */
-export function writeFileAtomic(dir, name, data) {
+export async function writeFileAtomic(dir, name, data) {
 	if (typeof dir !== "string" || dir.length === 0) {
 		throw invalidArgument("dir", "a non-empty string", dir);
 	}
@@ -116,48 +108,39 @@ export function writeFileAtomic(dir, name, data) {
 	const target = resolve(dir, name);
 	const targetDir = dirname(target);
 	const temp = join(targetDir, `${TEMP_PREFIX}${randomUUID()}`);
-	const previous = targetStat(target);
+	const previous = await targetStat(target);
 	const existed = previous !== undefined;
 	const bytes = toBytes(data);
-	let fd = -1;
+	let handle = null;
 	let created = false;
 	let stage = "write";
 
 	try {
-		mkdirSync(targetDir, { recursive: true });
-		fd = openSync(temp, "wx", 0o600);
+		await mkdir(targetDir, { recursive: true });
+		handle = await open(temp, "wx", 0o600);
 		created = true;
 		// Keep the old permission bits so overwriting a script does not drop its
 		// executable bit. New files keep the owner-only mode above.
-		if (previous?.isFile()) fchmodSync(fd, previous.mode & 0o777);
-		let offset = 0;
-		while (offset < bytes.length) {
-			const written = writeSync(fd, bytes, offset, bytes.length - offset);
-			if (written <= 0) {
-				const error = new Error(`write made no progress at byte ${offset}`);
-				error.code = "EIO";
-				throw error;
-			}
-			offset += written;
-		}
+		if (previous?.isFile()) await handle.chmod(previous.mode & 0o777);
+		await handle.writeFile(bytes);
 		stage = "fsync";
-		fsyncSync(fd);
-		closeSync(fd);
-		fd = -1;
+		await handle.sync();
+		await handle.close();
+		handle = null;
 		stage = "rename";
-		renameSync(temp, target);
+		await rename(temp, target);
 	} catch (error) {
-		if (fd !== -1) {
+		if (handle !== null) {
 			try {
-				closeSync(fd);
+				await handle.close();
 			} catch {
 				// Cleanup must not hide the failure that stopped the write.
 			}
-			fd = -1;
+			handle = null;
 		}
 		if (created) {
 			try {
-				rmSync(temp, { force: true });
+				await rm(temp, { force: true });
 			} catch {
 				// Cleanup must not hide the failure that stopped the write.
 			}
@@ -172,11 +155,11 @@ export function writeFileAtomic(dir, name, data) {
  * Serialize one EDN value and replace `path` with it atomically.
  *
  * Inputs: an absolute or relative file path and any value `printEdn` accepts.
- * Output: `{ path, existed }` from `writeFileAtomic`.
+ * Output: a Promise of `{ path, existed }` from `writeFileAtomic`.
  *
  * The stored text is the deterministic EDN rendering plus one trailing newline.
  */
-export function writeEdnAtomic(path, value) {
+export async function writeEdnAtomic(path, value) {
 	if (typeof path !== "string" || path.length === 0) {
 		throw invalidArgument("path", "a non-empty string", path);
 	}

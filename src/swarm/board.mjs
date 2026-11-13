@@ -919,9 +919,9 @@ export function createFileBoardStore(options = {}) {
 					boardPath,
 				});
 			}
-			writeBoardFile(boardPath, nextBoard);
+			await writeBoardFile(boardPath, nextBoard);
 			appendEvents(eventsPath, outcome.events ?? []);
-			writeEdnAtomic(checkpointPath, {
+			await writeEdnAtomic(checkpointPath, {
 				offset: fileSize(eventsPath),
 				digest: sha256File(boardPath),
 				"board-version": nextBoard["board-version"],
@@ -949,9 +949,9 @@ export function createFileBoardStore(options = {}) {
 					next: "restore the board from backup; do not rebuild an empty control state",
 				});
 			}
-			writeBoardFile(boardPath, board);
+			await writeBoardFile(boardPath, board);
 			ensureFile(eventsPath);
-			writeEdnAtomic(checkpointPath, {
+			await writeEdnAtomic(checkpointPath, {
 				offset: fileSize(eventsPath),
 				digest: sha256File(boardPath),
 				"board-version": board["board-version"],
@@ -1073,8 +1073,8 @@ function ednKey(key) {
 	return valid ? new EdnKeyword(key) : key;
 }
 
-function writeBoardFile(path, board) {
-	writeFileAtomic(dirname(path), basename(path), `${printUfss(boardToEdn(board))}\n`);
+async function writeBoardFile(path, board) {
+	await writeFileAtomic(dirname(path), basename(path), `${printUfss(boardToEdn(board))}\n`);
 }
 
 function appendEvents(path, events) {

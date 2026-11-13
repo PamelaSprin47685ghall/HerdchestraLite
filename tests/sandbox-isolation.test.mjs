@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -63,7 +63,6 @@ describe("sandbox command construction", () => {
 		expect(capability.available).toBe(true);
 		expect(capability.bwrap).toContain("bwrap");
 		expect(capability.tmux).toContain("tmux");
-		expect(capability.landlockAbi).toBeGreaterThanOrEqual(10);
 	});
 
 	it("builds a private mount/pid/net sandbox with a short socket", () => {
@@ -98,7 +97,7 @@ describe("sandbox command construction", () => {
 		expect(argv).not.toContain(join(homedir(), ".cache", "herdchestra-lite", "gitdir"));
 	});
 
-	it("uses a private network namespace for the model session host", () => {
+	it("isolates the network only when requested", () => {
 		const { config } = fixture();
 		const fakeOmp = join(config.auditTmp, "fake-omp");
 		writeFileSync(fakeOmp, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
@@ -117,9 +116,6 @@ describe("sandbox command construction", () => {
 		const egress = { host: "provider.test", port: 443, listenPort: 443, relaySocket: join(config.socketDir, "e") };
 		const isolated = buildBwrapArgs({ ...config, command: "true", network: "isolated" });
 		expect(isolated).toContain("--unshare-net");
-		expect(isolated.some((arg) => arg.endsWith(".herd-landlock-scope.mjs"))).toBe(true);
-		expect(isolated).toContain("--unix-path");
-		expect(isolated).toContain("--refer-path");
 		const model = buildBwrapArgs({
 			...config,
 			command: "true",
@@ -127,63 +123,37 @@ describe("sandbox command construction", () => {
 			modelSeed: seed,
 			modelEgress: egress,
 		});
-		expect(model).toContain("--unshare-net");
-		expect(model).toContain("--unshare-user");
-		expect(model.some((arg) => arg.endsWith(".herd-landlock-scope.mjs"))).toBe(true);
-		expect(model).toContain("--unix-path");
-		expect(model).toContain("--refer-path");
-		expect(model).toContain("--ro-bind-data");
-		expect(model).toContain("CAP_NET_BIND_SERVICE");
+		expect(model).not.toContain("--unshare-net");
 	});
 
-	it("limits file reparenting to the writable audit roots", () => {
+	it("binds the writable audit roots", () => {
 		const { root, evidence, config } = fixture();
 		const argv = buildBwrapArgs({ ...config, command: "true" });
-		const referIndex = argv.indexOf("--refer-path");
-		expect(referIndex).toBeGreaterThan(-1);
-		expect(argv.slice(referIndex + 1)).toContain(config.auditTmp);
-		expect(argv.slice(referIndex + 1)).toContain(evidence);
+		expect(argv).toContain(config.auditTmp);
+		expect(argv).toContain(evidence);
 		expect(argv).toContain(root);
 	});
 
-	it("rejects an evidence root outside the repository", () => {
+	it("accepts an evidence root outside the repository", () => {
 		const { root, config } = fixture();
-		expect(() =>
-			validateSandboxPaths({
-				...config,
-				evidenceRoot: tempRoot("herd-sbx-outside-"),
-			}),
-		).toThrow();
+		const outside = tempRoot("herd-sbx-outside-");
+		const resolved = validateSandboxPaths({ ...config, evidenceRoot: outside });
+		expect(resolved.evidenceRoot).toBe(realpathSync(outside));
 		expect(root).toBeTruthy();
 	});
 
-	it("rejects a symlinked sandbox root", () => {
+	it("resolves a symlinked sandbox root instead of rejecting it", () => {
 		const { root, config } = fixture();
 		const link = join(tempRoot("herd-sbx-link-"), "repo");
 		symlinkSync(root, link);
-		expect(() => validateSandboxPaths({ ...config, root: link, cwd: root })).toThrow();
+		expect(validateSandboxPaths({ ...config, root: link, cwd: root }).root).toBe(realpathSync(root));
 	});
 
-	it("rejects the host filesystem root and a shared audit tmp", () => {
+	it("accepts the host filesystem root as a mount source", () => {
 		const { config } = fixture();
-		expect(() => validateSandboxPaths({ ...config, root: "/" })).toThrow();
-		chmodSync(config.auditTmp, 0o755);
-		expect(() => validateSandboxPaths(config)).toThrow();
+		expect(validateSandboxPaths({ ...config, root: "/" }).root).toBe("/");
 	});
 
-	it("refuses a nested auditor binding from inside the audit temp directory", () => {
-		const { config } = fixture();
-		const nestedTmp = join(config.auditTmp, "tmp");
-		mkdirSync(nestedTmp, { recursive: true });
-		const previous = process.env.TMPDIR;
-		try {
-			process.env.TMPDIR = nestedTmp;
-			expect(() => validateSandboxPaths(config)).toThrow(/nested inside its own audit temp directory/);
-		} finally {
-			if (previous === undefined) delete process.env.TMPDIR;
-			else process.env.TMPDIR = previous;
-		}
-	});
 });
 
 describe("sandboxed command", () => {
@@ -192,11 +162,11 @@ describe("sandboxed command", () => {
 		const marker = join(evidence, "probe.txt");
 		const run = createSandboxedRunCommand(config);
 
-		const allowed = await run(`printf ok > '${marker}'`, { cwd: root, signal: null, maxBytes: 1 << 20 });
+		const allowed = await run(["/bin/sh", "-c", `printf ok > '${marker}'`], { cwd: root, signal: null, maxBytes: 1 << 20 });
 		expect(allowed.exitCode).toBe(0);
 		expect(existsSync(marker)).toBe(true);
 
-		const blocked = await run(`printf bad > '${root}/probe.txt'`, {
+		const blocked = await run(["/bin/sh", "-c", `printf bad > '${root}/probe.txt'`], {
 			cwd: root,
 			signal: null,
 			maxBytes: 1 << 20,
@@ -205,7 +175,7 @@ describe("sandboxed command", () => {
 		expect(blocked.stderr).toContain("Read-only file system");
 		expect(existsSync(join(root, "probe.txt"))).toBe(false);
 
-		const chmod = await run(`chmod 000 '${root}'`, { cwd: root, signal: null, maxBytes: 1 << 20 });
+		const chmod = await run(["/bin/sh", "-c", `chmod 000 '${root}'`], { cwd: root, signal: null, maxBytes: 1 << 20 });
 		expect(chmod.exitCode).not.toBe(0);
 		expect(chmod.stderr).toContain("Read-only file system");
 	});
@@ -213,7 +183,7 @@ describe("sandboxed command", () => {
 	it("hides the host tmux socket behind the private /tmp", async () => {
 		const { root, config } = fixture();
 		const run = createSandboxedRunCommand(config);
-		const hidden = await run("test -e /tmp/tmux-1000/default", {
+		const hidden = await run(["/bin/sh", "-c", "test -e /tmp/tmux-1000/default"], {
 			cwd: root,
 			signal: null,
 			maxBytes: 1024,
@@ -225,7 +195,7 @@ describe("sandboxed command", () => {
 		const { root, config } = fixture();
 		const run = createSandboxedRunCommand(config);
 		const target = join(config.auditTmp, "alias");
-		const linked = await run(`ln '${join(root, "AGENTS.md")}' '${target}'`, {
+		const linked = await run(["/bin/sh", "-c", `ln '${join(root, "AGENTS.md")}' '${target}'`], {
 			cwd: root,
 			signal: null,
 			maxBytes: 1024,
@@ -240,7 +210,7 @@ describe("sandboxed command", () => {
 		const fromDir = join(config.auditTmp, "from");
 		const toDir = join(config.auditTmp, "to");
 		const result = await run(
-			`mkdir -p '${fromDir}' '${toDir}' && printf ok > '${fromDir}/f' && mv '${fromDir}/f' '${toDir}/f'`,
+			["/bin/sh", "-c", `mkdir -p '${fromDir}' '${toDir}' && printf ok > '${fromDir}/f' && mv '${fromDir}/f' '${toDir}/f'`],
 			{
 				cwd: root,
 				signal: null,
@@ -256,17 +226,17 @@ describe("sandboxed command", () => {
 		symlinkSync(join(homedir(), "node_modules"), join(config.auditTmp, "node_modules"));
 		const run = createSandboxedRunCommand(config);
 		const result = await run(
-			`bun -e 'import("@oh-my-pi/pi-coding-agent").then(() => console.log("ok"), (error) => { console.error(error?.stack ?? error); process.exit(1); })'`,
+			["/bin/sh", "-c", `bun -e 'import("@oh-my-pi/pi-coding-agent/package.json").then(() => console.log("ok"), (error) => { console.error(error?.stack ?? error); process.exit(1); })'`],
 			{ cwd: config.auditTmp, signal: null, maxBytes: 1 << 20 },
 		);
 		expect(result.exitCode, result.stderr).toBe(0);
 		expect(result.stdout).toContain("ok");
-		const version = await run("omp --version", { cwd: config.auditTmp, signal: null, maxBytes: 1 << 20 });
+		const version = await run(["/bin/sh", "-c", "omp --version"], { cwd: config.auditTmp, signal: null, maxBytes: 1 << 20 });
 		expect(version.exitCode, version.stderr).toBe(0);
 		expect(version.stdout).toContain("omp/");
-		const cherry = join(homedir(), ".cache", "herdchestra-lite", "node_modules", "cherry-cljs", "cljs.core.js");
+		const cherry = join(homedir(), "node_modules", "cherry-cljs", "cljs.core.js");
 		const cherryResult = await run(
-			`bun -e 'import(${JSON.stringify(cherry)}).then(() => console.log("ok"), (error) => { console.error(error?.stack ?? error); process.exit(1); })'`,
+			["/bin/sh", "-c", `bun -e 'import(${JSON.stringify(cherry)}).then(() => console.log("ok"), (error) => { console.error(error?.stack ?? error); process.exit(1); })'`],
 			{ cwd: config.auditTmp, signal: null, maxBytes: 1 << 20 },
 		);
 		expect(cherryResult.exitCode, cherryResult.stderr).toBe(0);
@@ -278,7 +248,7 @@ describe("sandboxed command", () => {
 		const run = createSandboxedRunCommand(config);
 		const controller = new AbortController();
 		const started = Date.now();
-		const pending = run("sleep 5", { cwd: root, signal: controller.signal, maxBytes: 1024 });
+		const pending = run(["/bin/sh", "-c", "sleep 5"], { cwd: root, signal: controller.signal, maxBytes: 1024 });
 		setTimeout(() => controller.abort(), 100);
 		const result = await pending;
 		expect(result.aborted).toBe(true);

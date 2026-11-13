@@ -42,13 +42,13 @@ afterEach(() => {
 	}
 });
 
-describe("acquireLock", () => {
-	it("creates the parent directory and writes the complete owner record", () => {
+describe("acquireLock", async () => {
+	it("creates the parent directory and writes the complete owner record", async () => {
 		const root = sandbox();
 		const lockPath = join(root, "nested", "locks", "writeW.lock");
 		const meta = lockMeta();
 
-		const result = acquireLock(lockPath, meta);
+		const result = await acquireLock(lockPath, meta);
 
 		expect(result.ok).toBe(true);
 		expect(result.handle.path).toBe(lockPath);
@@ -66,28 +66,28 @@ describe("acquireLock", () => {
 		expect(stored.token).toBe(meta.token);
 	});
 
-	it("is available again after its owner releases it", () => {
+	it("is available again after its owner releases it", async () => {
 		const root = sandbox();
 		const lockPath = join(root, "locks", "writeW.lock");
 
-		const first = acquireLock(lockPath, lockMeta());
+		const first = await acquireLock(lockPath, lockMeta());
 		expect(first.ok).toBe(true);
-		expect(releaseLock(first.handle)).toEqual({ released: true });
+		expect(await releaseLock(first.handle)).toEqual({ released: true });
 		expect(existsSync(lockPath)).toBe(false);
 
-		const second = acquireLock(lockPath, lockMeta({ owner_agent_id: "agent-b" }));
+		const second = await acquireLock(lockPath, lockMeta({ owner_agent_id: "agent-b" }));
 		expect(second.ok).toBe(true);
 		expect(second.handle.content.owner_agent_id).toBe("agent-b");
-		expect(releaseLock(second.handle).released).toBe(true);
+		expect((await releaseLock(second.handle)).released).toBe(true);
 	});
 
-	it("does not take a live lock, even when the file is old", () => {
+	it("does not take a live lock, even when the file is old", async () => {
 		const root = sandbox();
 		const lockPath = join(root, "locks", "writeW.lock");
-		const held = acquireLock(lockPath, oldMeta(60_000));
+		const held = await acquireLock(lockPath, oldMeta(60_000));
 		expect(held.ok).toBe(true);
 
-		const blocked = acquireLock(lockPath, lockMeta({ owner_agent_id: "agent-b" }));
+		const blocked = await acquireLock(lockPath, lockMeta({ owner_agent_id: "agent-b" }));
 		expect(blocked.ok).toBe(false);
 		expect(blocked.busy).toBe(true);
 		expect(blocked.stale).toBe(false);
@@ -97,16 +97,16 @@ describe("acquireLock", () => {
 		expect(blocked.error).toBeUndefined();
 		expect(existsSync(lockPath)).toBe(true);
 
-		expect(releaseLock(held.handle).released).toBe(true);
+		expect((await releaseLock(held.handle)).released).toBe(true);
 	});
 
-	it("reports a stale lock with :LOCK_OWNER_DEAD and never removes it", () => {
+	it("reports a stale lock with :LOCK_OWNER_DEAD and never removes it", async () => {
 		const root = sandbox();
 		const lockPath = join(root, "locks", "writeW.lock");
-		const held = acquireLock(lockPath, oldMeta(60_000, { owner_agent_id: "dead-agent" }));
+		const held = await acquireLock(lockPath, oldMeta(60_000, { owner_agent_id: "dead-agent" }));
 		expect(held.ok).toBe(true);
 
-		const blocked = acquireLock(lockPath, {
+		const blocked = await acquireLock(lockPath, {
 			...lockMeta({ owner_agent_id: "agent-b" }),
 			agentState: (agentId) => (agentId === "dead-agent" ? ":dead" : ":alive"),
 		});
@@ -120,16 +120,16 @@ describe("acquireLock", () => {
 		expect(blocked.error.data.path).toBe(lockPath);
 		expect(blocked.error.data.lock).toBe(blocked.lock);
 		expect(existsSync(lockPath)).toBe(true);
-		expect(releaseLock(held.handle).released).toBe(true);
+		expect((await releaseLock(held.handle)).released).toBe(true);
 	});
 
-	it("keeps a recent dead owner's lock busy instead of stale", () => {
+	it("keeps a recent dead owner's lock busy instead of stale", async () => {
 		const root = sandbox();
 		const lockPath = join(root, "locks", "writeW.lock");
-		const held = acquireLock(lockPath, oldMeta(10_000, { owner_agent_id: "dead-agent" }));
+		const held = await acquireLock(lockPath, oldMeta(10_000, { owner_agent_id: "dead-agent" }));
 		expect(held.ok).toBe(true);
 
-		const blocked = acquireLock(lockPath, {
+		const blocked = await acquireLock(lockPath, {
 			...lockMeta({ owner_agent_id: "agent-b" }),
 			agentState: (agentId) => (agentId === "dead-agent" ? ":dead" : ":alive"),
 		});
@@ -141,15 +141,15 @@ describe("acquireLock", () => {
 		expect(blocked.error).toBeUndefined();
 		expect(existsSync(lockPath)).toBe(true);
 
-		expect(releaseLock(held.handle).released).toBe(true);
+		expect((await releaseLock(held.handle)).released).toBe(true);
 	});
 
-	it("treats corrupt and token-less content as an unknown busy owner", () => {
+	it("treats corrupt and token-less content as an unknown busy owner", async () => {
 		const root = sandbox();
 		const corruptPath = join(root, "corrupt.lock");
 		writeFileSync(corruptPath, "{not-json", "utf8");
 
-		const corrupt = acquireLock(corruptPath, lockMeta());
+		const corrupt = await acquireLock(corruptPath, lockMeta());
 		expect(corrupt.ok).toBe(false);
 		expect(corrupt.busy).toBe(true);
 		expect(corrupt.stale).toBe(false);
@@ -168,7 +168,7 @@ describe("acquireLock", () => {
 			"utf8",
 		);
 
-		const noToken = acquireLock(noTokenPath, lockMeta());
+		const noToken = await acquireLock(noTokenPath, lockMeta());
 		expect(noToken.ok).toBe(false);
 		expect(noToken.busy).toBe(true);
 		expect(noToken.stale).toBe(false);
@@ -177,12 +177,12 @@ describe("acquireLock", () => {
 	});
 });
 
-describe("inspectLock", () => {
-	it("reports a missing file without throwing", () => {
+describe("inspectLock", async () => {
+	it("reports a missing file without throwing", async () => {
 		const root = sandbox();
 		const path = join(root, "absent.lock");
 
-		expect(inspectLock(path)).toEqual({
+		expect(await inspectLock(path)).toEqual({
 			exists: false,
 			content: null,
 			alive: false,
@@ -191,13 +191,13 @@ describe("inspectLock", () => {
 		});
 	});
 
-	it("checks agent state before a live shared PID", () => {
+	it("checks agent state before a live shared PID", async () => {
 		const root = sandbox();
 		const lockPath = join(root, "locks", "writeW.lock");
-		const held = acquireLock(lockPath, oldMeta(60_000, { owner_agent_id: "dead-agent" }));
+		const held = await acquireLock(lockPath, oldMeta(60_000, { owner_agent_id: "dead-agent" }));
 		expect(held.ok).toBe(true);
 
-		const seen = inspectLock(lockPath, {
+		const seen = await inspectLock(lockPath, {
 			agentState: (agentId) => (agentId === "dead-agent" ? ":terminated" : ":alive"),
 		});
 		expect(seen.exists).toBe(true);
@@ -205,42 +205,42 @@ describe("inspectLock", () => {
 		expect(seen.stale).toBe(true);
 		expect(seen.reason).toBe("owner-dead-stale");
 
-		expect(releaseLock(held.handle).released).toBe(true);
+		expect((await releaseLock(held.handle)).released).toBe(true);
 	});
 
-	it("does not turn a live agent into a dead owner because the PID is shared", () => {
+	it("does not turn a live agent into a dead owner because the PID is shared", async () => {
 		const root = sandbox();
 		const lockPath = join(root, "locks", "writeW.lock");
-		const held = acquireLock(lockPath, lockMeta({ owner_agent_id: "agent-a" }));
+		const held = await acquireLock(lockPath, lockMeta({ owner_agent_id: "agent-a" }));
 		expect(held.ok).toBe(true);
 
-		const seen = inspectLock(lockPath, {
+		const seen = await inspectLock(lockPath, {
 			agentState: (agentId) => (agentId === "agent-a" ? ":alive" : undefined),
 		});
 		expect(seen.alive).toBe(true);
 		expect(seen.stale).toBe(false);
 		expect(seen.reason).toBe("owner-alive");
 
-		expect(releaseLock(held.handle).released).toBe(true);
+		expect((await releaseLock(held.handle)).released).toBe(true);
 	});
 
-	it("keeps a dead owner's recent lock out of the stale state", () => {
+	it("keeps a dead owner's recent lock out of the stale state", async () => {
 		const root = sandbox();
 		const lockPath = join(root, "locks", "writeW.lock");
-		const held = acquireLock(lockPath, oldMeta(29_000, { owner_agent_id: "dead-agent" }));
+		const held = await acquireLock(lockPath, oldMeta(29_000, { owner_agent_id: "dead-agent" }));
 		expect(held.ok).toBe(true);
 
-		const seen = inspectLock(lockPath, {
+		const seen = await inspectLock(lockPath, {
 			agentState: (agentId) => (agentId === "dead-agent" ? ":terminated" : undefined),
 		});
 		expect(seen.alive).toBe(false);
 		expect(seen.stale).toBe(false);
 		expect(seen.reason).toBe("owner-dead-recent");
 
-		expect(releaseLock(held.handle).released).toBe(true);
+		expect((await releaseLock(held.handle)).released).toBe(true);
 	});
 
-	it("reads the legacy started_at field for locks written before the cutover", () => {
+	it("reads the legacy started_at field for locks written before the cutover", async () => {
 		const root = sandbox();
 		const lockPath = join(root, "alias.lock");
 		writeFileSync(
@@ -255,7 +255,7 @@ describe("inspectLock", () => {
 			"utf8",
 		);
 
-		const seen = inspectLock(lockPath, {
+		const seen = await inspectLock(lockPath, {
 			agentState: (agentId) => (agentId === "dead-agent" ? ":dead" : undefined),
 		});
 		expect(seen.alive).toBe(false);
@@ -263,7 +263,7 @@ describe("inspectLock", () => {
 		expect(seen.reason).toBe("owner-dead-stale");
 	});
 
-	it("uses the PID only when agent state is unknown", () => {
+	it("uses the PID only when agent state is unknown", async () => {
 		const root = sandbox();
 		const lockPath = join(root, "pid.lock");
 		writeFileSync(
@@ -277,18 +277,18 @@ describe("inspectLock", () => {
 			"utf8",
 		);
 
-		const seen = inspectLock(lockPath);
+		const seen = await inspectLock(lockPath);
 		expect(seen.alive).toBe(true);
 		expect(seen.stale).toBe(false);
 		expect(seen.reason).toBe("pid-alive");
 	});
 
-	it("never marks corrupt or token-less locks stale", () => {
+	it("never marks corrupt or token-less locks stale", async () => {
 		const root = sandbox();
 		const corruptPath = join(root, "corrupt.lock");
 		writeFileSync(corruptPath, "", "utf8");
 
-		const corrupt = inspectLock(corruptPath);
+		const corrupt = await inspectLock(corruptPath);
 		expect(corrupt.alive).toBe(false);
 		expect(corrupt.stale).toBe(false);
 		expect(corrupt.reason).toBe("corrupt");
@@ -303,7 +303,7 @@ describe("inspectLock", () => {
 			}),
 			"utf8",
 		);
-		const noToken = inspectLock(noTokenPath, {
+		const noToken = await inspectLock(noTokenPath, {
 			agentState: (agentId) => (agentId === "dead-agent" ? ":dead" : undefined),
 		});
 		expect(noToken.alive).toBe(false);
@@ -312,38 +312,38 @@ describe("inspectLock", () => {
 	});
 });
 
-describe("releaseLock", () => {
-	it("is idempotent on a missing lock", () => {
+describe("releaseLock", async () => {
+	it("is idempotent on a missing lock", async () => {
 		const root = sandbox();
 		const path = join(root, "absent.lock");
 
-		expect(releaseLock({ path, token: randomUUID() })).toEqual({
+		expect(await releaseLock({ path, token: randomUUID() })).toEqual({
 			released: false,
 			reason: "missing",
 		});
 	});
 
-	it("does not delete a lock when the token does not match", () => {
+	it("does not delete a lock when the token does not match", async () => {
 		const root = sandbox();
 		const lockPath = join(root, "locks", "writeW.lock");
-		const held = acquireLock(lockPath, lockMeta());
+		const held = await acquireLock(lockPath, lockMeta());
 		expect(held.ok).toBe(true);
 
-		expect(releaseLock({ ...held.handle, token: randomUUID() })).toEqual({
+		expect(await releaseLock({ ...held.handle, token: randomUUID() })).toEqual({
 			released: false,
 			reason: "token-mismatch",
 		});
 		expect(existsSync(lockPath)).toBe(true);
 
-		expect(releaseLock(held.handle)).toEqual({ released: true });
+		expect(await releaseLock(held.handle)).toEqual({ released: true });
 	});
 
-	it("does not delete corrupt content", () => {
+	it("does not delete corrupt content", async () => {
 		const root = sandbox();
 		const lockPath = join(root, "corrupt.lock");
 		writeFileSync(lockPath, "{not-json", "utf8");
 
-		expect(releaseLock({ path: lockPath, token: randomUUID() })).toEqual({
+		expect(await releaseLock({ path: lockPath, token: randomUUID() })).toEqual({
 			released: false,
 			reason: "corrupt",
 		});
@@ -351,7 +351,7 @@ describe("releaseLock", () => {
 
 		const noTokenPath = join(root, "no-token.lock");
 		writeFileSync(noTokenPath, JSON.stringify({ owner_agent_id: "agent-a" }), "utf8");
-		expect(releaseLock({ path: noTokenPath, token: randomUUID() })).toEqual({
+		expect(await releaseLock({ path: noTokenPath, token: randomUUID() })).toEqual({
 			released: false,
 			reason: "missing-token",
 		});
@@ -359,7 +359,7 @@ describe("releaseLock", () => {
 	});
 });
 
-describe("withLock", () => {
+describe("withLock", async () => {
 	it("runs a synchronous writer and releases the lock", async () => {
 		const root = sandbox();
 		const lockPath = join(root, "locks", "board.lock");
@@ -393,7 +393,7 @@ describe("withLock", () => {
 	it("returns a busy acquisition unchanged and does not call the writer", async () => {
 		const root = sandbox();
 		const lockPath = join(root, "locks", "board.lock");
-		const held = acquireLock(lockPath, lockMeta());
+		const held = await acquireLock(lockPath, lockMeta());
 		let called = false;
 
 		const result = await withLock(lockPath, lockMeta({ owner_agent_id: "agent-b" }), () => {
@@ -407,13 +407,13 @@ describe("withLock", () => {
 		expect(called).toBe(false);
 		expect(existsSync(lockPath)).toBe(true);
 
-		expect(releaseLock(held.handle).released).toBe(true);
+		expect((await releaseLock(held.handle)).released).toBe(true);
 	});
 
 	it("returns a stale acquisition with :LOCK_OWNER_DEAD and does not call the writer", async () => {
 		const root = sandbox();
 		const lockPath = join(root, "locks", "board.lock");
-		const held = acquireLock(lockPath, oldMeta(60_000, { owner_agent_id: "dead-agent" }));
+		const held = await acquireLock(lockPath, oldMeta(60_000, { owner_agent_id: "dead-agent" }));
 		let called = false;
 
 		const result = await withLock(
@@ -435,7 +435,7 @@ describe("withLock", () => {
 		expect(called).toBe(false);
 		expect(existsSync(lockPath)).toBe(true);
 
-		expect(releaseLock(held.handle).released).toBe(true);
+		expect((await releaseLock(held.handle)).released).toBe(true);
 	});
 
 	it("releases after a writer error and rethrows the original error", async () => {
@@ -478,8 +478,8 @@ describe("withLock", () => {
 	});
 });
 
-describe("LOCK_RANKS", () => {
-	it("is frozen and maps the documented ranks", () => {
+describe("LOCK_RANKS", async () => {
+	it("is frozen and maps the documented ranks", async () => {
 		expect(Object.isFrozen(LOCK_RANKS)).toBe(true);
 		expect(LOCK_RANKS).toEqual({ integration: 0, writeW: 1, board: 2 });
 	});

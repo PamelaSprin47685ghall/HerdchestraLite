@@ -1,21 +1,24 @@
 /**
  * Cooperative file locks for one worktree.
  *
- * `openSync(path, "wx")` makes acquisition atomic: two processes cannot both
- * create the file. The JSON body records `{pid, startedAt, host}` plus the
- * owner and release token. A live owner is never displaced; an owner confirmed
- * dead for at least 30 seconds is reported stale, but even then the lock is
- * left for `/herd-recovery repair` or an operator. Release checks the token so
- * a late caller cannot delete a successor's lock.
+ * `open(path, "wx")` makes acquisition atomic without blocking the event loop:
+ * two processes cannot both create the file. The JSON body records
+ * `{pid, startedAt, host}` plus the owner and release token. A live owner is
+ * never displaced; an owner confirmed dead for at least 30 seconds is reported
+ * stale, but even then the lock is left for `/herd-recovery repair` or an
+ * operator. Release checks the token so a late caller cannot delete a
+ * successor's lock. Every function is asynchronous; no filesystem call may
+ * block the host main thread or a shared sandbox worker.
  *
  * Lock hierarchy: integration < writeW < board. Call sites take locks in that
  * order; `LOCK_RANKS` is the single source for the rank values.
  */
 
 import { randomUUID } from "node:crypto";
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { watch } from "node:fs";
+import { mkdir, open, readFile, stat, unlink } from "node:fs/promises";
 import { hostname } from "node:os";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { herdError } from "./errors.mjs";
 
 export const LOCK_RANKS = Object.freeze({
@@ -139,42 +142,35 @@ function serializeLock(content) {
 	return `${JSON.stringify(content)}\n`;
 }
 
-function writeAll(fd, text) {
-	const bytes = Buffer.from(text, "utf8");
-	let offset = 0;
-	while (offset < bytes.length) {
-		const written = writeSync(fd, bytes, offset, bytes.length - offset);
-		if (written <= 0) {
-			throw new Error("lock write made no progress");
-		}
-		offset += written;
-	}
-}
-
-/** Create the lock file exclusively and write its complete body before return. */
-function createLockFile(path, text) {
-	const fd = openSync(path, "wx", LOCK_MODE);
+/**
+ * Create the lock file exclusively and write its complete body before return.
+ *
+ * `open(..., "wx")` fails with EEXIST when another process won the race, so the
+ * create is atomic. The handle is always closed and a failed create is removed.
+ */
+async function createLockFile(path, text) {
+	const handle = await open(path, "wx", LOCK_MODE);
 	try {
-		writeAll(fd, text);
-		fsyncSync(fd);
+		await handle.writeFile(text, "utf8");
+		await handle.sync();
 	} catch (error) {
 		try {
-			closeSync(fd);
+			await handle.close();
 		} catch {
 			// Cleanup must not hide the write error.
 		}
 		try {
-			unlinkSync(path);
+			await unlink(path);
 		} catch {
 			// Cleanup must not hide the write error.
 		}
 		throw error;
 	}
 	try {
-		closeSync(fd);
+		await handle.close();
 	} catch (error) {
 		try {
-			unlinkSync(path);
+			await unlink(path);
 		} catch {
 			// Cleanup must not hide the close error.
 		}
@@ -260,15 +256,15 @@ function deadOwnerLock(content, ageMs, reasonStale, reasonRecent) {
  * Output: `{exists, content, alive, stale, reason}`. A lock becomes stale only
  * when the owner is known dead and the lock is at least 30 seconds old. Empty,
  * corrupt, or token-less content is an unknown owner: not dead, not stale, and
- * never deleted.
+ * never deleted. All reads are asynchronous.
  */
-export function inspectLock(path, options = {}) {
+export async function inspectLock(path, options = {}) {
 	const target = normalizePath(path);
 	const agentState = typeof options?.agentState === "function" ? options.agentState : undefined;
 
 	let stats;
 	try {
-		stats = statSync(target);
+		stats = await stat(target);
 	} catch (error) {
 		if (error?.code === "ENOENT") return missingLock();
 		return { exists: true, content: null, alive: false, stale: false, reason: "unreadable" };
@@ -276,7 +272,7 @@ export function inspectLock(path, options = {}) {
 
 	let raw;
 	try {
-		raw = readFileSync(target, "utf8");
+		raw = await readFile(target, "utf8");
 	} catch (error) {
 		if (error?.code === "ENOENT") return missingLock();
 		return { exists: true, content: null, alive: false, stale: false, reason: "unreadable" };
@@ -324,35 +320,121 @@ function blockedResult(path, lock) {
  * `:LOCK_OWNER_DEAD`. Neither is ever taken over or deleted. The caller retries
  * a busy lock according to its own deadline.
  */
-export function acquireLock(path, meta) {
+export async function acquireLock(path, meta) {
 	const target = normalizePath(path);
 	requireMeta(meta);
 
 	const content = buildLockContent(meta, requiredString(meta.token, "token", randomUUID));
 	const text = serializeLock(content);
 	const agentState = meta.agentState;
-	mkdirSync(dirname(target), { recursive: true });
+	await mkdir(dirname(target), { recursive: true });
 
 	try {
-		createLockFile(target, text);
+		await createLockFile(target, text);
 		return { ok: true, handle: { path: target, token: content.token, content } };
 	} catch (error) {
 		if (error?.code !== "EEXIST") throw error;
 	}
 
-	let lock = inspectLock(target, { agentState });
+	let lock = await inspectLock(target, { agentState });
 	// The owner may have released between our open and our read. One immediate
 	// retry separates that race from a genuinely held lock.
 	if (!lock.exists) {
 		try {
-			createLockFile(target, text);
+			await createLockFile(target, text);
 			return { ok: true, handle: { path: target, token: content.token, content } };
 		} catch (error) {
 			if (error?.code !== "EEXIST") throw error;
 		}
-		lock = inspectLock(target, { agentState });
+		lock = await inspectLock(target, { agentState });
 	}
 	return blockedResult(target, lock);
+}
+
+
+/**
+ * Wait until the lock file or its directory emits a rename event. Event-driven:
+ * no periodic polling. The timeout is only a safety bound, not the normal path.
+ */
+function waitForLockChange(target, timeoutMs, signal) {
+	return new Promise((resolveWait) => {
+		let settled = false;
+		let timer = null;
+		let watcher = null;
+		const done = () => {
+			if (settled) return;
+			settled = true;
+			if (timer !== null) clearTimeout(timer);
+			try {
+				watcher?.close();
+			} catch {
+				// The watcher may already be closed.
+			}
+			signal?.removeEventListener?.("abort", done);
+			resolveWait();
+		};
+		timer = setTimeout(done, timeoutMs);
+		timer.unref?.();
+		try {
+			watcher = watch(dirname(target), { persistent: false }, (_event, filename) => {
+				if (filename === undefined || String(filename) === basename(target)) done();
+			});
+			watcher.on("error", done);
+		} catch {
+			done();
+		}
+		if (signal?.aborted) done();
+		else signal?.addEventListener?.("abort", done, { once: true });
+	});
+}
+
+/**
+ * Acquire a lock, waiting for release events instead of polling. A live owner
+ * is never displaced; a stale owner is returned for the caller's existing
+ * recovery decision. `timeoutMs` is injectable so tests do not depend on a
+ * hard-coded sleep.
+ */
+export async function acquireLockWhenFree(path, meta, { timeoutMs = 10_000, signal } = {}) {
+	const target = normalizePath(path);
+	const deadline = Date.now() + Math.max(0, Number.isFinite(timeoutMs) ? timeoutMs : 10_000);
+	for (;;) {
+		const acquired = await acquireLock(target, meta);
+		if (acquired.ok || acquired.stale === true || acquired.busy !== true) return acquired;
+		if (signal?.aborted) {
+			return { ok: false, code: ":UPSTREAM_ABORTED", message: "lock wait was cancelled", lock: lockPathState(target) };
+		}
+		const remaining = deadline - Date.now();
+		if (remaining <= 0) return acquired;
+		await waitForLockChange(target, remaining, signal);
+	}
+}
+
+function lockPathState(path) {
+	return { path };
+}
+
+/**
+ * Wait-aware variant of `withLock`. It acquires through `acquireLockWhenFree`
+ * and releases in every outcome, preserving `withLock`'s result shape.
+ */
+export async function withLockWhenFree(path, meta, fn, options = {}) {
+	if (typeof fn !== "function") {
+		throw invalidArgument("withLockWhenFree requires a function", {
+			argument: "fn",
+			expected: "a function",
+			actual: fn,
+		});
+	}
+	const acquired = await acquireLockWhenFree(path, meta, options);
+	if (!acquired.ok) return acquired;
+	let value;
+	try {
+		value = await fn(acquired.handle);
+	} catch (error) {
+		attachRelease(error, await safeRelease(acquired.handle));
+		throw error;
+	}
+	return { ok: true, value, release: await safeRelease(acquired.handle) };
 }
 
 /**
@@ -361,7 +443,7 @@ export function acquireLock(path, meta) {
  * A missing file is an idempotent miss. A different token, corrupt content, or
  * a token-less file is never deleted.
  */
-export function releaseLock(handle) {
+export async function releaseLock(handle) {
 	if (handle === null || typeof handle !== "object" || typeof handle.path !== "string" || handle.path.length === 0) {
 		return { released: false, reason: "invalid-handle" };
 	}
@@ -369,7 +451,7 @@ export function releaseLock(handle) {
 
 	let raw;
 	try {
-		raw = readFileSync(target, "utf8");
+		raw = await readFile(target, "utf8");
 	} catch (error) {
 		if (error?.code === "ENOENT") return { released: false, reason: "missing" };
 		return { released: false, reason: "unreadable" };
@@ -385,7 +467,7 @@ export function releaseLock(handle) {
 	}
 
 	try {
-		unlinkSync(target);
+		await unlink(target);
 	} catch (error) {
 		if (error?.code === "ENOENT") return { released: false, reason: "missing" };
 		return { released: false, reason: "unlink-failed" };
@@ -393,9 +475,9 @@ export function releaseLock(handle) {
 	return { released: true };
 }
 
-function safeRelease(handle) {
+async function safeRelease(handle) {
 	try {
-		return releaseLock(handle);
+		return await releaseLock(handle);
 	} catch (error) {
 		return { released: false, reason: "release-failed", error };
 	}
@@ -427,17 +509,17 @@ export async function withLock(path, meta, fn) {
 		});
 	}
 
-	const acquired = acquireLock(path, meta);
+	const acquired = await acquireLock(path, meta);
 	if (!acquired.ok) return acquired;
 
 	let value;
 	try {
 		value = await fn(acquired.handle);
 	} catch (error) {
-		attachRelease(error, safeRelease(acquired.handle));
+		attachRelease(error, await safeRelease(acquired.handle));
 		throw error;
 	}
 
-	const release = safeRelease(acquired.handle);
+	const release = await safeRelease(acquired.handle);
 	return { ok: true, value, released: release.released, release };
 }

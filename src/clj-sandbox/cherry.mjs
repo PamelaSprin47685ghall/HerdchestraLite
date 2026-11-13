@@ -7,7 +7,7 @@
  * only `cherry-cljs` present.
  */
 
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -41,13 +41,13 @@ function resolvePath(specifier) {
  * @param {string | undefined} modulePath
  * @returns {{ path: string, version: string } | undefined}
  */
-function packageMetadata(modulePath) {
+async function packageMetadata(modulePath) {
 	if (typeof modulePath !== "string" || modulePath.length === 0) return undefined;
 	let directory = dirname(modulePath);
 	for (let depth = 0; depth < 12; depth += 1) {
 		const candidate = join(directory, "package.json");
 		try {
-			const parsed = JSON.parse(readFileSync(candidate, "utf8"));
+			const parsed = JSON.parse(await readFile(candidate, "utf8"));
 			if (typeof parsed.version === "string" && parsed.version.length > 0) {
 				return { path: candidate, version: parsed.version };
 			}
@@ -138,9 +138,9 @@ async function importCherryRuntime() {
  */
 export function loadCherry() {
 	cherryLoadPromise ??= importCherryRuntime()
-		.then((moduleNamespace) => {
+		.then(async (moduleNamespace) => {
 			const cherryPath = resolvePath(CHERRY_RUNTIME_SPECIFIERS.core);
-			const metadata = packageMetadata(cherryPath);
+			const metadata = await packageMetadata(cherryPath);
 			const probed = inspectCherryModule(moduleNamespace, metadata);
 			cherryState = Object.freeze({
 				loaded: true,

@@ -851,3 +851,29 @@ done
 - 2026-11-11：按“每批已知 bug 修完后一轮 tmux”的政策更新 F1/F2/F3 与源码修复项；F2/F3 仅旧快照通过，F1 仍修复中，八项源码修复未真实宿主复测。本轮未运行 tmux/omp。
 - 2026-11-11：首版。记录宿主 18.16.0/17.3.5、`omp plugin list` 指向 public、真实 hook 探针、`runSubprocess` 探针、cherry 0.6.38 临时安装、Git/worktree 拓扑与当前验收缺口。
 - 未修改根 `AGENTS.md`、`package.json`、`src/` 或其他产品源码；本文件为新增记录。
+
+## 2026-11-13 同步 I/O 禁令与异步化（默认面验收）
+
+- 事实：同步 fs API 在 omp 宿主主线程或共享 sandbox worker 的事件循环上执行，会阻塞 TUI、输入与其他会话；这是 bug，不是风格问题。
+- 已改：`src/util/file-lock.mjs`、`src/util/broker.mjs`、`src/util/atomic-write.mjs`、`src/clj-main.mjs`、`src/clj-sandbox/{tools,sandbox-worker,observations,cherry,vfs}.mjs`（默认面路径）全部改用 `node:fs/promises`；`acquireLock`/`inspectLock`/`releaseLock`/`withLock`/`normalizeLockPath`/`writeFileAtomic`/`writeEdnAtomic` 现为 async，调用点必须 await。
+- 并发修复：`clj-main` 的 host tool 上下文从单槽改为 `hostToolContexts: Set`，并发 `clj_*` 不再互相清空 `write` 桥。
+- 默认面缺陷修复：程序期限改为 `1000ms + code UTF-8 字节 * 50ms`；`time_leap` 在存在 parked 程序时拒绝；回执改用 `printUfss`（去掉 JSON.stringify）；`write` 成功后刷新 stamp 表，`rm`/`mv` 失效相关 stamp；`read` 缺失路径返回结构化错误。
+- 未开启装配仍含同步 fs（`src/host/subprocess.mjs`、`src/sandbox/*`、`src/stages/*`、`src/swarm/*`、`src/main.mjs` 的部分路径）；接回完整装配前必须按同一规则异步化，见 DEBT。
+- 测试：默认面 `clj-core`/`sandbox-tools`/`observations`/`file-lock`/`atomic-lock`/`atomic-write`/`broker` 全绿；完整装配 `main-bootstrap` 仍有既有失败，其中 `writeDevopsReport` 异步化的测试调用点待补 await。
+
+## 2026-11-13 KISS VFS、宿主写与令牌不变量
+
+- VFS 不再持有写入 overlay。`write`/`mkdir`/`rm`/`mv` 逐条通过宿主 native 工具真实落盘，`path` 令牌保证同路径互斥；`call` 仍由 `global` 令牌 + 跨进程粗锁覆盖整个运行期，`:running`、`:uncertain`、`:cancelled`、`:outcome-unknown` 记账未变。
+- 删除 batch 预演/commit/read-set 提交路径；`s2-cases.edn`、`plans/` 等写路径仍由各自门禁工具负责，不经过 VFS。
+- `src/sandbox/bwrap.mjs` 删除 Landlock、路径包含/隐私/前缀校验与模型 seed/relay；保留 bwrap namespace、显式 bind、环境覆盖。PATH_ESCAPE 不再从 sandbox 路径抛出；`PATH_ESCAPE` 错误码仍供 evidence 校验等既有调用使用。
+- `clj_*` 的 `name` 必填，`validateAndApplyFork` 对会话内已用名直接 `NAME_TAKEN`，因此每个锚点都有稳定 `toolCallId` 与唯一名称。
+- `time_leap` 以 `toolCallId` 为唯一物理键；`timeLeap` 在登记前同步校验目标锚点，`resolvePendingLeap` 只按 call-id 裁剪并保留 pending 直到成功。
+- 测试：dogfood 面 `bun test tests` 200 pass / 0 fail，4.4s；依赖旧 batch/完整装配的文件以 `.disabled` 停用。完整装配未验收。
+
+## 2026-11-13 事件驱动锁等待与并行 dogfood
+
+- `file-lock.mjs` 新增 `acquireLockWhenFree`/`withLockWhenFree`：用 `fs.watch` 等目录重命名事件，不再每 10/15ms 轮询；`timeoutMs` 可注入。`clj-main` 的宿主 `write` 锁与 `sandbox-worker` 的 global/write gate 已切换。
+- `vfs.defaultRunCommand` 删除 25ms 进程组轮询，改为 `exit`/`close` 事件；`exit` 后仅做一次 `groupAlive()` 风险标记。
+- `src/clj-sandbox/inline-worker.mjs` 提供 Worker 消息面，`clj-main` 支持 `workerFactory` 注入；clj-core 测试改用进程内 runtime，不再起 worker 线程。
+- `tests/clj-core-wait.test.mjs` 从 `clj-core.test.mjs` 拆出 4 个计时测试，Bun 可与其他文件并行；测试内 `baseWaitMs` 与 sleep 时长显式注入/缩短。
+- `package.json` 的 `test` 改为 `bun test tests --parallel`：18 个 dogfood 文件、203 tests、约 0.5s，按 CPU 核数并发；直接 `bun test tests` 仍可用但为串行调度。

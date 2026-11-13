@@ -71,3 +71,25 @@
 - **剩余缺口**：`tools.mjs` 仍 import `createBatch`、`runCall`、`commit as vfsCommit`；`createContext` 仍构造 batch，`call` 路径仍把 `context.primary` 交给 `runCall` 并可能 drain overlay；`vfs.mjs` 中 `createBatch`/`commit`/`runCall` 与旧 `batch.readSet` 尚未删除。
 - **影响**：旧 batch 壳仍在写入路径旁边，但 write/mkdir/rm/mv 已不经过 overlay，`hasOverlay` 实际为假。
 - **下一步**：读 `runCall` 对 batch 的最小字段依赖，构造不含 overlay 的最小上下文；删除 `createBatch`/`vfsCommit` 与 `vfs.mjs` 对应实现；每步后跑 `tests/sandbox-tools.test.mjs` 与 `tests/clj-core.test.mjs`。
+
+## D13 未开启装配的同步 fs 与异步调用点
+
+- **缺口**：`src/host/subprocess.mjs`、`src/sandbox/*`、`src/stages/*`、`src/swarm/*`、`src/main.mjs` 仍使用同步 fs；`file-lock`/`atomic-write` 已异步，完整装配的调用点需全部 await（`writeDevopsReport` 的测试调用点尚未 await）。
+- **影响**：完整装配接回时仍会阻塞主线程；部分 `main-bootstrap` 测试因历史实现差异失败。
+- **下一步**：按默认面同一规则异步化，并在接回时重写完整装配测试。
+
+## D14 VFS 已收敛为调用协调器（已关闭 D12 的写路径）
+
+- **已实现**：`src/clj-sandbox/vfs.mjs` 只保留 `runCall`、`defaultRunCommand`、`callEnvironment`、大小锁桥接与输出/取消记账；batch/overlay/prepare/commit/drain 及其写入模型已删除。实际写入由宿主 native `write` 在 `path` 令牌下完成，`call` 在 `global` 令牌下运行；跨进程粗锁、`stamp` 刷新、`:running`/`:uncertain` 记账保留。
+- **测试**：`vfs`/`vfs-paths`/`observations`/`sandbox-tools` 中依赖 batch/commit 的旧测试已禁用；dogfood 面 200 pass / 0 fail（4.4s）。`sandbox-tools` 中仍有部分 call/观察测试待按新语义重写后再启用。
+- **偏差**：用户要求 `clj_*` 的 `name` 必填且会话内禁止重名；根规格仍写可选自动名。该偏差由用户口头指令驱动，待人类修订根规格或确认后收敛。
+
+## D15 非 dogfood 测试已禁用
+
+- **现状**：`main-bootstrap`、`main-consumer`、`audit`、`board`、`runner`、`s5-wiring`、`dashboard`、`host`、`evaluator`、`stages-*`、`tenure`、`worktree`、`attach-lifecycle`、`sandbox-network` 已改为 `*.test.mjs.disabled`；`bun test tests` 只跑 dogfood 面 14 个文件，4.4s 内完成。
+- **影响**：完整装配与审计路径暂时没有自动化回归；接回时必须按单工作区语义重写，不得直接恢复旧断言。
+
+## D16 锁等待与进程收尾均为事件驱动
+
+- **已实现**：锁获取改用 `fs.watch` 目录事件 + 可注入超时，不再固定 10/15ms 轮询；`clj-main` 与 `sandbox-worker` 的写/global gate 已接入。
+- **进程收尾**：`vfs.defaultRunCommand` 删除进程组轮询，改为 `exit` + `close` 事件；`exit` 后记录 `groupAlive()` 的 managed-child 风险，`close` 等到继承 stdio 排空后收尾，不再 25ms 探测。

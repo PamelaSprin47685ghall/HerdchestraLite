@@ -18,7 +18,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
@@ -68,6 +68,7 @@ import { abandonSlice } from "./swarm/worktree.mjs";
 import { deriveDashboard } from "./tui/dashboard-model.mjs";
 import { DASHBOARD_TOGGLE_SHORTCUT, mountDashboard } from "./tui/dashboard-widget.mjs";
 import { writeFileAtomic } from "./util/atomic-write.mjs";
+import { mkdir } from "node:fs/promises";
 import { herdError, printEdn, renderError } from "./util/errors.mjs";
 import { inspectLock, withLock } from "./util/file-lock.mjs";
 
@@ -134,8 +135,8 @@ const ROLE_SURFACES = Object.freeze({
 export async function boardRoleExitReady(state, ctx) {
 	const artifactsDir = artifactsDirFromContext(state, ctx);
 	const slug = state.slug ?? slugFromArtifactsPath(artifactsDir) ?? slugFromCwd(ctx?.cwd);
-	const sliceId = sliceIdFromCwd(ctx?.cwd);
-	if (!slug || !sliceId) return false;
+	const sliceId = sliceIdFromCwd(ctx?.cwd) ?? TENURE_BOARD_SLICE;
+	if (!slug) return false;
 	const board = await openBoard(state.root, slug, sliceId).store.read();
 	if (board === null) return false;
 	const actorId = sessionIdentity(state, ctx).agent_id;
@@ -575,6 +576,10 @@ export function sessionIdentity(state, ctx) {
 	});
 }
 
+export function writeLockHeld(lock) {
+	return lock?.exists === true;
+}
+
 function writeGatePort(state, sliceId, ctx) {
 	const agentId = sessionIdentity(state, ctx).agent_id;
 	const lockPath = join(state.root, ".herd", "locks", `${sliceId}.write-w.lock`);
@@ -657,7 +662,7 @@ async function finishBoardTask({ state, ctx, slug, sliceId, port, command, turnI
 				}),
 			};
 		}
-		const verified = built.verifyObservedFacts(readSet.credential, factPaths);
+		const verified = await built.verifyObservedFacts(readSet.credential, factPaths);
 		if (verified?.ok !== true) {
 			return {
 				ok: false,
@@ -1103,7 +1108,7 @@ function devopsReportPath(directory, callId) {
 	return join(directory, "devops-reports", `${callId}.edn`);
 }
 
-export function writeDevopsReport(state, ctx, report) {
+export async function writeDevopsReport(state, ctx, report) {
 	const directory = devopsReceiptDir(ctx);
 	if (!directory) throw herdError(":HOST_API_MISMATCH", "devops report has no framework artifacts directory", {});
 	let callId = state?.devopsCallId;
@@ -1123,13 +1128,13 @@ export function writeDevopsReport(state, ctx, report) {
 		throw herdError(":HOST_API_MISMATCH", "devops report has no trusted parent call-id", {});
 	}
 	const receiptDirectory = join(directory, "devops-reports");
-	mkdirSync(receiptDirectory, { recursive: true });
+	await mkdir(receiptDirectory, { recursive: true });
 	const record = new Map([
 		[new EdnKeyword("status"), report.status],
 		[new EdnKeyword("report-markdown"), report.report_markdown],
 		[new EdnKeyword("inspected-paths"), report.inspected_paths],
 	]);
-	writeFileAtomic(receiptDirectory, `${callId}.edn`, printUfss(record));
+	await writeFileAtomic(receiptDirectory, `${callId}.edn`, printUfss(record));
 	state.devopsLastCallId = callId;
 	state.devopsReportSubmitted = callId;
 	state.devopsCallId = undefined;
@@ -1168,8 +1173,25 @@ export function devopsReportAfterChildFailure(outcome, directory, callId) {
 	};
 }
 
+function uniqueBoardSlug(root) {
+	if (typeof root !== "string" || root.length === 0) return undefined;
+	const missions = join(root, ".herd", "missions");
+	try {
+		const names = readdirSync(missions).filter(
+			(name) => existsSync(join(missions, name, "board.edn")) || existsSync(join(missions, name, "slices")),
+		);
+		return names.length === 1 ? names[0] : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 function boardToolContext(state, ctx) {
-	const slug = state.slug ?? slugFromArtifactsPath(artifactsDirFromContext(state, ctx)) ?? slugFromCwd(ctx?.cwd);
+	const slug =
+		state.slug ??
+		slugFromArtifactsPath(artifactsDirFromContext(state, ctx)) ??
+		slugFromCwd(ctx?.cwd) ??
+		uniqueBoardSlug(ctx?.cwd ?? state.root);
 	if (!slug) {
 		throw herdError(":HOST_API_MISMATCH", "board tool needs trusted mission context", {});
 	}
@@ -1596,7 +1618,7 @@ function extensionToolApi(pi) {
 				const result = await execute(toolCallId, normalized, signal, onUpdate, ctx);
 				if (result?.isError !== true && result?.details?.ok !== false) {
 					try {
-						writeDevopsReport(state, ctx, normalized);
+						await writeDevopsReport(state, ctx, normalized);
 					} catch (error) {
 						return toolFail(error);
 					}
@@ -1977,7 +1999,7 @@ function gateHost(pi) {
 				callId,
 			};
 		},
-		async onStageChange({ root, slug, stage }) {
+		async onStageChange({ root, slug, stage, briefing }) {
 			const state = stateForSlug(slug);
 			if (!state) return { ok: false, error: { code: ":HOST_API_MISMATCH", message: "no active session" } };
 			state.slug = slug;
@@ -1987,6 +2009,9 @@ function gateHost(pi) {
 			publishMission(state);
 			await applyStageSurface(pi, stage);
 			await refreshDashboard(state);
+			if (typeof briefing === "string" && briefing.trim().length > 0) {
+				pi.sendUserMessage?.(briefing, { customType: "herd-stage-briefing" });
+			}
 			return { ok: true, stage };
 		},
 	});
@@ -2007,23 +2032,23 @@ function gateRunner() {
 	});
 }
 
-function runnerPortFor(state, slug) {
-	const existing = state.runnerPorts.get(TENURE_BOARD_SLICE);
+function runnerPortFor(state, slug, sliceId = TENURE_BOARD_SLICE) {
+	const existing = state.runnerPorts.get(sliceId);
 	if (existing) return existing;
-	const slice = { root: state.root, slug, slice_id: TENURE_BOARD_SLICE };
+	const slice = { root: state.root, slug, slice_id: sliceId };
 	const port = createRunnerPort({ slice, deps: runnerDeps(state, slice) });
-	state.runnerPorts.set(TENURE_BOARD_SLICE, port);
+	state.runnerPorts.set(sliceId, port);
 	return port;
 }
 
 export async function wakeRunnerAfterBoardCommand(state, slug, _sliceId, command) {
 	if (command?.type !== "release" && command?.type !== "reopen") return undefined;
-	return runnerPortFor(state, slug).wake();
+	return runnerPortFor(state, slug, _sliceId).wake();
 }
 
 function runnerDeps(state, slice) {
-	const slug = state.slug ?? slugFromArtifactsPath(artifactsDirFromContext(state, state.lastContext));
-	const board = openBoard(state.root, slug, { mode: "swarm" });
+	const slug = state.slug ?? slice?.slug ?? slugFromArtifactsPath(artifactsDirFromContext(state, state.lastContext));
+	const board = openBoard(state.root, slug, slice.slice_id);
 	return {
 		root: state.root,
 		slug,
@@ -2046,10 +2071,10 @@ function runnerDeps(state, slice) {
 			return result?.answer ?? result;
 		},
 		writeLock: {
-			held: () => {
+			held: async () => {
 				try {
 					const lockPath = join(state.root, ".herd", "locks", `${TENURE_BOARD_SLICE}.write-w.lock`);
-					const lock = inspectLock(lockPath, {
+					const lock = await inspectLock(lockPath, {
 						agentState: (agentId) => state.agentLife.get(agentId),
 					});
 					return writeLockHeld(lock);
@@ -2290,6 +2315,12 @@ export async function continueDevopsSession(state, session, message, signal, con
 	}
 	if (!isObject(session.agentDefinition)) {
 		return { ok: false, error: { code: ":HOST_API_MISMATCH", message: "devops AgentDefinition is missing" } };
+	}
+	if (signal?.aborted) {
+		return {
+			ok: false,
+			error: { code: ":UPSTREAM_ABORTED", message: "the parent signal was already aborted", data: { reason: signal.reason } },
+		};
 	}
 	let fn = continueFn;
 	if (typeof fn !== "function") {
@@ -2543,21 +2574,43 @@ async function startRepairSlices(state, slices) {
 }
 
 export function auditReady(state) {
-	if (!state.slug) return false;
-	let snapshot;
+	if (!state?.slug || !state?.root) return false;
+	const directory = join(state.root, ".herd", "missions", state.slug);
+	let board;
 	try {
-		snapshot = readWorktreeState({ root: state.root, slug: state.slug });
+		board = readUfss(readFileSync(join(directory, "board.edn"), "utf8"));
 	} catch {
 		return false;
 	}
-	if (!snapshot.exists) return false;
-	const slices = Object.values(snapshot.slices ?? {});
-	if (slices.length === 0) return false;
-	if ((snapshot.queue ?? []).length > 0) return false;
-	if (slices.some((slice) => ["creating", "running", "reviewing", "swarming", "joining"].includes(slice.status))) {
+	if (!(board instanceof Map)) return false;
+	const tasks = ednField(board, "tasks");
+	if (!(tasks instanceof Map)) return false;
+	for (const task of tasks.values()) {
+		const taskState = ednField(task, "state");
+		if (!(taskState instanceof EdnKeyword) || taskState.name !== "done") return false;
+	}
+	const actions = ednField(board, "actions");
+	if (actions instanceof Map) {
+		for (const action of actions.values()) {
+			const phase = ednField(action, "phase");
+			if (
+				phase instanceof EdnKeyword &&
+				["claimed", "preparing", "waiting-gate", "applying", "running", "uncertain"].includes(phase.name)
+			) {
+				return false;
+			}
+		}
+	}
+	try {
+		const cases = readUfss(readFileSync(join(directory, "s2-cases.edn"), "utf8"));
+		if (!Array.isArray(cases) || cases.length === 0) return false;
+		for (const entry of cases) {
+			if (!(entry instanceof Map) || typeof ednField(entry, "case-id") !== "string") return false;
+		}
+	} catch {
 		return false;
 	}
-	return slices.some((slice) => slice.status === "joined");
+	return true;
 }
 
 function scheduleAuditRetry(state, message, retryable = true) {

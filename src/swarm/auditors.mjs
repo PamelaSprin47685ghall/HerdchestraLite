@@ -1847,7 +1847,7 @@ export async function startAuditBatch({ root, slug, caseSpecs, deps } = {}) {
 				}
 				const submissionRelative = `.herd/missions/${slug}/audit/${batchId}/${spec.case_id}.submit.edn`;
 				try {
-					writeEdnAtomic(join(artifactsDir, "audit-context.edn"), {
+					await writeEdnAtomic(join(artifactsDir, "audit-context.edn"), {
 						"batch-id": batchId,
 						"case-id": spec.case_id,
 						slug,

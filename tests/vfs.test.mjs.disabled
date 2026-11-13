@@ -904,9 +904,9 @@ describe("commit recheck and atomic apply", () => {
 		const _target = file(root, "a.txt", "old");
 		const seen = [];
 		const io = {
-			writeFileAtomic(dir, name, content) {
+			async writeFileAtomic(dir, name, content) {
 				if (existsSync(join(dir, name))) seen.push(readFileSync(join(dir, name), "utf8"));
-				const result = atomicWrite(dir, name, content);
+				const result = await atomicWrite(dir, name, content);
 				seen.push(readFileSync(join(dir, name), "utf8"));
 				return result;
 			},

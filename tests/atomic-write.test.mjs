@@ -31,9 +31,9 @@ function leftoverTemps(dir) {
 	return readdirSync(dir).filter((name) => name.startsWith(".tmp-"));
 }
 
-function capture(fn) {
+async function capture(fn) {
 	try {
-		return { value: fn() };
+		return { value: await fn() };
 	} catch (error) {
 		return { error };
 	}
@@ -51,39 +51,39 @@ afterEach(() => {
 	}
 });
 
-describe("writeFileAtomic", () => {
-	it("creates missing directories and reports a new target", () => {
+describe("writeFileAtomic", async () => {
+	it("creates missing directories and reports a new target", async () => {
 		const dir = join(sandbox(), "nested", "docs");
 		const target = join(dir, "report.md");
 
-		expect(writeFileAtomic(dir, "report.md", "第一轮\n")).toEqual({ path: target, existed: false });
+		expect(await writeFileAtomic(dir, "report.md", "第一轮\n")).toEqual({ path: target, existed: false });
 
 		expect(readFileSync(target, "utf8")).toBe("第一轮\n");
 		expect(leftoverTemps(dir)).toEqual([]);
 	});
 
-	it("creates missing parents for a nested file name without crossing directories", () => {
+	it("creates missing parents for a nested file name without crossing directories", async () => {
 		const root = sandbox();
 		const target = join(root, "plans", "mission.edn");
 
-		expect(writeFileAtomic(root, "plans/mission.edn", "{}\n")).toEqual({ path: target, existed: false });
+		expect(await writeFileAtomic(root, "plans/mission.edn", "{}\n")).toEqual({ path: target, existed: false });
 
 		expect(readFileSync(target, "utf8")).toBe("{}\n");
 		expect(leftoverTemps(join(root, "plans"))).toEqual([]);
 	});
 
-	it("replaces an existing target and reports it", () => {
+	it("replaces an existing target and reports it", async () => {
 		const root = sandbox();
 		const target = join(root, "report.md");
 		writeFileSync(target, "old\n", "utf8");
 
-		expect(writeFileAtomic(root, "report.md", "new\n")).toEqual({ path: target, existed: true });
+		expect(await writeFileAtomic(root, "report.md", "new\n")).toEqual({ path: target, existed: true });
 
 		expect(readFileSync(target, "utf8")).toBe("new\n");
 		expect(leftoverTemps(root)).toEqual([]);
 	});
 
-	it("keeps the permission bits of a replaced file", () => {
+	it("keeps the permission bits of a replaced file", async () => {
 		const root = sandbox();
 		const target = join(root, "deploy.sh");
 		writeFileSync(target, "#!/bin/sh\n", { encoding: "utf8", mode: 0o600 });
@@ -95,47 +95,47 @@ describe("writeFileAtomic", () => {
 		expect(leftoverTemps(root)).toEqual([]);
 	});
 
-	it("creates new files with owner-only permissions", () => {
+	it("creates new files with owner-only permissions", async () => {
 		const root = sandbox();
 		const target = join(root, "fresh.txt");
 
-		writeFileAtomic(root, "fresh.txt", "new\n");
+		await writeFileAtomic(root, "fresh.txt", "new\n");
 
 		expect(statSync(target).mode & 0o777).toBe(0o600);
 		expect(leftoverTemps(root)).toEqual([]);
 	});
 
-	it("writes a complete Uint8Array byte for byte", () => {
+	it("writes a complete Uint8Array byte for byte", async () => {
 		const root = sandbox();
 		const target = join(root, "blob.bin");
 		const bytes = new Uint8Array(2 * 1024 * 1024 + 17);
 		for (let index = 0; index < bytes.length; index += 1) bytes[index] = index % 251;
 
-		const result = writeFileAtomic(root, "blob.bin", bytes);
+		const result = await writeFileAtomic(root, "blob.bin", bytes);
 
 		expect(result.existed).toBe(false);
 		expect(readFileSync(target).equals(Buffer.from(bytes))).toBe(true);
 		expect(leftoverTemps(root)).toEqual([]);
 	});
 
-	it("writes an empty buffer and an empty string", () => {
+	it("writes an empty buffer and an empty string", async () => {
 		const root = sandbox();
 
-		expect(writeFileAtomic(root, "empty.txt", "")).toEqual({ path: join(root, "empty.txt"), existed: false });
-		expect(writeFileAtomic(root, "empty.bin", new Uint8Array(0)).existed).toBe(false);
+		expect(await writeFileAtomic(root, "empty.txt", "")).toEqual({ path: join(root, "empty.txt"), existed: false });
+		expect((await writeFileAtomic(root, "empty.bin", new Uint8Array(0))).existed).toBe(false);
 
 		expect(readFileSync(join(root, "empty.txt"), "utf8")).toBe("");
 		expect(readFileSync(join(root, "empty.bin")).length).toBe(0);
 		expect(leftoverTemps(root)).toEqual([]);
 	});
 
-	it.skipIf(isRoot)("keeps the previous file and reports the write stage", () => {
+	it.skipIf(isRoot)("keeps the previous file and reports the write stage", async () => {
 		const root = sandbox();
 		const target = join(root, "report.md");
 		writeFileSync(target, "old\n", "utf8");
 		chmodSync(root, 0o555);
 
-		const { error } = capture(() => writeFileAtomic(root, "report.md", "new\n"));
+		const { error } = await capture(() => writeFileAtomic(root, "report.md", "new\n"));
 		chmodSync(root, 0o755);
 
 		expect(error).toBeInstanceOf(Error);
@@ -148,13 +148,13 @@ describe("writeFileAtomic", () => {
 		expect(leftoverTemps(root)).toEqual([]);
 	});
 
-	it("removes the temporary file when the rename fails", () => {
+	it("removes the temporary file when the rename fails", async () => {
 		const root = sandbox();
 		const target = join(root, "report.md");
 		mkdirSync(target);
 		writeFileSync(join(target, "keep.txt"), "keep\n", "utf8");
 
-		const { error } = capture(() => writeFileAtomic(root, "report.md", "new\n"));
+		const { error } = await capture(() => writeFileAtomic(root, "report.md", "new\n"));
 
 		expect(error).toBeInstanceOf(Error);
 		expect(typeof error.code).toBe("string");
@@ -167,7 +167,7 @@ describe("writeFileAtomic", () => {
 		expect(leftoverTemps(root)).toEqual([]);
 	});
 
-	it("rejects invalid arguments with a herd error before touching files", () => {
+	it("rejects invalid arguments with a herd error before touching files", async () => {
 		const root = sandbox();
 		const cases = [
 			() => writeFileAtomic(42, "x.txt", "x"),
@@ -177,7 +177,7 @@ describe("writeFileAtomic", () => {
 		];
 
 		for (const run of cases) {
-			const { error } = capture(run);
+			const { error } = await capture(run);
 			expect(isHerdError(error)).toBe(true);
 			expect(error.code).toBe(":INVALID_ARGUMENT");
 			expect(error.data.argument).toBeDefined();
@@ -186,12 +186,12 @@ describe("writeFileAtomic", () => {
 	});
 });
 
-describe("writeEdnAtomic", () => {
-	it("creates the file with deterministic EDN and one trailing newline", () => {
+describe("writeEdnAtomic", async () => {
+	it("creates the file with deterministic EDN and one trailing newline", async () => {
 		const root = sandbox();
 		const target = join(root, "nested", "mission.edn");
 
-		const result = writeEdnAtomic(target, {
+		const result = await writeEdnAtomic(target, {
 			":board-version": 2,
 			":tasks": [":ready", ":waiting"],
 		});
@@ -205,12 +205,12 @@ describe("writeEdnAtomic", () => {
 		expect(leftoverTemps(join(root, "nested"))).toEqual([]);
 	});
 
-	it("replaces an existing target and reports it", () => {
+	it("replaces an existing target and reports it", async () => {
 		const root = sandbox();
 		const target = join(root, "mission.edn");
 		writeFileSync(target, "old\n", "utf8");
 
-		expect(writeEdnAtomic(target, { ":stage": ":s3" }).existed).toBe(true);
+		expect((await writeEdnAtomic(target, { ":stage": ":s3" })).existed).toBe(true);
 
 		const text = readFileSync(target, "utf8");
 		expect(text).toContain(":stage :s3");

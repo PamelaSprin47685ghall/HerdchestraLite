@@ -45,8 +45,8 @@ afterEach(() => {
 	}
 });
 
-describe("observation ledger", () => {
-	it("keeps the latest observation per path per actor term", () => {
+describe("observation ledger", async () => {
+	it("keeps the latest observation per path per actor term", async () => {
 		const root = sandbox();
 		const target = file(root, "a.txt", "one");
 		const ledger = createObservationLedger();
@@ -62,7 +62,7 @@ describe("observation ledger", () => {
 		expect(read.credential.epoch).toBeGreaterThan(0);
 	});
 
-	it("does not mix actors or terms", () => {
+	it("does not mix actors or terms", async () => {
 		const root = sandbox();
 		const target = file(root, "a.txt", "one");
 		const ledger = createObservationLedger();
@@ -73,7 +73,7 @@ describe("observation ledger", () => {
 		expect(ledger.readSetForActor(scope()).ok).toBe(true);
 	});
 
-	it("rejects unobserved dependencies before any lstat", () => {
+	it("rejects unobserved dependencies before any lstat", async () => {
 		const root = sandbox();
 		const observed = file(root, "a.txt", "one");
 		const unobserved = file(root, "b.txt", "two");
@@ -87,7 +87,7 @@ describe("observation ledger", () => {
 		ledger.observe(scope(), entryOf(observed));
 		const credential = ledger.readSetForActor(scope()).credential;
 
-		const verdict = ledger.verifyObservedFacts(credential, [observed, unobserved]);
+		const verdict = await ledger.verifyObservedFacts(credential, [observed, unobserved]);
 		expect(verdict.ok).toBe(false);
 		expect(verdict.code).toBe(":STALE_CONTROL");
 		expect(verdict.missing).toEqual([unobserved]);
@@ -97,13 +97,13 @@ describe("observation ledger", () => {
 			...credential,
 			entries: [...credential.entries, entryOf(unobserved)],
 		};
-		const forgedVerdict = ledger.verifyObservedFacts(forged, [unobserved]);
+		const forgedVerdict = await ledger.verifyObservedFacts(forged, [unobserved]);
 		expect(forgedVerdict.code).toBe(":STALE_CONTROL");
 		expect(forgedVerdict.missing).toEqual([unobserved]);
 		expect(calls).toBe(0);
 	});
 
-	it("verifies observed stamps and structures", () => {
+	it("verifies observed stamps and structures", async () => {
 		const root = sandbox();
 		const target = file(root, "a.txt", "one");
 		const missing = join(root, "gone.txt");
@@ -117,25 +117,25 @@ describe("observation ledger", () => {
 		});
 		const credential = ledger.readSetForActor(scope()).credential;
 
-		expect(ledger.verifyObservedFacts(credential, [target, missing])).toEqual({
+		expect(await ledger.verifyObservedFacts(credential, [target, missing])).toEqual({
 			ok: true,
 			checked: [target, missing],
 			missing: [],
 		});
 
 		writeFileSync(target, "changed", "utf8");
-		const changed = ledger.verifyObservedFacts(credential, [target]);
+		const changed = await ledger.verifyObservedFacts(credential, [target]);
 		expect(changed.ok).toBe(false);
 		expect(changed.code).toBe(":FILE_CONFLICT");
 		expect(changed.conflicts[0].path).toBe(target);
 
 		writeFileSync(join(root, "gone.txt"), "now here", "utf8");
-		const appeared = ledger.verifyObservedFacts(credential, [missing]);
+		const appeared = await ledger.verifyObservedFacts(credential, [missing]);
 		expect(appeared.ok).toBe(false);
 		expect(appeared.code).toBe(":STRUCTURE_CONFLICT");
 	});
 
-	it("rejects a retired actor and a stale credential", () => {
+	it("rejects a retired actor and a stale credential", async () => {
 		const root = sandbox();
 		const target = file(root, "a.txt", "one");
 		const ledger = createObservationLedger();
@@ -144,15 +144,15 @@ describe("observation ledger", () => {
 
 		expect(ledger.retireActor(scope())).toEqual({ ok: true, retired: true });
 		expect(ledger.readSetForActor(scope()).code).toBe(":STALE_CONTROL");
-		const verdict = ledger.verifyObservedFacts(credential, [target]);
+		const verdict = await ledger.verifyObservedFacts(credential, [target]);
 		expect(verdict.ok).toBe(false);
 		expect(verdict.code).toBe(":STALE_CONTROL");
 		expect(verdict.reason).toBe("credential-stale");
 	});
 });
 
-describe("vfs ledger integration", () => {
-	it("observes reads across separate program batches", () => {
+describe("vfs ledger integration", async () => {
+	it("observes reads across separate program batches", async () => {
 		const root = sandbox();
 		const a = file(root, "a.txt", "A");
 		const b = file(root, "b.txt", "B");
@@ -176,10 +176,10 @@ describe("vfs ledger integration", () => {
 
 		const credential = ledger.readSetForActor(actorScope).credential;
 		expect(credential.entries.map((entry) => entry.path).sort()).toEqual([a, b, join(root, "missing.txt")].sort());
-		expect(ledger.verifyObservedFacts(credential, [a, b, join(root, "missing.txt")]).ok).toBe(true);
+		expect((await ledger.verifyObservedFacts(credential, [a, b, join(root, "missing.txt")])).ok).toBe(true);
 	});
 
-	it("does not observe virtual files and requires a scope", () => {
+	it("does not observe virtual files and requires a scope", async () => {
 		const root = sandbox();
 		const ledger = createObservationLedger();
 		const batch = createBatch({

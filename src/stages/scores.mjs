@@ -960,7 +960,7 @@ export async function writeS5Report(root, slug, result, options) {
 	const targetDir = join(root, "plans", slug);
 	let written;
 	try {
-		written = writeFileAtomic(targetDir, REPORT_FILE, markdown);
+		written = await writeFileAtomic(targetDir, REPORT_FILE, markdown);
 	} catch (error) {
 		return {
 			ok: false,

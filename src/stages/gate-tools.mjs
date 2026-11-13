@@ -36,7 +36,7 @@
  */
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 import { herdError, isHerdError, printEdn, renderError } from "../util/errors.mjs";
 import * as tenure from "./tenure.mjs";
@@ -935,9 +935,10 @@ async function applyAttachDecision(deps, ctx) {
 			callId: ctx.callId ?? null,
 		});
 	}
+	const onDisk = approvedDocument(ctx);
 	const cleared = await writePending(deps, ctx.root, ctx.slug, null);
 	if (!cleared.ok) return cleared;
-	return completeAttach(deps, ctx);
+	return completeAttach(deps, onDisk === null ? ctx : { ...ctx, markdown: onDisk });
 }
 
 async function announceSuccessor(deps, args) {
@@ -950,6 +951,24 @@ async function announceSuccessor(deps, args) {
 		return { ok: true };
 	} catch (error) {
 		return { ok: false, error: herdLikeError(error, ":HOST_API_MISMATCH") };
+	}
+}
+
+
+/**
+ * The operator may edit s1-brainstorm.md while the confirmation panel is open.
+ * Approval advances the tenure with the real on-disk document, not the stale
+ * in-memory copy captured before the panel was shown.
+ */
+function approvedDocument(ctx) {
+	const relative = ctx.saved?.path ?? ctx.pending?.path;
+	if (typeof relative !== "string" || relative.length === 0) return null;
+	const absolute = isAbsolute(relative) ? relative : join(ctx.root, relative);
+	try {
+		const text = readFileSync(absolute, "utf8");
+		return text.trim().length > 0 ? text : null;
+	} catch {
+		return null;
 	}
 }
 
@@ -1438,8 +1457,8 @@ function slugOfContext(deps, ctx) {
 }
 
 function rootOf(deps, ctx) {
-	if (isText(deps.root)) return deps.root;
 	if (isText(ctx?.cwd)) return ctx.cwd;
+	if (isText(deps.root)) return deps.root;
 	return undefined;
 }
 

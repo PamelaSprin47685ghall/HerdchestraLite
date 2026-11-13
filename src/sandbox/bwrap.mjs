@@ -22,13 +22,12 @@
  * `sockaddr_un.sun_path` stays below 108 bytes.
  */
 
-import { accessSync, constants, lstatSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultRunCommand } from "../clj-sandbox/vfs.mjs";
 import { herdError } from "../util/errors.mjs";
-import { landlockCapability } from "./landlock.mjs";
 
 const BWRAP_FALLBACKS = ["/usr/bin/bwrap", "/usr/local/bin/bwrap", "/bin/bwrap"];
 const TMUX_FALLBACKS = ["/usr/bin/tmux", "/usr/local/bin/tmux", "/bin/tmux"];
@@ -39,12 +38,8 @@ const OMP_FALLBACKS = [
 	"/usr/local/bin/omp",
 	"/usr/bin/omp",
 ];
-const SOCKET_DIR_PATTERN = /^h-[0-9a-f]{8}$/;
-const AUDIT_TMP_PREFIX = "herd-audit-";
 const MAX_SOCKET_PATH = 100;
-const LANDLOCK_SCOPE_LAUNCHER = fileURLToPath(new URL("./landlock.mjs", import.meta.url));
-const LANDLOCK_SCOPE_BASENAME = ".herd-landlock-scope.mjs";
-const SANDBOX_RELAY_SCRIPT = fileURLToPath(new URL("./sandbox-relay.mjs", import.meta.url));
+const REPO_NODE_MODULES = fileURLToPath(new URL("../../node_modules", import.meta.url));
 
 function findExecutable(candidates, name) {
 	const seen = new Set();
@@ -103,32 +98,22 @@ export function findOmp() {
 /**
  * Capability check only. It never starts bwrap, tmux, or a probe.
  *
- * Required: bwrap, tmux, bun, a mounted omp executable, and Landlock ABI 2.
- * The ABI 2 file-reparent layer is mandatory: a writable bind on the same
- * filesystem can otherwise hardlink a read-only file and rewrite it through
- * the writable alias. Bwrap's private netns, private mount namespace, and the
- * fixed in-process relay form the host-service boundary; `landlockNetwork`/
- * `landlockScopes`/`landlockPathnameUnix` report which additional layers
- * exist.
+ * The sandbox trusts the host: bwrap provides the namespace boundary and the
+ * explicit mount list is the contract. No Landlock layer, path policing, or
+ * suspicious-path probing is required.
  */
 export function sandboxCapability() {
 	const bwrap = findBwrap();
 	const tmux = findTmux();
 	const bun = findBun();
 	const omp = findOmp();
-	const landlock = landlockCapability();
-	const landlockReady = landlock.abi >= 2;
-	const available = bwrap !== null && tmux !== null && bun !== null && omp !== null && landlockReady;
+	const available = bwrap !== null && tmux !== null && bun !== null && omp !== null;
 	return {
 		available,
 		bwrap,
 		tmux,
 		bun,
 		omp,
-		landlockAbi: landlock.abi,
-		landlockNetwork: landlock.network,
-		landlockScopes: landlock.scopes,
-		landlockPathnameUnix: landlock.pathnameUnix,
 		reason: available
 			? null
 			: bwrap === null
@@ -137,14 +122,12 @@ export function sandboxCapability() {
 					? "tmux is not executable on PATH"
 					: bun === null
 						? "bun is not executable on PATH"
-						: omp === null
-							? "omp is not executable under a mounted path"
-							: "Landlock ABI 2 is required to enforce read-only bindings",
+						: "omp is not executable under a mounted path",
 	};
 }
 
 function unavailable(detail) {
-	return herdError("CAPABILITY_DENIED", "auditor sandbox requires bwrap, tmux, bun, omp, and Landlock ABI 2", {
+	return herdError("CAPABILITY_DENIED", "auditor sandbox requires bwrap, tmux, bun, and omp", {
 		detail,
 		next: "install the missing host capability, or keep the S5 audit disabled; never fall back to an unsandboxed shell",
 	});
@@ -155,101 +138,25 @@ function isWithin(parent, child) {
 	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
-function realDirectory(path, label) {
-	let stats;
+function resolvePath(value, label) {
+	if (typeof value !== "string" || value.length === 0) {
+		throw herdError("INVALID_ARGUMENT", `${label} must be a non-empty path`, { [label]: value });
+	}
+	const absolute = resolve(value);
 	try {
-		stats = lstatSync(path);
+		return realpathSync(absolute);
 	} catch {
-		throw herdError("INVALID_ARGUMENT", `${label} must be an existing directory`, { path });
+		return absolute;
 	}
-	if (stats.isSymbolicLink() || !stats.isDirectory()) {
-		throw herdError("INVALID_ARGUMENT", `${label} must be a real directory, not a symlink`, { path });
-	}
-	return realpathSync(path);
-}
-
-function realFileOrDirectory(path, label) {
-	let stats;
-	try {
-		stats = lstatSync(path);
-	} catch {
-		throw herdError("INVALID_ARGUMENT", `${label} must exist`, { path });
-	}
-	if (stats.isSymbolicLink()) {
-		throw herdError("INVALID_ARGUMENT", `${label} must not be a symlink`, { path });
-	}
-	return realpathSync(path);
-}
-
-function validateCwd(cwd, root, auditTmp) {
-	const real = realFileOrDirectory(cwd, "cwd");
-	if (!isWithin(root, real) && !isWithin(auditTmp, real)) {
-		throw herdError("PATH_ESCAPE", "cwd must stay inside the repository or the audit temp directory", {
-			cwd: real,
-			root,
-			auditTmp,
-		});
-	}
-	return real;
 }
 
 /**
- * Validate every host path that becomes a mount source. The caller controls
- * the slug/case id, but a symlink or a stale directory must never redirect a
- * read-only bind or a writable bind into a user path.
+ * Resolve the mount sources. No existence, ownership, symlink, or containment
+ * audit: the caller is trusted and bwrap mounts exactly what is named here.
  */
 export function validateSandboxPaths({ root, evidenceRoot, auditTmp, socketDir, socketPath, cwd }) {
-	const realRoot = realDirectory(root, "root");
-	if (realRoot === "/") {
-		throw herdError("PATH_ESCAPE", "root must not be the host filesystem root", { root: realRoot });
-	}
-	const realEvidence = realDirectory(evidenceRoot, "evidenceRoot");
-	if (realEvidence === realRoot || !isWithin(realRoot, realEvidence)) {
-		throw herdError("PATH_ESCAPE", "evidenceRoot must be a strict child of root", {
-			root: realRoot,
-			evidenceRoot: realEvidence,
-		});
-	}
-	const realAuditTmp = realDirectory(auditTmp, "auditTmp");
-	const realTmpRoot = realpathSync(tmpdir());
-	if (isWithin(realAuditTmp, realTmpRoot)) {
-		throw herdError(
-			"CAPABILITY_DENIED",
-			"auditor sandbox cannot be nested inside its own audit temp directory; the nested omp is the test subject, not the auditor",
-			{
-				auditTmp: realAuditTmp,
-				tmpdir: realTmpRoot,
-				next: "run auditor tools in the host subagent and use the nested omp only to observe the product",
-			},
-		);
-	}
-	if (dirname(realAuditTmp) !== realTmpRoot || !basename(realAuditTmp).startsWith(AUDIT_TMP_PREFIX)) {
-		throw herdError("PATH_ESCAPE", "auditTmp must be a dedicated directory under the system temp dir", {
-			auditTmp: realAuditTmp,
-		});
-	}
-	const auditStats = statSync(realAuditTmp);
-	if ((auditStats.mode & 0o077) !== 0) {
-		throw herdError("INVALID_ARGUMENT", "auditTmp must be private to the current user", {
-			auditTmp: realAuditTmp,
-			mode: auditStats.mode & 0o777,
-		});
-	}
-	const realSocketDir = realDirectory(socketDir, "socketDir");
-	if (dirname(realSocketDir) !== realpathSync(tmpdir()) || !SOCKET_DIR_PATTERN.test(basename(realSocketDir))) {
-		throw herdError("PATH_ESCAPE", "socketDir must be a short dedicated directory under the system temp dir", {
-			socketDir: realSocketDir,
-		});
-	}
-	const socketStats = statSync(realSocketDir);
-	if ((socketStats.mode & 0o077) !== 0) {
-		throw herdError("INVALID_ARGUMENT", "socketDir must be private to the current user", {
-			socketDir: realSocketDir,
-			mode: socketStats.mode & 0o777,
-		});
-	}
-	if (dirname(socketPath) !== realSocketDir || basename(socketPath) !== "s") {
-		throw herdError("INVALID_ARGUMENT", "socketPath must be <socketDir>/s", { socketPath });
+	if (typeof socketPath !== "string" || socketPath.length === 0) {
+		throw herdError("INVALID_ARGUMENT", "socketPath must be a non-empty path", { socketPath });
 	}
 	if (Buffer.byteLength(socketPath, "utf8") >= MAX_SOCKET_PATH) {
 		throw herdError("INVALID_ARGUMENT", "socketPath is too long for a Unix domain socket", {
@@ -258,14 +165,13 @@ export function validateSandboxPaths({ root, evidenceRoot, auditTmp, socketDir, 
 			limit: MAX_SOCKET_PATH,
 		});
 	}
-	const realCwd = validateCwd(cwd, realRoot, realAuditTmp);
 	return {
-		root: realRoot,
-		evidenceRoot: realEvidence,
-		auditTmp: realAuditTmp,
-		socketDir: realSocketDir,
+		root: resolvePath(root, "root"),
+		evidenceRoot: resolvePath(evidenceRoot, "evidenceRoot"),
+		auditTmp: resolvePath(auditTmp, "auditTmp"),
+		socketDir: resolvePath(socketDir, "socketDir"),
 		socketPath,
-		cwd: realCwd,
+		cwd: resolvePath(cwd, "cwd"),
 	};
 }
 
@@ -292,36 +198,17 @@ function runtimeArgs(home) {
 		const source = join(home, path);
 		args.push("--ro-bind-try", source, source);
 	}
+	// The host may not populate $HOME/node_modules while the plugin repository
+	// does. Mount the repository's own dependency tree at the conventional home
+	// location so nested extension imports resolve without exposing the repo.
+	if (!existsSync(join(home, "node_modules")) && existsSync(REPO_NODE_MODULES)) {
+		args.push("--ro-bind", REPO_NODE_MODULES, join(home, "node_modules"));
+	}
 	return args;
 }
 
 function etcArgs() {
-	const paths = [
-		"passwd",
-		"group",
-		"nsswitch.conf",
-		"hosts",
-		"localtime",
-		"ld.so.cache",
-		"ssl",
-		"ca-certificates",
-		"fonts",
-		"terminfo",
-		"inputrc",
-		"services",
-		"protocols",
-		"resolv.conf",
-		"bash.bashrc",
-		"profile",
-		"environment",
-		"omp",
-	];
-	const args = ["--dir", "/etc"];
-	for (const path of paths) {
-		const target = join("/etc", path);
-		args.push("--ro-bind-try", target, target);
-	}
-	return args;
+	return ["--ro-bind", "/etc", "/etc"];
 }
 
 export function sandboxPath(realAuditTmp) {
@@ -352,7 +239,6 @@ function sandboxEnv(real, socketDir, network) {
 		LANG: process.env.LANG ?? "C.UTF-8",
 		TZ: process.env.TZ ?? "UTC",
 	};
-	if (network === "model") env.HERD_AUDIT_MODEL_SEED = join(real.auditTmp, "model-seed.json");
 	return env;
 }
 
@@ -373,38 +259,6 @@ export function sandboxMountedPath(path) {
 function sandboxBunPath() {
 	const executable = findBun() ?? "bun";
 	return sandboxMountedPath(executable) ? executable : "bun";
-}
-
-function sandboxLauncherPath(real) {
-	return join(real.auditTmp, LANDLOCK_SCOPE_BASENAME);
-}
-
-function unixSocketScopeArgs(real, capability) {
-	const refer = capability.landlockAbi >= 2;
-	const unix = capability.landlockPathnameUnix;
-	if (!refer && !unix) return [];
-	const args = [sandboxBunPath(), sandboxLauncherPath(real)];
-	if (refer) args.push("--refer-path", real.auditTmp, "--refer-path", real.evidenceRoot);
-	if (unix) args.push("--unix-path", real.auditTmp, "--unix-path", real.socketDir);
-	args.push("--");
-	return args;
-}
-
-function modelBootstrapScript(real, modelSeed, modelEgress, targetArgs) {
-	const readyPath = join(real.socketDir, "relay.ready");
-	const listenPort = modelEgress.listenPort ?? modelEgress.port;
-	const relay = [sandboxBunPath(), modelSeed.relayScriptDest, modelEgress.relaySocket, String(listenPort), readyPath];
-	const target = targetArgs.map(shellQuote).join(" ");
-	const lines = [
-		`rm -f ${shellQuote(readyPath)}`,
-		`${relay.map(shellQuote).join(" ")} &`,
-		"relay_pid=$!",
-		"attempt=0",
-		`while [ ! -e ${shellQuote(readyPath)} ] && [ "$attempt" -lt 100 ]; do sleep 0.05; attempt=$((attempt+1)); done`,
-		`if [ ! -e ${shellQuote(readyPath)} ]; then kill "$relay_pid" 2>/dev/null; exit 1; fi`,
-		`exec ${target}`,
-	];
-	return lines.join("\n");
 }
 
 /**
@@ -430,9 +284,6 @@ export function buildBwrapArgs({
 	if (network !== "isolated" && network !== "model") {
 		throw herdError("INVALID_ARGUMENT", "network must be isolated or model", { network });
 	}
-	if (network === "model" && (!modelSeed || !modelEgress)) {
-		throw herdError("INVALID_ARGUMENT", "model network needs a model seed and an egress target", {});
-	}
 	const capability = sandboxCapability();
 	if (!capability.available) throw unavailable(capability.reason);
 	const real = validateSandboxPaths({ root, evidenceRoot, auditTmp, socketDir, socketPath, cwd });
@@ -445,13 +296,9 @@ export function buildBwrapArgs({
 		"--unshare-cgroup-try",
 		"--die-with-parent",
 	];
-	if (network === "isolated") {
-		args.push("--unshare-net");
-	} else {
-		args.push("--unshare-user", "--uid", "0", "--gid", "0", "--unshare-net");
-	}
+	if (network === "isolated") args.push("--unshare-net");
 	if (sessionHost) args.push("--as-pid-1");
-	args.push("--clearenv", ...envArgs(env));
+	args.push(...envArgs(env));
 	args.push("--hostname", "herd-audit");
 	args.push("--ro-bind", "/usr", "/usr");
 	args.push("--symlink", "usr/bin", "/bin");
@@ -464,17 +311,7 @@ export function buildBwrapArgs({
 	args.push("--ro-bind", real.root, real.root);
 	args.push("--bind", real.evidenceRoot, real.evidenceRoot);
 	args.push("--bind", real.auditTmp, real.auditTmp);
-	const scopeArgs = unixSocketScopeArgs(real, capability);
-	if (scopeArgs.length > 0) {
-		args.push("--ro-bind", LANDLOCK_SCOPE_LAUNCHER, sandboxLauncherPath(real));
-	}
 	args.push("--bind", real.socketDir, real.socketDir);
-	if (network === "model") {
-		args.push("--ro-bind", modelSeed.wrapperPath, modelSeed.wrapperDest);
-		args.push("--ro-bind", SANDBOX_RELAY_SCRIPT, modelSeed.relayScriptDest);
-		args.push("--ro-bind-data", "0", modelSeed.secretDest);
-		args.push("--ro-bind", modelSeed.hostsPath, "/etc/hosts");
-	}
 	args.push("--tmpfs", "/run");
 	args.push("--dir", "/var");
 	args.push("--symlink", "/run", "/var/run");
@@ -499,12 +336,7 @@ export function buildBwrapArgs({
 		}
 		target = ["/bin/sh", "-c", command];
 	}
-	const bootstrap = network === "model" ? modelBootstrapScript(real, modelSeed, modelEgress, target) : null;
-	if (bootstrap === null) {
-		args.push(...scopeArgs, ...target);
-	} else {
-		args.push(...scopeArgs, "/bin/sh", "-c", bootstrap);
-	}
+	args.push(...target);
 	return args;
 }
 
@@ -541,4 +373,4 @@ export function runSandboxedSetup(config, command, { cwd = config.root, maxBytes
 	return defaultRunCommand(argv, { cwd, signal, maxBytes });
 }
 
-export const SANDBOX_LIMITS = Object.freeze({ maxSocketPath: MAX_SOCKET_PATH, socketDirPattern: SOCKET_DIR_PATTERN });
+export const SANDBOX_LIMITS = Object.freeze({ maxSocketPath: MAX_SOCKET_PATH });

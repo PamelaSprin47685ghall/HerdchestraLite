@@ -1626,9 +1626,9 @@ function missingState(path) {
 	});
 }
 
-function writeState(path, state) {
+async function writeState(path, state) {
 	state.updated_at = new Date().toISOString();
-	writeFileAtomic(dirname(path), "worktrees.edn", `${printUfss(stateToEdn(state))}\n`);
+	await writeFileAtomic(dirname(path), "worktrees.edn", `${printUfss(stateToEdn(state))}\n`);
 }
 
 function stateToEdn(state) {
@@ -1722,12 +1722,12 @@ async function withState(paths, deps, fn, options = {}) {
 		const state = existing ?? createState(paths.slug ?? "", null, nowIso(ports(deps).clock));
 		try {
 			const result = await fn(state);
-			writeState(paths.statePath, state);
+			await writeState(paths.statePath, state);
 			return result;
 		} catch (error) {
 			if (options.commitOnError === true) {
 				try {
-					writeState(paths.statePath, state);
+					await writeState(paths.statePath, state);
 				} catch {
 					// Keep the original error; recovery still has the old state.
 				}
@@ -1899,9 +1899,9 @@ async function acquireWithWait(lockPort, path, meta, deps, signal) {
 	}
 }
 
-function release(lockPort, handle) {
+async function release(lockPort, handle) {
 	if (!handle) return;
-	const result = typeof lockPort?.release === "function" ? lockPort.release(handle) : releaseLock(handle);
+	const result = typeof lockPort?.release === "function" ? await lockPort.release(handle) : await releaseLock(handle);
 	if (result?.released === false && result.reason !== "missing") {
 		throw herdError(":STALE_CONTROL", "cannot release lock", {
 			path: handle.path,

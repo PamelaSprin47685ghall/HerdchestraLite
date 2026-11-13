@@ -10,7 +10,8 @@ import { availableParallelism } from "node:os";
 import { parentPort, Worker, workerData } from "node:worker_threads";
 import { createSandboxSession, runSerializedCallable } from "./evaluator.mjs";
 import { EdnKeyword, printUfss, readUfss } from "./ufss.mjs";
-import { createBatch, list as vfsList, readText as vfsRead, stat as vfsStat } from "./vfs.mjs";
+import { lstat, readFile, readdir } from "node:fs/promises";
+import { resolve } from "node:path";
 
 const POOL_SIZE = Math.min(8, Math.max(2, availableParallelism?.() ?? 4));
 const pool = { workers: [], nextIdx: 0, seq: 0, pending: new Map() };
@@ -89,29 +90,54 @@ if (parentPort !== null && workerData?.__globPoolWorker === true) {
 		if (!msg || typeof msg !== "object") return;
 		const { id, writeRoot, fnDesc, paths } = msg;
 		try {
-			const batch = createBatch({ writeRoot });
+			const results = [];
+			const readEntries = [];
+			const absolute = (path) => (String(path).startsWith("/") ? String(path) : resolve(writeRoot, String(path)));
+			const statValue = async (path) => {
+				try {
+					const stats = await lstat(absolute(path), { bigint: true });
+					return new Map([
+						[new EdnKeyword("exists"), true],
+						[new EdnKeyword("size"), Number(stats.size)],
+						[new EdnKeyword("is-dir"), stats.isDirectory()],
+						[new EdnKeyword("is-file"), stats.isFile()],
+					]);
+				} catch {
+					return new Map([[new EdnKeyword("exists"), false]]);
+				}
+			};
 			const session = createSandboxSession({
 				agentId: "glob-pool",
 				role: "review",
 				allowedCapabilities: ["cat", "stat", "ls", "whereAll"],
 				createCapabilities: () => ({
-					cat: ({ path }) => {
-						const res = vfsRead(batch, path);
+					cat: async ({ path }) => {
+						const target = absolute(path);
+						const content = await readFile(target, "utf8");
+						readEntries.push({ path: target });
 						return new Map([
-							[new EdnKeyword("content"), res.content],
-							[new EdnKeyword("virtual"), res.virtual],
+							[new EdnKeyword("content"), content],
+							[new EdnKeyword("virtual"), false],
 						]);
 					},
-					stat: ({ path }) => vfsStat(batch, path),
-					ls: ({ path }) => vfsList(batch, path),
+					stat: async ({ path }) => {
+						readEntries.push({ path: absolute(path) });
+						return statValue(path);
+					},
+					ls: async ({ path }) => {
+						const entries = await readdir(absolute(path));
+						readEntries.push({ path: absolute(path) });
+						return new Map([
+							[new EdnKeyword("exists"), true],
+							[new EdnKeyword("entries"), entries],
+						]);
+					},
 				}),
 			});
-			const results = [];
 			for (const p of paths) {
 				const val = await runSerializedCallable(session, fnDesc, [p]);
 				results.push(printUfss(val));
 			}
-			const readEntries = [...batch.readSet.values()];
 			parentPort.postMessage({ id, ok: true, results, readEntries });
 		} catch (error) {
 			parentPort.postMessage({ id, ok: false, error: error?.message ?? String(error) });
