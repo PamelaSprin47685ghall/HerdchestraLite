@@ -1,6 +1,7 @@
 (ns herd.ufss
   (:require [clojure.edn :as edn]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [cljs.pprint :as pp]))
 
 (def ^:private quote-code 34)
 (def ^:private backslash-code 92)
@@ -214,7 +215,7 @@
 (defn print
   "Print a value as EDN + UFSS."
   [value]
-  (wrap (pr-str value)))
+  (wrap (with-out-str (pp/pprint value))))
 
 (def UFSS_PROMPT_NOTE
   (str/join
