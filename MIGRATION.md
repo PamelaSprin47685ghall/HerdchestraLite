@@ -19,7 +19,7 @@
 - [x] `call`（spawn、超时、1 MiB 内联上限、完整日志、跨进程写锁）。
 - [x] `park`、`unpark`、`abandon`（Promise 挂起；缺期限/多程序隔离）。
 - [ ] `glob`。
-- [~] `write` 跨进程写锁已接；`stamp` 复核未做；失败保留已写部分由逐条落盘保证。
+- [x] `write` 跨进程写锁、`stamp` 复核（`:FILE_CONFLICT`）；失败保留已写部分由逐条落盘保证。
 - [ ] 审计员 `/tmp` 隔离语义。
 
 ### 1.3 会话语义

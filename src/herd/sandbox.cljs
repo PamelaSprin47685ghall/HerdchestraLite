@@ -1,10 +1,11 @@
 (ns herd.sandbox
   (:require
    ["node:child_process" :as cp]
-   ["node:fs" :as fs-sync]
-   ["node:fs/promises" :as fs]
    ["node:path" :as path]
    [clojure.string :as string]))
+
+(def ^:private fs-native (js/require "node:fs"))
+(def ^:private fs-promises (js/require "node:fs/promises"))
 
 (defn- resolve-path [p]
   (path/resolve (or p ".")))
@@ -14,7 +15,7 @@
 
 (defn- stale-lock? []
   (try
-    (let [pid (js/parseInt (fs-sync/readFileSync lock-path "utf8") 10)]
+    (let [pid (js/parseInt (.readFileSync fs-native lock-path "utf8") 10)]
       (or (js/Number.isNaN pid)
           (not (try
                  (js/process.kill pid 0)
@@ -25,16 +26,16 @@
       false)))
 
 (defn- try-acquire []
-  (fs-sync/mkdirSync (path/dirname lock-path) #js {:recursive true})
+  (.mkdirSync fs-native (path/dirname lock-path) #js {:recursive true})
   (let [open (fn []
                (try
-                 (fs-sync/writeFileSync lock-path (str (.-pid js/process)) #js {:flag "wx"})
+                 (.writeFileSync fs-native lock-path (str (.-pid js/process)) #js {:flag "wx"})
                  {}
                  (catch :default _
                    nil)))]
     (or (open)
         (when (stale-lock?)
-          (try (fs-sync/unlinkSync lock-path) (catch :default _ nil))
+          (try (.unlinkSync fs-native lock-path) (catch :default _ nil))
           (open)))))
 
 (defn- acquire-lock [attempt]
@@ -53,45 +54,69 @@
 
 (defn- release-lock [fd]
   (when fd
-    (try (fs-sync/closeSync fd) (catch :default _ nil)))
-  (try (fs-sync/unlinkSync lock-path) (catch :default _ nil)))
+    (try (.closeSync fs-native fd) (catch :default _ nil)))
+  (try (.unlinkSync fs-native lock-path) (catch :default _ nil)))
+
+(defn- chain [value on-value on-error]
+  (if (and value (fn? (.-then value)))
+    (.then value on-value on-error)
+    (try (on-value value) (catch :default error (on-error error)))))
 
 (defn- with-lock [f]
   (-> (acquire-lock 0)
       (.then
         (fn [{:keys [fd]}]
-          (-> (f)
-              (.then
-                (fn [value]
-                  (release-lock fd)
-                  value)
-                (fn [error]
-                  (release-lock fd)
-                  (throw error))))))))
+          (chain (f)
+                 (fn [value]
+                   (release-lock fd)
+                   value)
+                 (fn [error]
+                   (release-lock fd)
+                   (throw error)))))))
 
 (defn cat [{:keys [path]}]
-  (fs/readFile (resolve-path path) "utf8"))
+  (.readFile fs-promises (resolve-path path) "utf8"))
 
 (defn read [{:keys [path]}]
-  (fs/readFile (resolve-path path) "utf8"))
+  (.readFile fs-promises (resolve-path path) "utf8"))
 
-(defn write [{:keys [path content]}]
-  (with-lock (fn [] (fs/writeFile (resolve-path path) content "utf8"))))
+(defn- stamp-of [stats]
+  {:mtimeSec (Math/floor (/ (.-mtimeMs stats) 1000))
+   :mtimeNsec (Math/floor (* (mod (.-mtimeMs stats) 1000) 1000000))
+   :size (.-size stats)})
+
+(defn- check-stamp! [path expected]
+  (when expected
+    (let [stats (try (.statSync fs-native path) (catch :default _ nil))
+          actual (when stats (stamp-of stats))]
+      (when (or (nil? actual)
+                (not= (:mtimeSec actual) (:mtimeSec expected))
+                (not= (:mtimeNsec actual) (:mtimeNsec expected))
+                (not= (:size actual) (:size expected)))
+        (throw (ex-info "file changed since read"
+                        {:code :FILE_CONFLICT :path path}))))))
+
+(defn write [{:keys [path content] :as request}]
+  (with-lock
+    (fn []
+      (let [absolute (resolve-path path)]
+        (check-stamp! absolute (:__expectedStamp request))
+        (.writeFile fs-promises absolute content "utf8")))))
 
 (defn mkdir [{:keys [path]}]
-  (with-lock (fn [] (fs/mkdir (resolve-path path) #js {:recursive true}))))
+  (with-lock (fn [] (.mkdir fs-promises (resolve-path path) #js {:recursive true}))))
 
 (defn rm [{:keys [path]}]
-  (with-lock (fn [] (fs/rm (resolve-path path) #js {:recursive true :force true}))))
+  (with-lock (fn [] (.rm fs-promises (resolve-path path) #js {:recursive true :force true}))))
 
 (defn mv [{:keys [source target]}]
-  (with-lock (fn [] (fs/rename (resolve-path source) (resolve-path target)))))
+  (with-lock (fn [] (.rename fs-promises (resolve-path source) (resolve-path target)))))
 
 (defn ls [{:keys [path]}]
-  (fs/readdir (resolve-path path)))
+  (.readdir fs-promises (resolve-path path)))
 
 (defn stat [{:keys [path]}]
-  (-> (fs/stat (resolve-path path))
+  (-> (.stat fs-promises (resolve-path path))
       (.then (fn [s] {:exists true
                       :size (.-size s)
                       :is-dir (.isDirectory s)
@@ -155,11 +180,11 @@
 
 (defn- call-log-path []
   (let [dir (path/join (js/process.cwd) ".herd" "artifacts" "call")]
-    (fs-sync/mkdirSync dir #js {:recursive true})
+    (.mkdirSync fs-native dir #js {:recursive true})
     (path/join dir (str "call-" (js/Date.now) ".log"))))
 
 (defn- append-capped [state key chunk log-path]
-  (fs-sync/appendFileSync log-path chunk)
+  (.appendFileSync fs-native log-path chunk)
   (let [current (get @state key)
         remaining (- max-inline-bytes (count current))]
     (when (pos? remaining)
