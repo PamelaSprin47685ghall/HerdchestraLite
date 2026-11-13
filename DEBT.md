@@ -57,8 +57,8 @@
 - **影响**：沙盒不是安全边界；LLM 程序可经 `js/` 触碰宿主全局。
 - **下一步**：若需强隔离，改用自建 SCI ctx 或子进程 worker；在此之前不得把基本防呆宣传为安全隔离。
 
-## D19 默认模式迁移未收口
+## D19 完整装配迁移未收口
 
-- **缺口**：默认模式目前只接通 `clj_devops` 与 `wait`；`time_leap`、`ask_beacon`、`COMMON_RULES_TEXT` / `UFSS_PROMPT_NOTE` 注入、宿主工具黑名单尚未在 CLJS 主程序实现。
-- **影响**：规格 §0.4 的默认可见面不完整；迁移期间不得宣称这些能力可用。
-- **下一步**：按 `MIGRATION.md` 台账逐项补齐；每项完成后更新台账与本节。
+- **现状**：默认面已接通 `clj_devops`、`wait`、`time_leap`、`ask_beacon`、提示词注入与宿主工具黑名单。
+- **缺口**：完整装配（`review`/`attach_*`、看板、S5 runner、K 路审计、TUI）仍未迁移到 CLJS；旧 `src/*.mjs` 模块仍存在但不由默认入口加载。
+- **下一步**：按 `MIGRATION.md` 台账继续迁移完整装配，完成后删除旧模块。

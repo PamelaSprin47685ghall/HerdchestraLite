@@ -9,9 +9,9 @@
 - [x] `clj_devops`：`code`、`name`、`ariadne_budget`、`ariadne_goal`、`more_workers_without_hitting_mythical_man_month`。
 - [x] 回执为 EDN + UFSS：`{:name ... :state :completed|:failed|:parked, :value ...}`。
 - [x] `wait({otherwise_independent_work})`：`:idle`、一次性返回积压、等待在途完成。
-- [ ] `time_leap`、`ask_beacon`。
+- [x] `time_leap`、`ask_beacon`（锚点记录、pending jump、context 裁剪、beacon 读取）。
 - [-] `/clj-status`（人类操作员取消，不再属于默认面）。
-- [ ] 默认模式只暴露 `clj_devops` + `wait` + `time_leap` + `ask_beacon`。
+- [x] 默认模式只暴露 `clj_devops` + `wait` + `time_leap` + `ask_beacon`。
 
 ### 1.2 能力
 - [x] `cat`、`read`、`write`、`mkdir`、`rm`、`mv`、`ls`、`stat`（基础 fs）。
@@ -35,10 +35,11 @@
 - [x] UFSS post-pass（最短 fence、裸多行、尾随闭合文本）。
 - [x] UFSS pre-pass（单行/多行 fence → 标准字符串；宽容缩进与尾随闭合文本）。
 - [x] `#"..."`、`#(...)`、`#?` 等官方 reader 语义（nbb 负责）。
-- [~] `COMMON_RULES_TEXT` / `UFSS_PROMPT_NOTE` 已在 `herd.prompts` 中组合；`before_agent_start` 注入未接。
+- [x] `COMMON_RULES_TEXT` / `UFSS_PROMPT_NOTE` 已在 `herd.prompts` 中组合，并由 `before_agent_start` 注入。
 
 ### 1.5 提示词与命令
-- [ ] `COMMON_RULES_TEXT` 注入（`before_agent_start`）。
+- [x] `COMMON_RULES_TEXT` 注入（`before_agent_start`，幂等）。
+- [x] 宿主工具黑名单（`setActiveTools`）。
 - [ ] `/clj-status`、`/herd-*`（完整装配）。
 - [ ] Nudge、语言尾注。
 
@@ -97,7 +98,7 @@
 ## 5 已知偏差
 
 - `wait` 的期限仍是固定 30s，未按 `1000ms + bytes × 50ms` 计算；超时不 park-all。
-- `time_leap`、`ask_beacon`、`/clj-status`、提示词注入未迁移。
+- `/clj-status` 已取消；`time_leap`、`ask_beacon` 与提示词注入已迁移。
 - 标准化错误码未迁移；`call` 的输出上限、日志、写锁未迁移。
 - 旧 `src/*.mjs` 模块仍存在但不再由默认入口加载；最终删除。
 
@@ -108,7 +109,8 @@
 1. 运行时由 `cherry-cljs` / `squint` 改为 `nbb`（Node 上的 SCI）；mjs 入口缩到宿主引导。
 2. §4.1 的 Air-Gapped 符号表放宽为**基本防呆**：`nbb` 默认暴露 `js/` 与 `globalThis`，不承诺逃逸不可能；不主动注入 `process`/`require`/`fs`。剩余风险记入 `DEBT.md` D18。
 3. UFSS 读取宽容化：闭合围栏允许尾随文本；body 短缩进不再报错。
-4. UFSS 输出策略：多行 body 顶格、先 UFSS 再 pprint、`""",` 与后续 entry 同行。
+4. UFSS 输出策略：数据与代码统一 `wrap(format(...))`；多行 body 顶格，`""",` 与后续 entry 同行。
 5. `wait` 的期限暂为固定 30s；旧 evaluator/repl 测试暂停，最终以 CLJS 测试替代。
 6. `/clj-status` 取消，不再实现或注入。
 7. 所有业务 CLJS 源码（`prompts`、`sandbox`、`repl`、`main`）的字符串字面量按 UFSS 规范书写：普通文本用标准字符串，含引号/反斜杠用最小 fence，多行用顶格三引号。`ufss.cljs` 与 `bootstrap.cljs` 是自举内核，保持标准字符串。
+8. `time_leap` 的上下文裁剪在 `context` 钩子内完成：按锚点 `toolCallId` 截断，并追加 `experience` 作为 user message。
