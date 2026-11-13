@@ -1153,7 +1153,7 @@ const TOOL_DESCRIPTION_BY_NAME = Object.freeze({
  * same registered tool serves both sessions.
  */
 const HOST_READ_WRITE_NOTE =
-	"`cat` returns exact byte-for-byte content. `read` delegates to the host read tool and guarantees only readability, not exact fidelity. `write` delegates to the host write tool.";
+	"`cat` guarantees byte-for-byte content and is the only correct basis for an exact patch. `read` delegates to the host read tool and guarantees only that the result is readable, not byte-exact; never use `read` output as the basis for an exact patch. `write` delegates to the host write tool.";
 
 export function describeSandboxTool(toolName) {
 	const description = TOOL_DESCRIPTION_BY_NAME[toolName];
