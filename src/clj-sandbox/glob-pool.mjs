@@ -9,7 +9,7 @@
 import { availableParallelism } from "node:os";
 import { parentPort, Worker, workerData } from "node:worker_threads";
 import { createSandboxSession, runSerializedCallable } from "./evaluator.mjs";
-import { EdnKeyword, printUfss, readUfss } from "./ufss.mjs";
+import { keyword, printUfss, readUfss } from "./ufss.mjs";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -98,13 +98,13 @@ if (parentPort !== null && workerData?.__globPoolWorker === true) {
 				try {
 					const stats = await lstat(absolute(path), { bigint: true });
 					return new Map([
-						[new EdnKeyword("exists"), true],
-						[new EdnKeyword("size"), Number(stats.size)],
-						[new EdnKeyword("is-dir"), stats.isDirectory()],
-						[new EdnKeyword("is-file"), stats.isFile()],
+						[keyword("exists"), true],
+						[keyword("size"), Number(stats.size)],
+						[keyword("is-dir"), stats.isDirectory()],
+						[keyword("is-file"), stats.isFile()],
 					]);
 				} catch {
-					return new Map([[new EdnKeyword("exists"), false]]);
+					return new Map([[keyword("exists"), false]]);
 				}
 			};
 			const session = createSandboxSession({
@@ -117,8 +117,8 @@ if (parentPort !== null && workerData?.__globPoolWorker === true) {
 						const content = await readFile(target, "utf8");
 						readEntries.push({ path: target });
 						return new Map([
-							[new EdnKeyword("content"), content],
-							[new EdnKeyword("virtual"), false],
+							[keyword("content"), content],
+							[keyword("virtual"), false],
 						]);
 					},
 					stat: async ({ path }) => {
@@ -129,8 +129,8 @@ if (parentPort !== null && workerData?.__globPoolWorker === true) {
 						const entries = await readdir(absolute(path));
 						readEntries.push({ path: absolute(path) });
 						return new Map([
-							[new EdnKeyword("exists"), true],
-							[new EdnKeyword("entries"), entries],
+							[keyword("exists"), true],
+							[keyword("entries"), entries],
 						]);
 					},
 				}),

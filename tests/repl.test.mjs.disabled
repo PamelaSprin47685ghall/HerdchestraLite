@@ -1,0 +1,32 @@
+import { describe, expect, it } from "bun:test";
+import * as cherry from "cherry-cljs/cljs.core.js";
+import { evaluateCljs } from "../src/clj-sandbox/repl.mjs";
+
+describe("official Cherry eval", () => {
+	it("returns the last expression as a Cherry value", async () => {
+		const value = await evaluateCljs("(vector 1 2)");
+		expect(cherry.pr_str(value)).toBe("[1 2]");
+	});
+
+	it("supports official reader macros", async () => {
+		expect(await evaluateCljs("(#(+ % 1) 41)")).toBe(42);
+		expect(await evaluateCljs("(count ##\"abc\"##)")).toBe(3);
+	});
+
+	it("binds only the injected capabilities", async () => {
+		const value = await evaluateCljs("(sandbox/cat)", {
+			capabilities: { cat: () => 42 },
+		});
+		expect(value).toBe(42);
+	});
+
+	it("restores the capability slot after the call", async () => {
+		globalThis.__herdCapabilities = { marker: true };
+		await evaluateCljs("(+ 1 1)", { capabilities: { add: () => 0 } });
+		expect(globalThis.__herdCapabilities).toEqual({ marker: true });
+	});
+
+	it("propagates compiler errors", async () => {
+		await expect(evaluateCljs("(unclosed")).rejects.toThrow();
+	});
+});

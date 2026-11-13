@@ -32,7 +32,7 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { EdnKeyword, printUfss, readUfss } from "../clj-sandbox/ufss.mjs";
+import { isKeyword, keyword, keywordName, printUfss, readUfss } from "../clj-sandbox/ufss.mjs";
 import { writeFileAtomic } from "../util/atomic-write.mjs";
 import { herdError } from "../util/errors.mjs";
 import { acquireLock, releaseLock } from "../util/file-lock.mjs";
@@ -1637,14 +1637,14 @@ function stateToEdn(state) {
 		slices.set(sliceId, objectToEdn(slice));
 	}
 	return new Map([
-		[new EdnKeyword("version"), state.version],
-		[new EdnKeyword("slug"), state.slug],
-		[new EdnKeyword("base"), state.base ?? null],
-		[new EdnKeyword("queue"), state.queue.map(objectToEdn)],
-		[new EdnKeyword("next-seq"), state.next_seq],
-		[new EdnKeyword("slices"), slices],
-		[new EdnKeyword("created-at"), state.created_at],
-		[new EdnKeyword("updated-at"), state.updated_at],
+		[keyword("version"), state.version],
+		[keyword("slug"), state.slug],
+		[keyword("base"), state.base ?? null],
+		[keyword("queue"), state.queue.map(objectToEdn)],
+		[keyword("next-seq"), state.next_seq],
+		[keyword("slices"), slices],
+		[keyword("created-at"), state.created_at],
+		[keyword("updated-at"), state.updated_at],
 	]);
 }
 
@@ -1657,9 +1657,9 @@ function objectToEdn(value) {
 			const kebab = snakeToKebab(key);
 			const output =
 				(kebab === "status" || kebab === "role") && typeof entry === "string"
-					? new EdnKeyword(entry)
+					? keyword(entry)
 					: objectToEdn(entry);
-			map.set(new EdnKeyword(kebab), output);
+			map.set(keyword(kebab), output);
 		}
 		return map;
 	}
@@ -1672,12 +1672,12 @@ function fromStateEdn(value) {
 	}
 	const state = {};
 	for (const [key, entry] of value) {
-		const name = key instanceof EdnKeyword ? key.name : String(key);
+		const name = isKeyword(key) ? keywordName(key) : String(key);
 		if (name === "slices") {
 			if (!(entry instanceof Map)) throw new Error(":slices must be an EDN map");
 			const slices = {};
 			for (const [sliceKey, slice] of entry) {
-				const sliceId = sliceKey instanceof EdnKeyword ? sliceKey.name : String(sliceKey);
+				const sliceId = isKeyword(sliceKey) ? keywordName(sliceKey) : String(sliceKey);
 				slices[sliceId] = fromEdnValue(slice);
 			}
 			state.slices = slices;
@@ -1692,14 +1692,14 @@ function fromEdnValue(value) {
 	if (value instanceof Map) {
 		const object = {};
 		for (const [key, entry] of value) {
-			const name = key instanceof EdnKeyword ? key.name : String(key);
+			const name = isKeyword(key) ? keywordName(key) : String(key);
 			object[kebabToSnake(name)] = fromEdnValue(entry);
 		}
 		return object;
 	}
 	if (Array.isArray(value)) return value.map(fromEdnValue);
 	if (value instanceof Set) return [...value].map(fromEdnValue);
-	if (value instanceof EdnKeyword) return value.name;
+	if (isKeyword(value)) return keywordName(value);
 	return value;
 }
 

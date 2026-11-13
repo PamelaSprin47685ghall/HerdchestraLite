@@ -23,7 +23,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { buildSandboxTools, describeSandboxTool } from "./clj-sandbox/tools.mjs";
-import { EdnKeyword, printUfss, readUfss } from "./clj-sandbox/ufss.mjs";
+import { isKeyword, keyword, keywordName, printUfss, readUfss } from "./clj-sandbox/ufss.mjs";
 import { applyHistoryBarrier } from "./host/hack-context.mjs";
 import { readHealth, recordHealth } from "./host/health.mjs";
 import { COMMON_RULES_TEXT } from "./prompts/common.mjs";
@@ -989,7 +989,7 @@ function slugFromArtifactsPath(path) {
 function ednField(map, key) {
 	if (!(map instanceof Map)) return undefined;
 	for (const [name, value] of map) {
-		if (name instanceof EdnKeyword && name.name === key) return value;
+		if (isKeyword(name) && keywordName(name) === key) return value;
 	}
 	return undefined;
 }
@@ -1129,9 +1129,9 @@ export async function writeDevopsReport(state, ctx, report) {
 	const receiptDirectory = join(directory, "devops-reports");
 	await mkdir(receiptDirectory, { recursive: true });
 	const record = new Map([
-		[new EdnKeyword("status"), report.status],
-		[new EdnKeyword("report-markdown"), report.report_markdown],
-		[new EdnKeyword("inspected-paths"), report.inspected_paths],
+		[keyword("status"), report.status],
+		[keyword("report-markdown"), report.report_markdown],
+		[keyword("inspected-paths"), report.inspected_paths],
 	]);
 	await writeFileAtomic(receiptDirectory, `${callId}.edn`, printUfss(record));
 	state.devopsLastCallId = callId;
@@ -2570,15 +2570,15 @@ export function auditReady(state) {
 	if (!(tasks instanceof Map)) return false;
 	for (const task of tasks.values()) {
 		const taskState = ednField(task, "state");
-		if (!(taskState instanceof EdnKeyword) || taskState.name !== "done") return false;
+		if (!(isKeyword(taskState)) || keywordName(taskState) !== "done") return false;
 	}
 	const actions = ednField(board, "actions");
 	if (actions instanceof Map) {
 		for (const action of actions.values()) {
 			const phase = ednField(action, "phase");
 			if (
-				phase instanceof EdnKeyword &&
-				["claimed", "preparing", "waiting-gate", "applying", "running", "uncertain"].includes(phase.name)
+				isKeyword(phase) &&
+				["claimed", "preparing", "waiting-gate", "applying", "running", "uncertain"].includes(keywordName(phase))
 			) {
 				return false;
 			}

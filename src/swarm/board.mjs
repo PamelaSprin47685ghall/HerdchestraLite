@@ -30,7 +30,15 @@ import { createHash, randomUUID } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, openSync, readFileSync, statSync, writeSync } from "node:fs";
 import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, posix } from "node:path";
-import { EdnKeyword, EdnSymbol, printUfss, readUfss } from "../clj-sandbox/ufss.mjs";
+import {
+	isKeyword,
+	isSymbol,
+	keyword,
+	keywordName,
+	printUfss,
+	readUfss,
+	symbolName,
+} from "../clj-sandbox/ufss.mjs";
 import { writeEdnAtomic, writeFileAtomic } from "../util/atomic-write.mjs";
 import { herdError } from "../util/errors.mjs";
 import { withLock } from "../util/file-lock.mjs";
@@ -1001,14 +1009,15 @@ function fromEdnValue(value) {
 	if (value instanceof Map) {
 		const object = {};
 		for (const [key, entry] of value) {
-			const name = key instanceof EdnKeyword || key instanceof EdnSymbol ? key.name : String(key);
+			const name = isKeyword(key) ? keywordName(key) : isSymbol(key) ? symbolName(key) : String(key);
 			object[name] = fromEdnValue(entry);
 		}
 		return object;
 	}
 	if (Array.isArray(value)) return value.map(fromEdnValue);
 	if (value instanceof Set) return [...value].map(fromEdnValue);
-	if (value instanceof EdnKeyword || value instanceof EdnSymbol) return value.name;
+	if (isKeyword(value)) return keywordName(value);
+	if (isSymbol(value)) return symbolName(value);
 	return value;
 }
 
@@ -1039,14 +1048,14 @@ function keywordizeCollection(collection, fields) {
 		if (!value || typeof value !== "object") continue;
 		for (const field of fields) {
 			if (typeof value[field] === "string") {
-				value[field] = new EdnKeyword(value[field].replace(/^:/, ""));
+				value[field] = keyword(value[field].replace(/^:/, ""));
 			}
 		}
 	}
 }
 
 function toEdnValue(value) {
-	if (value instanceof EdnKeyword || value instanceof EdnSymbol) return value;
+	if (isKeyword(value) || isSymbol(value)) return value;
 	if (Array.isArray(value)) return value.map(toEdnValue);
 	if (value && typeof value === "object") {
 		const map = new Map();
@@ -1070,7 +1079,7 @@ function ednKey(key) {
 			parts[1].length > 0 &&
 			KEYWORD_PART.test(parts[0]) &&
 			KEYWORD_PART.test(parts[1]));
-	return valid ? new EdnKeyword(key) : key;
+	return valid ? keyword(key) : key;
 }
 
 async function writeBoardFile(path, board) {

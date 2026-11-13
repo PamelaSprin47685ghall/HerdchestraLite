@@ -221,7 +221,9 @@ describe("sandboxed command", () => {
 		expect(existsSync(join(toDir, "f"))).toBe(true);
 	});
 
-	it("loads the host extension package from the minimal home mounts", async () => {
+	it.skipIf(!existsSync(join(homedir(), "node_modules", "@oh-my-pi", "pi-coding-agent", "package.json")))(
+		"loads the host extension package from the minimal home mounts",
+		async () => {
 		const { config } = fixture();
 		symlinkSync(join(homedir(), "node_modules"), join(config.auditTmp, "node_modules"));
 		const run = createSandboxedRunCommand(config);

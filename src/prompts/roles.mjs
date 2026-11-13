@@ -10,7 +10,7 @@
  * receives only one structured CASE record.
  */
 
-import { EdnKeyword, printUfss } from "../clj-sandbox/ufss.mjs";
+import { keyword, printUfss } from "../clj-sandbox/ufss.mjs";
 
 export const PLAN_DEVOPS_PROMPT = `[ROLE: PLAN DEVOPS — PRIVILEGED WORKER]
 You are the privileged worker for the current Plan tenure: every Swarm Worker capability, plus call. You have no board and do not take a token.
@@ -109,12 +109,12 @@ export function formatCaseRecord(caseSpec) {
 		throw new TypeError(`${caseId}: caseSpec.rubric must be a non-empty string`);
 	}
 	const record = new Map([
-		[new EdnKeyword("case_id"), caseId],
-		[new EdnKeyword("path"), caseSpec.path],
-		[new EdnKeyword("threshold"), caseSpec.threshold],
-		[new EdnKeyword("steps"), [...caseSpec.steps]],
-		[new EdnKeyword("expected"), caseSpec.expected],
-		[new EdnKeyword("rubric"), caseSpec.rubric],
+		[keyword("case_id"), caseId],
+		[keyword("path"), caseSpec.path],
+		[keyword("threshold"), caseSpec.threshold],
+		[keyword("steps"), [...caseSpec.steps]],
+		[keyword("expected"), caseSpec.expected],
+		[keyword("rubric"), caseSpec.rubric],
 	]);
 	return printUfss(record);
 }
