@@ -18,10 +18,10 @@
   (let [root (path/join (js/process.cwd) ".herd" "eval" "herd-src")]
     (fs/mkdirSync (path/join root "herd") #js {:recursive true})
     (await (nbb/load-file (module-path "ufss")))
-    (doseq [name ["prompts" "sandbox" "repl"]]
+    (doseq [name ["prompts" "ariadne" "sandbox" "repl"]]
       (preprocess! root name))
     (cp/add-classpath root)
-    (doseq [name ["prompts" "sandbox" "repl"]]
+    (doseq [name ["prompts" "ariadne" "sandbox" "repl"]]
       (await (nbb/load-file (path/join root "herd" (str name ".cljs")))))
     (preprocess! root "main")
     (await (nbb/load-file (path/join root "herd" "main.cljs")))))

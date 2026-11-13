@@ -1,6 +1,7 @@
 (ns herd.main
   (:require
    [clojure.string :as str]
+   [herd.ariadne :as ariadne]
    [herd.prompts :as prompts]
    [herd.repl :as repl]
    [herd.ufss :as ufss]))
@@ -15,9 +16,10 @@
   {:isError true
    :content [(text-block (str error))]})
 
-(defn- execute [_tool-call-id params _signal]
+(defn- execute [tool-call-id params _signal]
   (let [name (.-name params)
         code (.-code params)]
+    (ariadne/record-anchor! name tool-call-id)
     (-> (repl/run name code)
         (.then (fn [result] (clj->js (tool-result (ufss/print result)))))
         (.catch (fn [error] (clj->js (tool-error error)))))))
@@ -26,12 +28,27 @@
   (-> (js/Promise.resolve (repl/wait-for-result))
       (.then (fn [result] (clj->js (tool-result (ufss/print result)))))))
 
+(defn- time-leap-execute [_tool-call-id params _signal]
+  (clj->js
+    (tool-result
+      (ufss/print (ariadne/time-leap! (js->clj params :keywordize-keys true))))))
+
+(defn- ask-beacon-execute [_tool-call-id params _signal]
+  (clj->js
+    (tool-result
+      (ufss/print (ariadne/ask-beacon (js->clj params :keywordize-keys true))))))
+
 (defn- code-schema [] {:type "string"})
 (defn- name-schema [] {:type "string"})
 (defn- budget-schema [] {:type "integer" :minimum 1})
 (defn- goal-schema [] {:type "string" :minLength 1})
 (defn- workers-schema [] {:type "integer" :minimum 0})
 (defn- work-schema [] {:type "string" :minLength 1})
+(defn- target-schema [] {:type "string" :minLength 1})
+(defn- experience-schema [] {:type "string" :minLength 1})
+(defn- beacon-name-schema [] {:type "string" :minLength 1})
+(defn- beacon-description-schema [] {:type "string" :minLength 1})
+(defn- question-schema [] {:type "string" :minLength 1})
 
 (defn- devops-parameters []
   {:type "object"
@@ -49,6 +66,22 @@
    :required ["otherwise_independent_work"]
    :properties {:otherwise_independent_work (work-schema)}})
 
+(defn- time-leap-parameters []
+  {:type "object"
+   :additionalProperties false
+   :required ["target" "experience" "beacon_name" "beacon_description"]
+   :properties {:target (target-schema)
+                :experience (experience-schema)
+                :beacon_name (beacon-name-schema)
+                :beacon_description (beacon-description-schema)}})
+
+(defn- ask-beacon-parameters []
+  {:type "object"
+   :additionalProperties false
+   :required ["target" "question"]
+   :properties {:target (target-schema)
+                :question (question-schema)}})
+
 (defn- register! [definition]
   (.registerTool js/globalThis.__pi (clj->js definition)))
 
@@ -62,7 +95,17 @@
               :label "Wait"
               :description "Collect the next completed sandbox program."
               :parameters (wait-parameters)
-              :execute wait-execute}))
+              :execute wait-execute})
+  (register! {:name "time_leap"
+              :label "Time Leap"
+              :description "Cut back to a clean sandbox anchor."
+              :parameters (time-leap-parameters)
+              :execute time-leap-execute})
+  (register! {:name "ask_beacon"
+              :label "Ask Beacon"
+              :description "Query a read-only pruned branch."
+              :parameters (ask-beacon-parameters)
+              :execute ask-beacon-execute}))
 
 (def host-tool-blacklist
   #{"read" "write" "edit" "apply_patch" "ast_edit" "ast_grep"
