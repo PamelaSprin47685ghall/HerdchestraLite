@@ -18,6 +18,7 @@ import activate, {
 	waitMsFor,
 } from "../src/clj-main.mjs";
 import { callEnvironment, defaultRunCommand } from "../src/clj-sandbox/vfs.mjs";
+import { readCljs, readUfss } from "../src/clj-sandbox/ufss.mjs";
 
 function fakeHost({ active, baseWaitMs } = {}) {
 	const tools = new Map();
@@ -317,6 +318,73 @@ describe("clj-only async dogfood surface (parallel shard)", () => {
 		expect(cleared.isError).not.toBe(true);
 		expect(cleared.content[0].text).toContain(":cleared true");
 		expect(cleared.content[0].text).toContain(":state :completed");
+	});
+
+	it("retires a parked program from the live table on abandon", async () => {
+		writeFileSync(join(root, "multi.txt"), "x\nx\n");
+		const { tools, hooks } = fakeHost();
+		const parked = await callTool(
+			tools,
+			"clj_devops",
+			"park-abandon-1",
+			{
+				name: "doomed",
+				code: `(let [src (cat {:path "multi.txt"})
+     [b e] (where {:content src :needle "x"})]
+ (write {:path "never.txt" :content src}))`,
+			},
+			root,
+		);
+		expect(parked.content[0].text).toContain(":state :parked");
+
+		const cleared = await callTool(
+			tools,
+			"clj_devops",
+			"park-abandon-2",
+			{ name: "cleanup", code: `(abandon {:name "doomed"})` },
+			root,
+		);
+		expect(cleared.isError).not.toBe(true);
+		expect(cleared.content[0].text).toContain(":cleared true");
+		expect(cleared.content[0].text).toContain(":state :failed");
+
+		const unknown = await callTool(
+			tools,
+			"clj_devops",
+			"park-abandon-3",
+			{ name: "cleanup-2", code: `(unpark {:name "doomed" :value [0 1]})` },
+			root,
+		);
+		expect(unknown.isError).toBe(true);
+		expect(unknown.content[0].text).toContain("PROGRAM_UNKNOWN");
+
+		const contextHandler = hooks.get("context")[0];
+		const out = await contextHandler(
+			{ messages: [{ role: "user", content: "hi" }] },
+			{ cwd: root, sessionManager: TEST_SESSION_MANAGER },
+		);
+		expect(out.messages.at(-1).content.at(-1).text).not.toContain("doomed");
+	});
+
+	it("reads CLJS hash literals in program code but not in EDN data", async () => {
+		expect(() => readUfss("#(+ % 1)")).toThrow("Unknown # dispatch");
+		expect(readCljs("#(+ % 1)")[0].name).toBe("fn");
+		const { tools } = fakeHost();
+		const result = await callTool(
+			tools,
+			"clj_devops",
+			"cljs-hash",
+			{
+				name: "cljs-hash",
+				code: `[(#(+ % 1) 41)
+   #?(:cljs 7 :clj 8)
+   (count ##"abc"##)
+   (+ 1 #_2 3)]`,
+			},
+			root,
+		);
+		expect(result.isError).not.toBe(true);
+		expect(result.content[0].text).toContain("[42 7 3 4]");
 	});
 
 		it("always injects language requirement in context tail even when nothing is parked", async () => {

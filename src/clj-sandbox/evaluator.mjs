@@ -41,7 +41,7 @@ import {
 	reSeqStep as regexWorkerSeqStep,
 	stringReplace as regexWorkerStringReplace,
 } from "./regex-worker.mjs";
-import { EdnKeyword, EdnList, EdnSymbol, printUfss, readUfss } from "./ufss.mjs";
+import { EdnKeyword, EdnList, EdnSymbol, printUfss, readCljs, readUfss } from "./ufss.mjs";
 import { findAll, findUnique } from "./where.mjs";
 
 const TEXT_ENCODER = new TextEncoder();
@@ -2280,7 +2280,7 @@ function checkTail(form, tail, loopDepth) {
 function parseProgram(code, expectedName) {
 	let form;
 	try {
-		form = readUfss(code);
+		form = readCljs(code);
 	} catch (error) {
 		fail(error.code ?? "INVALID_ARGUMENT", error.message, error.data ?? {}, error);
 	}
@@ -7847,27 +7847,13 @@ export async function unpark(session, request = {}) {
 	);
 }
 
-async function abandonProgram(session, { name, callerName }) {
-	const program = session.programs.get(name);
-	if (program === undefined) {
-		fail("PROGRAM_UNKNOWN", `Program ${name} does not exist`, { program: name });
-	}
-	if (callerName !== null && callerName === name) {
-		fail("INVALID_ARGUMENT", "A program cannot abandon itself", { program: name });
-	}
-	if (program.state !== PARKED) {
-		if (program.state === COMPLETED || program.state === FAILED) {
-			session.programs.delete(name);
-			return data().mapFromEntries([
-				[V("name"), name],
-				[V("state"), V(program.state)],
-				[V("abandoned"), false],
-				[V("cleared"), true],
-			]);
-		}
-		fail("STALE_CONTROL", `Program ${name} is not parked`, { program: name, state: program.state });
-	}
-	await discardProgram(session, program);
+/**
+ * Retire a program from the live table. Retirement is the single exit from
+ * `session.programs`: parked programs abandoned by the user and settled
+ * programs cleared on demand share the same cleanup, so the parked view and
+ * the program table can never disagree.
+ */
+function retireProgram(session, program, { state, aborted }) {
 	program.activeCallHandle?.writeStdin?.({ eof: true });
 	program.activeCallHandle?.abort?.();
 	program.activeCallHandle = null;
@@ -7877,12 +7863,38 @@ async function abandonProgram(session, { name, callerName }) {
 	program.parkReason = null;
 	program.kont = null;
 	program.rootEnv = null;
-	program.state = FAILED;
-	program.aborted = { reason: "abandoned", at: sessionNow(session) };
+	program.state = state;
+	if (aborted !== undefined) {
+		program.aborted = aborted;
+	}
+	session.programs.delete(program.name);
+}
+
+async function abandonProgram(session, { name, callerName }) {
+	const program = session.programs.get(name);
+	if (program === undefined) {
+		fail("PROGRAM_UNKNOWN", `Program ${name} does not exist`, { program: name });
+	}
+	if (callerName !== null && callerName === name) {
+		fail("INVALID_ARGUMENT", "A program cannot abandon itself", { program: name });
+	}
+	const settledState = program.state;
+	const settled = settledState === COMPLETED || settledState === FAILED;
+	if (!settled && program.state !== PARKED) {
+		fail("STALE_CONTROL", `Program ${name} is not abandonable`, { program: name, state: program.state });
+	}
+	if (!settled) {
+		await discardProgram(session, program);
+	}
+	retireProgram(session, program, {
+		state: settled ? settledState : FAILED,
+		aborted: settled ? undefined : { reason: "abandoned", at: sessionNow(session) },
+	});
 	return data().mapFromEntries([
 		[V("name"), name],
-		[V("state"), V("failed")],
-		[V("abandoned"), true],
+		[V("state"), V(settled ? settledState : "failed")],
+		[V("abandoned"), !settled],
+		[V("cleared"), true],
 	]);
 }
 

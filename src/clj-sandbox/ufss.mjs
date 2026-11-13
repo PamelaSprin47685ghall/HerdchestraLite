@@ -280,11 +280,13 @@ function invalidValue(message, value) {
 }
 
 class Reader {
-	constructor(text) {
+	constructor(text, dialect = "edn") {
 		this.text = text;
 		this.length = text.length;
 		this.index = 0;
 		this.keywords = new Map();
+		this.dialect = dialect;
+		this.fnCounter = 0;
 	}
 
 	locate(index) {
@@ -468,14 +470,182 @@ class Reader {
 			hashes += 1;
 		}
 		const quote = this.index + hashes;
-		if (this.text[quote] !== '"') {
+		if (this.text[quote] === '"') {
+			if (this.text.startsWith('"""', quote) && this.text[quote + 3] === "\n") {
+				return this.readMultiLineRaw(hashes, start, quote);
+			}
+			return this.readSingleLineRaw(hashes, start, quote);
+		}
+		if (this.dialect !== "cljs") {
 			this.fail("INVALID_ARGUMENT", "Unknown # dispatch", start);
 		}
-
-		if (this.text.startsWith('"""', quote) && this.text[quote + 3] === "\n") {
-			return this.readMultiLineRaw(hashes, start, quote);
+		if (hashes > 1) {
+			return this.readSymbolicNumber(start, quote);
 		}
-		return this.readSingleLineRaw(hashes, start, quote);
+		switch (this.text[this.index + 1]) {
+			case "(":
+				return this.readFnLiteral(start);
+			case "'":
+				return this.readVarQuote(start);
+			case ":":
+				return this.readNamespacedMap(start);
+			case "?":
+				return this.readReaderConditional(start);
+			default:
+				this.fail("INVALID_ARGUMENT", "Unknown # dispatch", start);
+		}
+	}
+
+	/** `#(...)` -> `(fn [p1 ...] (...))`, with `%`, `%n`, and `%&` bound. */
+	readFnLiteral(start) {
+		this.index += 2;
+		const body = new EdnList();
+		for (;;) {
+			this.skipIgnored();
+			if (this.index >= this.length) {
+				this.fail("UFSS_UNCLOSED", "Unclosed #() form", start);
+			}
+			if (this.text[this.index] === ")") {
+				this.index += 1;
+				break;
+			}
+			body.push(this.readValue());
+		}
+
+		const positional = new Map();
+		let rest = null;
+		const paramFor = (position) => {
+			let symbol = positional.get(position);
+			if (symbol === undefined) {
+				symbol = new EdnSymbol(`p${position}__${this.fnCounter++}#`);
+				positional.set(position, symbol);
+			}
+			return symbol;
+		};
+		const rewrite = (form) => {
+			if (form instanceof EdnSymbol) {
+				const match = /^%(?:(&)|(\d+))?$/.exec(form.name);
+				if (match === null) {
+					return form;
+				}
+				if (match[1] === "&") {
+					rest ??= new EdnSymbol(`rest__${this.fnCounter++}#`);
+					return rest;
+				}
+				const position = match[2] === undefined ? 1 : Number.parseInt(match[2], 10);
+				return paramFor(position);
+			}
+			if (form instanceof EdnList) {
+				return EdnList.from(form.map(rewrite));
+			}
+			if (Array.isArray(form)) {
+				return form.map(rewrite);
+			}
+			if (form instanceof Map) {
+				const rewritten = new Map();
+				for (const [key, value] of form) {
+					rewritten.set(rewrite(key), rewrite(value));
+				}
+				return rewritten;
+			}
+			if (form instanceof Set) {
+				const rewritten = new Set();
+				for (const value of form) {
+					rewritten.add(rewrite(value));
+				}
+				return rewritten;
+			}
+			return form;
+		};
+
+		const rewritten = body.map(rewrite);
+		const highest = positional.size === 0 ? 0 : Math.max(...positional.keys());
+		const params = [];
+		for (let position = 1; position <= highest; position += 1) {
+			params.push(paramFor(position));
+		}
+		if (rest !== null) {
+			params.push(new EdnSymbol("&"), rest);
+		}
+		return EdnList.from([new EdnSymbol("fn"), params, rewritten]);
+	}
+
+	/** `#'name` -> `(var name)`. */
+	readVarQuote(start) {
+		this.index += 2;
+		this.skipIgnored();
+		if (this.index >= this.length) {
+			this.fail("UFSS_UNCLOSED", "Var quote needs a symbol", start);
+		}
+		const value = this.readValue();
+		if (!(value instanceof EdnSymbol)) {
+			this.fail("INVALID_ARGUMENT", "Var quote needs a symbol", start);
+		}
+		return EdnList.from([new EdnSymbol("var"), value]);
+	}
+
+	/** `#:ns{...}` qualifies bare keyword keys with `ns`. */
+	readNamespacedMap(start) {
+		this.index += 2;
+		this.skipIgnored();
+		const namespaceStart = this.index;
+		while (this.index < this.length && !isDelimiter(this.text.charCodeAt(this.index))) {
+			this.index += 1;
+		}
+		const namespace = this.text.slice(namespaceStart, this.index);
+		if (namespace.length === 0) {
+			this.fail("INVALID_ARGUMENT", "#: needs a namespace", start);
+		}
+		this.skipIgnored();
+		if (this.text[this.index] !== "{") {
+			this.fail("INVALID_ARGUMENT", "#: must be followed by a map", start);
+		}
+		const value = this.readMap();
+		const qualified = new Map();
+		for (const [key, entry] of value) {
+			if (key instanceof EdnKeyword && !key.name.includes("/")) {
+				qualified.set(new EdnKeyword(`${namespace}/${key.name}`), entry);
+			} else {
+				qualified.set(key, entry);
+			}
+		}
+		return qualified;
+	}
+
+	/** `#?(:cljs form ...)` selects the cljs branch. */
+	readReaderConditional(start) {
+		this.index += 2;
+		this.skipIgnored();
+		if (this.text[this.index] !== "(") {
+			this.fail("INVALID_ARGUMENT", "#? must be followed by a list", start);
+		}
+		const branches = this.readList();
+		for (let index = 0; index + 1 < branches.length; index += 2) {
+			const feature = branches[index];
+			if (feature instanceof EdnKeyword && feature.name === "cljs") {
+				return branches[index + 1];
+			}
+		}
+		this.fail("INVALID_ARGUMENT", "#? has no :cljs branch", start);
+	}
+
+	/** `##Inf`, `##-Inf`, and `##NaN`. */
+	readSymbolicNumber(start, quote) {
+		this.index = quote;
+		while (this.index < this.length && !isDelimiter(this.text.charCodeAt(this.index))) {
+			this.index += 1;
+		}
+		const token = this.text.slice(start, this.index);
+		switch (token) {
+			case "##Inf":
+				return Number.POSITIVE_INFINITY;
+			case "##-Inf":
+				return Number.NEGATIVE_INFINITY;
+			case "##NaN":
+				return Number.NaN;
+			default:
+				this.fail("INVALID_ARGUMENT", "Unknown symbolic value", start);
+		}
 	}
 
 	readSingleLineRaw(hashes, start, quote) {
@@ -738,11 +908,24 @@ class Reader {
  * Throws an error with `code`, `line`, `column`, and `data` when the text is
  * not valid EDN or a UFSS fence is broken.
  */
-export function readUfss(text) {
+function readWithDialect(text, dialect) {
 	if (typeof text !== "string") {
 		throw herdError("INVALID_ARGUMENT", "readUfss expects a string", { type: typeof text });
 	}
-	return new Reader(text).readDocument();
+	return new Reader(text, dialect).readDocument();
+}
+
+/** Read EDN + UFSS data. Unknown `#` dispatches are rejected. */
+export function readUfss(text) {
+	return readWithDialect(text, "edn");
+}
+
+/**
+ * Read ClojureScript source with UFSS fences. Official `#` reader macros are
+ * understood here, never in `readUfss`.
+ */
+export function readCljs(text) {
+	return readWithDialect(text, "cljs");
 }
 
 /**
