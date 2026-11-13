@@ -155,8 +155,9 @@
     (doseq [name names]
       (remember! name {:state :parked
                        :reason :deadline
+                       :recoverable false
                        :payload {:reason :deadline}}))
-    (mapv (fn [name] {:name name :state :parked :reason :deadline}) names)))
+    (mapv (fn [name] {:name name :state :parked :reason :deadline :recoverable false}) names)))
 
 (defn wait-for-result
   ([] (wait-for-result 30000))

@@ -259,10 +259,13 @@ Time leap experience:
           #js {:messages messages}))
       #js {:messages messages})))
 
+(defn- session-start [_event _ctx]
+  (apply-tool-surface!))
+
 (defn install-hooks! []
   (.on js/globalThis.__pi "before_agent_start" before-agent-start)
   (.on js/globalThis.__pi "session_start"
-       (fn [_event _ctx] (apply-tool-surface!)))
+       session-start)
   (.on js/globalThis.__pi "context" context-handler))
 
 (register-all!)

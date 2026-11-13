@@ -36,9 +36,9 @@ describe("CLJS host wiring", () => {
 	it("injects repo-aware rules once", () => {
 		const handler = globalThis.__pi.hooks.get("before_agent_start");
 		expect(handler).toBeDefined();
-		const first = handler({ systemPrompt: "base" }, {});
+		const first = await handler({ systemPrompt: "base" }, {});
 		expect(first.systemPrompt).toContain("# Repo-aware Rules");
-		const second = handler({ systemPrompt: first.systemPrompt }, {});
+		const second = await handler({ systemPrompt: first.systemPrompt }, {});
 		expect(second.systemPrompt).toBe(first.systemPrompt);
 	});
 
