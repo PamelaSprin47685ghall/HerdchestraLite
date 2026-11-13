@@ -266,12 +266,7 @@ export function createAriadneStore() {
 				{ field: params[ARIADNE_BUDGET_FIELD] !== undefined ? ARIADNE_BUDGET_FIELD : ARIADNE_GOAL_FIELD },
 			);
 		}
-		const outstandingSubagents = params.outstanding_subagents;
-if (typeof outstandingSubagents !== "string" || outstandingSubagents.trim().length === 0) {
-throw herdError("INVALID_ARGUMENT", "time_leap requires a non-empty outstanding_subagents string listing every subagent still running, blocked, or uncollected at leap time; write \"none\" when none are outstanding", { field: "outstanding_subagents" });
-}
-
-const targetProgram = params.target;
+		const targetProgram = params.target;
 		const experience = params.experience;
 		const beacon = params.beacon;
 		if (typeof targetProgram !== "string" || targetProgram.trim().length === 0) {
@@ -327,7 +322,7 @@ const targetProgram = params.target;
 		s.beacons.set(beaconName, {
 			name: beaconName,
 			goal: leavingGoal,
-			beacon: `${beacon.trim()}\n\n[OUTSTANDING SUBAGENTS AT LEAP]\n${outstandingSubagents.trim()}`,
+			beacon: beacon.trim(),
 			leafId,
 			messagesSnapshot: null,
 		});
