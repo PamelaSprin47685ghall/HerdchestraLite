@@ -36,40 +36,57 @@
                       :mtime-ms (.-mtimeMs s)}))
       (.catch (fn [_] {:exists false}))))
 
-(defn where [{:keys [content needle]}]
-  (let [spans (loop [from 0 acc []]
-                (let [at (str/index-of content needle from)]
-                  (if (nil? at)
-                    acc
-                    (recur (inc at) (conj acc [at (+ at (count needle))])))))]
-    (case (count spans)
-      0 (throw (ex-info "needle not found" {:code :WHERE-NOT-FOUND}))
-      1 (first spans)
-      (throw (ex-info "needle is ambiguous" {:code :WHERE-AMBIGUOUS :candidates (vec (take 8 spans))})))))
-
-(defn whereAll [{:keys [content needle]}]
-  (loop [from 0 acc []]
+(defn spans [content needle]
+  (loop [from 0
+         acc []]
     (let [at (str/index-of content needle from)]
       (if (nil? at)
         acc
-        (recur (inc at) (conj acc [at (+ at (count needle))]))))))
+        (recur (inc at)
+               (conj acc [at (+ at (count needle))]))))))
 
+(defonce current-notifier (atom nil))
 (defonce current-name (atom nil))
 (defonce parked (atom {}))
+
+(defn- remember-park! [name resolve payload]
+  (swap! parked assoc name {:resolve resolve :payload payload}))
+
+(defn- notify-park! [payload]
+  (when-let [notify @current-notifier]
+    (notify {:state :parked :payload payload})))
 
 (defn park [payload]
   (js/Promise.
    (fn [resolve]
-     (swap! parked assoc @current-name {:resolve resolve :payload payload}))))
+     (remember-park! @current-name resolve payload)
+     (notify-park! payload))))
+
+(defn- park-where [request matches]
+  (park (assoc request
+               :kind :where
+               :candidates (vec (take 8 matches)))))
+
+(defn where [{:keys [content needle] :as request}]
+  (let [matches (spans content needle)]
+    (if (= 1 (count matches))
+      (first matches)
+      (park-where request matches))))
+
+(defn whereAll [{:keys [content needle]}]
+  (spans content needle))
+
+(defn- forget-park! [name]
+  (swap! parked dissoc name))
 
 (defn unpark [{:keys [name value]}]
   (when-let [entry (@parked name)]
     ((:resolve entry) value)
-    (swap! parked dissoc name)
+    (forget-park! name)
     value))
 
 (defn abandon [{:keys [name]}]
-  (swap! parked dissoc name)
+  (forget-park! name)
   nil)
 
 (defn call

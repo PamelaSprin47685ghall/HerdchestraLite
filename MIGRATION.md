@@ -7,15 +7,15 @@
 
 ### 1.1 工具面
 - [x] `clj_devops`：`code`、`name`、`ariadne_budget`、`ariadne_goal`、`more_workers_without_hitting_mythical_man_month`。
-- [x] 回执为 EDN：`{:name ... :state :completed|:failed, :value ...}`（UFSS post-pass 未接）。
-- [ ] `wait({otherwise_independent_work})`：`:idle`、一次性返回、后台结果。
+- [x] 回执为 EDN + UFSS：`{:name ... :state :completed|:failed|:parked, :value ...}`。
+- [x] `wait({otherwise_independent_work})`：`:idle`、一次性返回积压、等待在途完成。
 - [ ] `time_leap`、`ask_beacon`。
 - [ ] `/clj-status`。
 - [ ] 默认模式只暴露 `clj_devops` + `wait` + `time_leap` + `ask_beacon` + `/clj-status`。
 
 ### 1.2 能力
 - [x] `cat`、`read`、`write`、`mkdir`、`rm`、`mv`、`ls`、`stat`（基础 fs）。
-- [x] `where`、`whereAll`（精确切片；0/多匹配当前抛错，未挂起）。
+- [x] `where`、`whereAll`（精确切片；0/多匹配挂起，`unpark` 注入区间后继续）。
 - [~] `call`（spawn + 超时；缺输出上限、日志、写锁）。
 - [x] `park`、`unpark`、`abandon`（Promise 挂起；缺期限/多程序隔离）。
 - [ ] `glob`。
@@ -32,9 +32,9 @@
 
 ### 1.4 输出
 - [x] EDN 打印（`pr-str`）。
-- [ ] UFSS post-pass（最短 fence）。
-- [x] UFSS pre-pass（单行/多行 fence → 标准字符串；字符串/注释/字符保护）。
-- [ ] `#"..."`、`#(...)`、`#?` 等官方 reader 语义（nbb 负责）。
+- [x] UFSS post-pass（最短 fence、裸多行、尾随闭合文本）。
+- [x] UFSS pre-pass（单行/多行 fence → 标准字符串；宽容缩进与尾随闭合文本）。
+- [x] `#"..."`、`#(...)`、`#?` 等官方 reader 语义（nbb 负责）。
 - [ ] 语言尾注与 `UFSS_PROMPT_NOTE` 注入。
 
 ### 1.5 提示词与命令
@@ -96,9 +96,7 @@
 
 ## 5 已知偏差
 
-- `where` 的 0/多匹配当前抛错，尚未挂起等待 `unpark`。
-- `park` 时工具不会立即返回 `:state :parked`；当前等待到完成或 30s 超时。
-- `wait`、`time_leap`、`ask_beacon`、`/clj-status`、提示词注入未迁移。
-- `call` 缺输出上限、日志、写锁；`write` 缺 stamp 复核。
-- UFSS post-pass、完整 EDN reader、标准化错误码未迁移。
+- `wait` 的期限仍是固定 30s，未按 `1000ms + bytes × 50ms` 计算；超时不 park-all。
+- `time_leap`、`ask_beacon`、`/clj-status`、提示词注入未迁移。
+- 标准化错误码未迁移；`call` 的输出上限、日志、写锁未迁移。
 - 旧 `src/*.mjs` 模块仍存在但不再由默认入口加载；最终删除。

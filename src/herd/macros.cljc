@@ -8,3 +8,6 @@
 
 (defmacro abandon [& args]
   (list 'await (cons 'herd.sandbox/abandon args)))
+
+(defmacro where [& args]
+  (list 'await (cons 'herd.sandbox/where args)))
