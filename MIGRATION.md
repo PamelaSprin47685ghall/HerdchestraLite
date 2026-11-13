@@ -112,5 +112,6 @@
 4. UFSS 输出策略：数据与代码统一 `wrap(format(...))`；多行 body 顶格，`""",` 与后续 entry 同行。
 5. `wait` 的期限暂为固定 30s；旧 evaluator/repl 测试暂停，最终以 CLJS 测试替代。
 6. `/clj-status` 取消，不再实现或注入。
+9. 入口从命名导出 `activate` 改为 omp 18.x 要求的 default factory；`setActiveTools` 属 runtime action，从模块顶层移到 `session_start` 与 `before_agent_start`，避免 load phase 抛 `ExtensionRuntimeNotInitializedError`。
 7. 所有业务 CLJS 源码（`prompts`、`sandbox`、`repl`、`main`）的字符串字面量按 UFSS 规范书写：普通文本用标准字符串，含引号/反斜杠用最小 fence，多行用顶格三引号。`ufss.cljs` 与 `bootstrap.cljs` 是自举内核，保持标准字符串。
 8. `time_leap` 的上下文裁剪在 `context` 钩子内完成：按锚点 `toolCallId` 截断，并追加 `experience` 作为 user message。

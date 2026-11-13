@@ -96,12 +96,19 @@
         (throw (ex-info "file changed since read"
                         {:code :FILE_CONFLICT :path path}))))))
 
+(def ^:private max-write-bytes (* 2 1024 1024))
+
 (defn write [{:keys [path content] :as request}]
-  (with-lock
-    (fn []
-      (let [absolute (resolve-path path)]
-        (check-stamp! absolute (:__expectedStamp request))
-        (.writeFile fs-promises absolute content "utf8")))))
+  (let [bytes (js/Buffer.byteLength content "utf8")]
+    (when (> bytes max-write-bytes)
+      (throw (ex-info "write exceeds the 2 MiB limit"
+                      {:code :LIMIT_EXCEEDED :path path :bytes bytes
+                       :limit max-write-bytes})))
+    (with-lock
+      (fn []
+        (let [absolute (resolve-path path)]
+          (check-stamp! absolute (:__expectedStamp request))
+          (.writeFile fs-promises absolute content "utf8"))))))
 
 (defn mkdir [{:keys [path]}]
   (with-lock (fn [] (.mkdir fs-promises (resolve-path path) #js {:recursive true}))))
@@ -113,7 +120,9 @@
   (with-lock (fn [] (.rename fs-promises (resolve-path source) (resolve-path target)))))
 
 (defn ls [{:keys [path]}]
-  (.readdir fs-promises (resolve-path path)))
+  (-> (.readdir fs-promises (resolve-path path))
+      (.then (fn [entries] {:exists true :entries (vec entries)}))
+      (.catch (fn [_] {:exists false :entries []}))))
 
 (defn- glob->regex [pattern]
   (-> pattern
@@ -214,25 +223,96 @@
       (remember-park! @current-name resolve payload)
       (notify-park! payload))))
 
+(defn- line-spans [content]
+  (loop [from 0 acc []]
+    (let [nl (string/index-of content "\n" from)]
+      (if (nil? nl)
+        (conj acc [from (count content)])
+        (recur (inc nl) (conj acc [from nl]))))))
+
+(defn- bounded-edit-distance [a b k]
+  (let [n (count a)
+        m (count b)]
+    (if (> (js/Math.abs (- n m)) k)
+      nil
+      (loop [i 1 prev (vec (range (inc m)))]
+        (if (> i n)
+          (peek prev)
+          (let [row (loop [j 0 curr [i]]
+                      (if (> j m)
+                        curr
+                        (let [cost (if (= (nth a (dec i)) (nth b (dec j))) 0 1)
+                              value (min (inc (nth curr j))
+                                         (inc (nth prev (inc j)))
+                                         (+ (nth prev j) cost))]
+                          (recur (inc j) (conj curr value)))))]
+            (if (> (peek row) k)
+              nil
+              (recur (inc i) row))))))))
+
+(defn- nearest-line [content needle]
+  (let [k 64
+        budget (atom 10000000)]
+    (loop [spans (seq (line-spans content))
+           best nil
+           best-distance nil]
+      (if (or (nil? spans) (<= @budget 0))
+        (when best
+          {:span best
+           :text (subs content (first best) (second best))
+           :distance best-distance})
+        (let [[start end] (first spans)
+              line (subs content start end)
+              cells (* (inc (count line)) (inc (count needle)))]
+          (swap! budget - cells)
+          (let [distance (when (pos? @budget)
+                           (bounded-edit-distance line needle k))]
+            (cond
+              (nil? distance) (recur (next spans) best best-distance)
+              (or (nil? best-distance) (< distance best-distance))
+              (recur (next spans) [start end] distance)
+              :else (recur (next spans) best best-distance))))))))
+
+(defn- span-context [content [start end]]
+  (subs content
+        (max 0 (- start 80))
+        (min (count content) (+ end 80))))
+
 (defn- park-where [request matches]
   (park (assoc request
                :kind :where
-               :candidates (vec (take 8 matches)))))
+               :candidates (vec
+                             (take 8
+                                   (map (fn [span]
+                                          {:span span
+                                           :context (span-context (:content request) span)})
+                                        matches)))
+               :nearest (when (empty? matches)
+                          (nearest-line (:content request) (:needle request))))))
 
 (defn where [{:keys [content needle] :as request}]
+  (when (or (not (string? needle)) (zero? (count needle)))
+    (throw (ex-info "needle must be a non-empty string"
+                    {:code :INVALID_ARGUMENT :field :needle :value needle})))
   (let [matches (spans content needle)]
     (if (= 1 (count matches))
       (first matches)
       (park-where request matches))))
 
 (defn whereAll [{:keys [content needle]}]
+  (when (or (not (string? needle)) (zero? (count needle)))
+    (throw (ex-info "needle must be a non-empty string"
+                    {:code :INVALID_ARGUMENT :field :needle :value needle})))
   (spans content needle))
 
 (defn- forget-park! [name]
   (swap! parked dissoc name))
 
 (defn unpark [{:keys [name value]}]
-  (when-let [entry (@parked name)]
+  (let [entry (@parked name)]
+    (when-not entry
+      (throw (ex-info "unknown parked program"
+                      {:code :PROGRAM_UNKNOWN :name name})))
     ((:resolve entry) value)
     (forget-park! name)
     value))
@@ -264,6 +344,8 @@
       (js/Promise.
         (fn [resolve reject]
           (let [argv (vec argv)
+                _ (when (zero? (count argv))
+                    (throw (ex-info "argv must not be empty" {:code :INVALID_ARGUMENT})))
                 log-path (call-log-path)
                 child (cp/spawn (first argv) (clj->js (rest argv))
                                 #js {:cwd cwd :stdio #js ["ignore" "pipe" "pipe"]})

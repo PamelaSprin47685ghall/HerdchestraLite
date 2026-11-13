@@ -160,11 +160,20 @@
   #{"read" "write" "edit" "apply_patch" "ast_edit" "ast_grep"
     "bash" "exec" "eval" "glob" "grep" "find"})
 
+(def ^:private herd-tools
+  ["clj_devops" "wait" "time_leap" "ask_beacon"])
+
 (defn- apply-tool-surface! []
-  (let [pi js/globalThis.__pi
-        active (js->clj (.getActiveTools pi))
-        kept (remove host-tool-blacklist active)]
-    (.setActiveTools pi (clj->js kept))))
+  (try
+    (let [pi js/globalThis.__pi
+          active (js->clj (.getActiveTools pi))
+          kept (->> active
+                    (remove host-tool-blacklist)
+                    (concat herd-tools)
+                    distinct
+                    vec)]
+      (.setActiveTools pi (clj->js kept)))
+    (catch :default _ nil)))
 
 (defn- prompt-with-rules [prompt]
   (if (str/includes? prompt "# Repo-aware Rules")
@@ -172,6 +181,7 @@
     (str prompt "\n\n" prompts/common-rules-text)))
 
 (defn- before-agent-start [event _ctx]
+  (apply-tool-surface!)
   (try
     #js {:systemPrompt (prompt-with-rules (.-systemPrompt event))}
     (catch :default _
@@ -209,8 +219,9 @@ Time leap experience:
 
 (defn install-hooks! []
   (.on js/globalThis.__pi "before_agent_start" before-agent-start)
+  (.on js/globalThis.__pi "session_start"
+       (fn [_event _ctx] (apply-tool-surface!)))
   (.on js/globalThis.__pi "context" context-handler))
 
 (register-all!)
 (install-hooks!)
-(apply-tool-surface!)

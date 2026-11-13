@@ -26,6 +26,8 @@ beforeAll(async () => {
 	nbb.addClassPath(fileURLToPath(new URL("../src/", import.meta.url)));
 	await nbb.loadFile(fileURLToPath(new URL("../src/herd/bootstrap.cljs", import.meta.url)));
 	await new Promise((resolve) => setTimeout(resolve, 150));
+	const start = globalThis.__pi.hooks.get("session_start");
+	if (start) start({}, {});
 	tool = globalThis.__pi.tools.get("clj_devops");
 	waitTool = globalThis.__pi.tools.get("wait");
 });
