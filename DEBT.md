@@ -50,3 +50,15 @@
 
 - **现状**：`attach-lifecycle`、`audit`、`board`、`dashboard`、`evaluator`、`host`、`main-bootstrap`、`main-consumer`、`runner`、`s5-wiring`、`stages-parsers`、`stages-scores`、`tenure`、`worktree` 共 14 个文件为 `*.test.mjs.disabled`；`bun test tests` 只跑 dogfood 面启用的测试文件。
 - **影响**：完整装配与审计路径暂时没有自动化回归；接回时必须按单工作区语义重写，不得直接恢复旧断言。
+
+## D18 nbb 运行时：Air-Gapped 已获批准放宽为基本防呆
+
+- **现状**：`nbb` 默认暴露 `js/` 与 `globalThis`，无法兑现 §4.1 的 Air-Gapped 符号表；当前只保证不主动注入 `process`/`require`/`fs`，不承诺逃逸不可能。该放宽由人类操作员于 2026-11-13 明确批准，记录于 `MIGRATION.md`。
+- **影响**：沙盒不是安全边界；LLM 程序可经 `js/` 触碰宿主全局。
+- **下一步**：若需强隔离，改用自建 SCI ctx 或子进程 worker；在此之前不得把基本防呆宣传为安全隔离。
+
+## D19 默认模式迁移未收口
+
+- **缺口**：默认模式目前只接通 `clj_devops` 与 `wait`；`time_leap`、`ask_beacon`、`/clj-status`、`COMMON_RULES_TEXT` / `UFSS_PROMPT_NOTE` 注入、宿主工具黑名单尚未在 CLJS 主程序实现。
+- **影响**：规格 §0.4 的默认可见面不完整；迁移期间不得宣称这些能力可用。
+- **下一步**：按 `MIGRATION.md` 台账逐项补齐；每项完成后更新台账与本节。

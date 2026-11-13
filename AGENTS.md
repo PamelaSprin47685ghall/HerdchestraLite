@@ -22,7 +22,7 @@ Orchestration for agents that don't like being orchestrated.
 
 它与独立标准版共享同一套协作灵魂，但在宿主约束下做出不同的物理选择：
 
-- 标准版拥有 Clojure/JVM 单机单例、Datalevin 当前态库、内存 STM、Fulcro Web 工作台与完整 Clojure 沙箱；Lite 版只有 `omp` 进程内的 `.mjs`、一个无 JVM 的 ClojureScript 核心库 `cherry-cljs`、文件锁、原子写、EDN + UFSS 与 `@oh-my-pi/pi-tui`。
+- 标准版拥有 Clojure/JVM 单机单例、Datalevin 当前态库、内存 STM、Fulcro Web 工作台与完整 Clojure 沙箱；Lite 版只有 `omp` 进程内的薄 `.mjs` 引导、Node 上的 SCI 运行时 `nbb`、文件锁、原子写、EDN + UFSS 与 `@oh-my-pi/pi-tui`。
 - 标准版是“自己拥有一台机器”；Lite 版是“寄生在一个已经很好的终端宿主里，只补上它没有的那层协作秩序”。
 - 两者在**智能体语言与协作语义**上同构：同样的五阶段、同样的 EDN + UFSS、同样的 REPL 沙箱、同样的逐步落盘与 `stamp` 复核、同样的 `where` / `park` / `unpark` 续体、同样的看板与令牌、同样的双视角支付意愿验收。
 - 差异只应出现在宿主底座、存储、界面与部署形态；**不应出现在“什么叫完成”“谁能写”“何时换人”“什么算验收证据”这些语义上**。
@@ -96,7 +96,7 @@ Lite 版不把模型当傻子。它不把每个动作都拆成一条“爷爷辈
 
 | 维度 | Herdchestra Lite **包含** | Herdchestra Lite **不包含**（属独立标准版或其他产品） |
 |---|---|---|
-| **宿主与依赖** | 挂载于 `omp` 进程的纯 `.mjs` 插件；无构建步骤；运行时第三方依赖只有 `cherry-cljs`；零宿主源码修改、零 `AgentSession` / `TUI` 猴子补丁；唯一例外是 `ExtensionRunner.prototype.createContext` 的受控捕获（§1.1）；多入口故障隔离。 | Clojure/JVM 守护进程、跨终端单机单例 Server、Pixi/MSYS2 环境托管器、外部数据库进程。关闭 `omp` 即停止。 |
+| **宿主与依赖** | 挂载于 `omp` 进程的薄 `.mjs` 引导 + `src/herd/*.cljs`；无构建步骤；运行时第三方依赖只有 `nbb`（Node 上的 SCI）；零宿主源码修改、零 `AgentSession` / `TUI` 猴子补丁；唯一例外是 `ExtensionRunner.prototype.createContext` 的受控捕获（§1.1）；多入口故障隔离。 | Clojure/JVM 守护进程、跨终端单机单例 Server、Pixi/MSYS2 环境托管器、外部数据库进程。关闭 `omp` 即停止。 |
 | **阶段协议** | S1 头脑风暴 → S2 手工测试方法论 → S3 目标开发指南 → S4 开发者协调手册 → S5 蜂群自治开发与并发实操验收；`plans/<slug>/s1..s5-*.md`、`.herd/missions/<slug>/s2-cases.edn` 与 `plans/<slug>/s4-coordination.pml`；各交付物按提示词约定 frozen，不计算 SHA-256；只有 S1 门禁手工批准（真实产品运行由人类操作员明确批准；隔离测试见 §2.3），S5 初任空账可一次性询问人类，其余自动。 | 7×24 小时后台冥想的 `Standing Sphinx`（`Meditator`）、跨仓库长期值守的 `Steward` Docket、常驻仓库守望。 |
 | **协作与并发** | 单工作区栈：`.herd/` 文件锁看板（拆分优先、父项保留实质）、`stamp` + $W$、`board_take_or_die` 唯一持令者、无责即死与无记忆转世；多 Worktree `fork_slices`/`join_slice` 保留为后续完整装配，暂不进入 dogfood 面。 | Clojure 内存 STM、Datalevin（LMDB）数据库、跨机器分布式执行。Lite 用 `.herd/` 下的 EDN 当前态 + 追加式 `events.jsonl` + 字节偏移检查点。 |
 | **工具与续体** | 角色裁剪的 `clj_plan` / `clj_devops` / `clj_review` / `clj_worker` / `clj_auditor` 异步沙箱；EDN + UFSS 读写；逐步落盘；`where` / `park` / `unpark` 表达式级续体；`call` 黑盒 Shell。 | JVM 字节码编译、Java FFM 原生 C ABI 调用、Clojure/JVM REPL 求值器。 |
@@ -107,17 +107,19 @@ Lite 版不把模型当傻子。它不把每个动作都拆成一条“爷爷辈
 
 ### 0.4 当前装配：默认模式（全功能非计划）
 
-当前 `package.json` 的 `omp.extensions` / `pi.extensions` 只声明 `./src/clj-main.mjs`。这是默认模式，不是完整产品，也不是 Plan 缩面。
+当前 `package.json` 的 `omp.extensions` / `pi.extensions` 只声明 `./src/clj-main.mjs`。该入口是薄引导：设置 `globalThis.__pi`、`nbb.addClassPath("src")`、`nbb.loadFile("src/herd/main.cljs")`。它不是完整产品，也不是 Plan 缩面。
 
-默认模式是全功能非计划模式。没有使命、没有阶段门禁、没有看板、没有 worktree、没有审计、没有角色 admission。它的沙箱可见面等于 `clj_devops`：Worker 的全部文件与续体能力，再加特权 `call`。`clj_plan`、`clj_review`、`clj_worker`、`clj_auditor` 在默认模式不注册、不可见。
+默认模式是全功能非计划模式。没有使命、没有阶段门禁、没有看板、没有 worktree、没有审计、没有角色 admission。它的沙箱可见面等于 `clj_devops`：Worker 的全部文件能力与 `call`。`clj_plan`、`clj_review`、`clj_worker`、`clj_auditor` 在默认模式不注册、不可见。
 
-默认模式注册 `clj_devops`、`wait`、`time_leap`、`ask_beacon`，并附 `/clj-status`。不加载 `/herd`、S1-S5 门禁、看板、worktree、K 路审计、TUI 与角色收窄。`src/main.mjs`、`src/bootstrap-main.mjs`、`src/stages/`、`src/swarm/`、`src/scope/`、`src/tui/` 是保留的完整装配代码，当前清单不加载；那些角色工具只在完整装配的对应任期出现。
+运行时是 `nbb`（Node 上的 SCI）。沙箱代码全部是 `src/herd/*.cljs`：`sandbox.cljs` 提供 `cat`/`read`/`write`/`mkdir`/`rm`/`mv`/`ls`/`stat`/`where`/`whereAll`/`call`/`park`/`unpark`/`abandon`；`macros.cljc` 把 `park`/`where`/`unpark`/`abandon` 展开为 `await`；`repl.cljs` 负责程序状态、超时、`wait`；`ufss.cljs` 负责 UFSS pre-pass 与 post-pass。`.mjs` 只做宿主引导与 `pi` 注入。
 
-默认模式下每次 `clj_*` 调用必须显式提供唯一 `name`；框架不再生成 `repl-<id>`。同一会话内已用过的名称不可复用，重复调用同一 `toolCallId` 视为重放。
+默认模式注册 `clj_devops`、`wait`、`time_leap`、`ask_beacon`，并附 `/clj-status`。当前迁移只接通 `clj_devops` 与 `wait`；`time_leap`、`ask_beacon`、`/clj-status` 与提示词注入按 `MIGRATION.md` 台账补齐，未完成前不得宣称可用，但规格目标不缩减。`src/main.mjs`、`src/stages/`、`src/swarm/`、`src/scope/`、`src/tui/` 是保留的完整装配代码，当前清单不加载。
 
-默认模式用黑名单减法移除宿主 `read`/`write`/`edit`/`apply_patch`/`ast_edit`/`ast_grep`/`bash`/`exec`/`eval`/`glob`/`grep`/`find`，保留其他工具的原有激活状态；它不是 §1.2 要求的白名单收窄。完整版语义（§2-§6 与 §8 的其余部分）仍然有效，但只有接回对应模块后才生效，并且不得把 `clj_plan` 等角色工具重新暴露进默认模式。
+默认模式下每次 `clj_*` 调用必须显式提供唯一 `name`、`ariadne_budget`、`ariadne_goal`；`name` 在运行中不可复用，同一 `toolCallId` 重放返回原回执。
 
-系统提示词由 `src/host/hack-system-prompt.mjs` 托管注入：`before_agent_start` 在宿主提示词之后维护一个受管区，重复触发原位替换、不堆叠；支持 string 与 content-block 数组；handler 抛错时 fail-open 返回宿主原提示词并记 health。注入内容是 `COMMON_RULES_TEXT`（`# Repo-aware Rules` 标题 + `src/prompts/common.mjs` 的 `COMMON_CORE_RULES` 11 段 + `UFSS_PROMPT_NOTE`）。默认模式自身就是 dogfood 面，不另设独立提示词层；工具语义由工具 description 与出站尾注承载。语言纪律仍只由出站 `context` 尾注注入一次；S1-S5 简报、旧 Scope 字段与角色提示词不注入。
+默认模式用黑名单减法移除宿主 `read`/`write`/`edit`/`apply_patch`/`ast_edit`/`ast_grep`/`bash`/`exec`/`eval`/`glob`/`grep`/`find`，保留其他工具的原有激活状态；它不是 §1.2 要求的白名单收窄。迁移后由 CLJS 主程序通过 `pi.setActiveTools` 执行同一条黑名单；不得把 `clj_plan` 等角色工具重新暴露进默认模式。
+
+提示词注入目标：CLJS 主程序在 `before_agent_start` 维护受管区，注入 `COMMON_RULES_TEXT`（`# Repo-aware Rules` 标题 + `COMMON_CORE_RULES` 11 段 + `UFSS_PROMPT_NOTE`）。`UFSS_PROMPT_NOTE` 由 `herd.ufss` 导出；迁移完成前该注入项未接通。
 
 此前冒烟记录过四个角色沙箱工具与旧跳转工具名。那不是默认模式的契约。默认模式的可见面以本节为准。
 
@@ -154,7 +156,7 @@ Lite 的实现只能依赖以下宿主语义。具体类型签名以 `omp` 当�
 | TUI | `ctx.ui.setWidget(key, content, { placement: "aboveEditor" })` 挂载组件；字符串数组形式最多 10 行，组件工厂形式由 `render(width)` 返回的行数决定高度；全局键盘用 `pi.registerShortcut` 或 `ctx.ui.onTerminalInput`（widget 不自动获得焦点）。 | 宿主不提供组件挂载时，`/herd-status` 仍输出同源文本状态；核心协议不依赖 TUI。 |
 | 模型选择 | 主模型用于 `Plan` / `Reviewer` / `Manual Auditor` / `Blocker Oracle` / `Coordinator`；用户配置的 `@task` 模型用于 `Plan DevOps` / `Swarm Worker` / `Swarm Holder`。 | 模型不可用时明确报错，不静默换模型；`/herd-settings` 可改。 |
 | 子代理加载扩展 | 子代理会话同样加载插件扩展列表（`omp` 的既有行为）；因此主从会话都能看见沙箱与门禁工具。 | 若宿主改变该行为，子代理启动时必须显式注入工具面；不得假设子代理天然拥有插件工具。 |
-| ClojureScript 核心 | `cherry-cljs`（预期提供不可变持久集合、Keyword/Symbol、结构相等、`cljs.core`、`clojure.string` / `set` / `walk` 与 EDN Reader；无 JVM）。**本规格不声称其导出已在本机验证**；实现前必须安装并核对。 | 加载失败时沙箱工具不可用，但宿主会话与 TUI 不受影响；`HACK.md` 记录实际导出、版本与加载方式。 |
+| ClojureScript 运行时 | `nbb`（Node 上的 SCI）：`nbb.core/load-string` 解析并求值 CLJS，返回 Promise；支持真宏、`^:async` / `await`、CLJS 持久值、`cljs.pprint`；`registerModule` 可注入 JS 模块。**版本与导出以本机实测为准**，记录在 `HACK.md`。 | 加载失败时沙箱工具不可用，但宿主会话与 TUI 不受影响；`HACK.md` 记录实际导出、版本与加载方式。 |
 
 **宿主版本钉住**：
 
@@ -555,7 +557,7 @@ $$
    - 停电、进程崩溃、存储硬失败不承诺恢复旧现场，只承诺不暴露半提交状态；
    - 未受保护的 `call`、用户手工编辑、脱离会话边界的后续活动，只能按 `stamp` 尽力发现；
    - 相同 `(mtime, size)` 可能漏掉真实内容变化；实现不得把它宣传成内容完全相等保证；
-   - 宿主 API 漂移、`cherry-cljs` 加载失败、TUI 不可用，按能力降级并报告，不崩溃。
+   - 宿主 API 漂移、`nbb` 加载失败、TUI 不可用，按能力降级并报告，不崩溃。
 4. **结果分类**：任何文件/`call` 动作必须明确区分至少四种结局：
    - **拒绝**：尚未写入，真实文件未变；
    - **已应用**：文件已原子落盘，记账可能待重试；
@@ -621,22 +623,18 @@ fingerprint = sha256(normalize(goal) + "\n" + normalize(done_when) + "\n" + norm
 
 ## 4 ClojureScript 沙箱与表达式级续体
 
-Lite 保留标准版的 REPL 程序化工具面（内部仍用命名程序承载续体）、EDN + UFSS 字面量与 `where` / `park` / `unpark` 续体，但把求值器从 JVM Clojure 换成 **`cherry-cljs` + 异步 Promise-CPS**。这不是“降级成 JS 脚本”，而是把同一套不可变数据结构与纯函数库放进一个物理隔离的符号表里。
+Lite 保留标准版的 REPL 程序化工具面、EDN + UFSS 字面量与 `where` / `park` / `unpark` 续体，但把求值器从 JVM Clojure 换成 **`nbb`（Node 上的 SCI）**：官方 reader 解析 CLJS，真宏展开为 `await`，挂起用未决 Promise 承载。
 
 ### 4.1 运行时与物理隔离
 
-1. **唯一运行时第三方依赖**：`cherry-cljs`。它提供正宗的 ClojureScript 不可变持久集合（Vector/Map/Set/List）、`Keyword`、`Symbol`、结构相等 `=`、`cljs.core`、`clojure.string`、`clojure.set`、`clojure.walk` 与 EDN Reader。`package.json` 的运行时 `dependencies` 只允许这一项；`@oh-my-pi/*`、`pi.typebox` 由宿主提供，不写入依赖。
-2. **零 JVM、零构建**：插件是纯 `.mjs`，由 `omp` 的 Bun 运行时直接加载。没有 `deps.edn`、没有 JVM 字节码、没有 AOT。`cherry-cljs` 的加载方式与实测限制记入 `HACK.md`；加载失败时沙箱工具不可用，但宿主会话、TUI 与命令面不受影响。
-3. **Air-Gapped 符号表**：求值器的全局环境只绑定：
-   - 纯函数版 `cljs.core` / `clojure.string` / `clojure.set` / `clojure.walk`；
-   - 支持异步顺序求值的高阶序列函数（`map`/`mapv`/`keep`/`filter`/`reduce`/`doseq` 等）；
-   - 当前角色的能力函数（`cat`/`stat`/...）；
-   - 当前角色的只读常量（如 `*program-name*`）。
+1. **唯一运行时第三方依赖**：`nbb`。它是 Node 上的 SCI 发行版，内置官方 CLJS reader、真宏、`^:async` / `await`、CLJS 持久值与 `cljs.pprint`。`package.json` 的运行时 `dependencies` 只允许这一项；`@oh-my-pi/*`、`pi.typebox` 由宿主提供，不写入依赖。
+2. **零 JVM、零构建、薄 mjs**：插件入口是极薄 `.mjs`，只设置 `globalThis.__pi`、`addClassPath`、`loadFile`；业务全部是 `src/herd/*.cljs`。没有 `deps.edn`、没有 JVM 字节码、没有 AOT。`nbb` 的加载方式与实测限制记入 `HACK.md`；加载失败时沙箱工具不可用，但宿主会话、TUI 与命令面不受影响。
+3. **Air-Gapped 符号表（2026-11-13 人类批准放宽为基本防呆）**：原要求是全局环境只绑定纯函数版 `cljs.core` / `clojure.string` / `clojure.set` / `clojure.walk`、异步序列函数、当前角色能力与只读常量；不绑定 `js/*`、`globalThis`、`process`、`require`、`import`、`eval`、`read-string`、`load-string`、`set!`、`aget`/`aset`、`goog/*` 等，访问未绑定符号返回 `:CAPABILITY_DENIED`。
 
-   **不绑定**：`js/*`、`globalThis`、`process`、`Bun`、`require`、`import`、`eval`、`read-string`、`load-string`、`resolve`、`ns-*`、`set!`、`aget`/`aset`、`goog/*`、任何可以逃逸到宿主 I/O 或动态求值的符号。访问未绑定符号返回 `:CAPABILITY_DENIED`，不得回退到 JS 全局。
-4. **异步求值**：每个表达式节点按顺序 `await`；高阶序列函数内部也支持异步能力调用（`map` 对 Promise 逐个顺序求值，不并发写文件）。不允许 `future`/`promise` 并发写同一工作区；并行来自多个 worker，不来自同身并行通道。
-5. **纯函数优先**：数据变换、字符串处理、集合操作使用 `cherry-cljs` 的不可变结构；不要用 JS 对象/数组绕过。`(re-pattern #"..."#)` 生成正则；`#"..."#` 是 UFSS 原始字符串，不是正则字面量。
-6. **无副作用逃逸**：沙箱只能通过能力函数触碰文件系统与 `call`；不能直接 `fetch`、不能读环境变量、不能访问 `Deno`/`Bun` 全局。能力函数的参数与返回值都是 EDN 可表示的数据。
+   **批准修订**：本版运行时改为 `nbb`，它默认暴露 `js/` 与 `globalThis`，无法兑现上述 Air-Gapped。人类操作员明确批准放宽为**基本防呆**：不主动注入 `process`/`require`/`fs` 能力，不承诺逃逸不可能；剩余风险与补齐路径记录在 `DEBT.md`。该放宽只适用于 `nbb` 运行时，不得据此删减其他安全条款。
+4. **异步求值**：能力返回 Promise；程序用 `^:async` + `await` 按书写顺序调用。高阶序列函数内部同样按顺序 `await`，不并发写同一工作区；并行来自多个程序，不来自同身并行通道。
+5. **纯函数优先**：数据变换、字符串处理、集合操作使用 CLJS 持久值；不要用 JS 对象/数组绕过。`(re-pattern #"..."#)` 生成正则；`#"..."#` 在源码中是正则字面量，在 EDN 数据中是 UFSS 单行围栏。
+6. **无副作用逃逸**：沙箱只能通过能力函数触碰文件系统与 `call`；不主动注入 `fetch`、不读环境变量、不提供 `Deno`/`Bun` 全局。能力函数的参数与返回值都是 CLJS 值。
 
 ### 4.2 单一写法与角色能力矩阵
 
@@ -1529,7 +1527,7 @@ HerdchestraLite/
 ├── DEBT.md                       # 相对本规格的已知缺口队列（做完即删）
 ├── HACK.md                       # omp 宿主深路径、cherry-cljs 与平台实测记录
 ├── HISTORY.md                    # 可选：历史取舍与被拒方案
-├── package.json                  # dependencies: { "cherry-cljs": "<exact>" }；声明清单入口
+├── package.json                  # dependencies: { "nbb": "<exact>" }；声明清单入口
 ├── biome.json
 ├── .herd/                        # 运行期控制态 (mission.edn、board.edn、boards/、s2-cases.edn 等)
 ├── plans/                        # 用户可见交付物 (plans/<slug>/s1..s4、s5-report.md)
@@ -1686,7 +1684,7 @@ scope → main
 2. 删除旧实现的所有猴子补丁：`AgentSession.prototype.getContextUsage`、`TUI.prototype` 主题 getter、`_goalCore` 私有属性、`xd://context_compact` 历史改写、`goalService.apply` 替换、Proxy UI 垫片。唯一保留的新例外是 §1.1 的 `ExtensionRunner.prototype.createContext` 捕获；它不是旧实现的延续，且必须保持单文件、懒加载、fail-closed。
 3. 删除旧 CASE Markdown 解析路径：`parseS2Cases`、`extractCaseBlocks`、`extractCaseBlock`、`loadS2Markdown`、`rubric_summary`、`rawBlock` 及任何 Markdown 回退分支；把旧 `s2-manual-tests.md` 中的可执行 CASE 一次性迁移到 `.herd/missions/<slug>/s2-cases.edn`，Markdown 只保留方法论。迁移只由离线迁移工具执行一次，**不进入运行时**；迁移后不得双写、不得从 Markdown 提取或对照 CASE，也不得保留运行时 Markdown 解析回退。旧产物保留只读。
 4. 把 `docs/manual-acceptance/<slug>/requirements.md` 等旧流程迁移为 `plans/<slug>/s1..s5`；旧产物保留只读，不静默删除。
-5. 更新 `package.json`：运行时依赖只保留 `cherry-cljs`；`omp.extensions` / `pi.extensions` 只声明单主入口（`clj-main.mjs` 或 `bootstrap-main.mjs`）；`engines.bun` 保留。
+5. 更新 `package.json`：运行时依赖只保留 `nbb`；`omp.extensions` / `pi.extensions` 只声明单主入口（`clj-main.mjs` 或 `bootstrap-main.mjs`）；`engines.bun` 保留。
 6. 重新 `omp plugin link`；用 `/herd` 跑一个小型真实使命，验证 S1 `attach_brainstorm` 手工批准、S2–S4 自动、单工作区 S5、K=1 审计、结案。
 7. 迁移后删除旧路径别名、旧工具名与兼容 shim；不留“先走旧路”的隐藏分支。
 

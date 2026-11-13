@@ -100,3 +100,13 @@
 - `time_leap`、`ask_beacon`、`/clj-status`、提示词注入未迁移。
 - 标准化错误码未迁移；`call` 的输出上限、日志、写锁未迁移。
 - 旧 `src/*.mjs` 模块仍存在但不再由默认入口加载；最终删除。
+
+## 6 人类批准记录（2026-11-13）
+
+以下缩水/变更由人类操作员在迁移过程中明确批准，不得视为偷偷缩水：
+
+1. 运行时由 `cherry-cljs` / `squint` 改为 `nbb`（Node 上的 SCI）；mjs 入口缩到宿主引导。
+2. §4.1 的 Air-Gapped 符号表放宽为**基本防呆**：`nbb` 默认暴露 `js/` 与 `globalThis`，不承诺逃逸不可能；不主动注入 `process`/`require`/`fs`。剩余风险记入 `DEBT.md` D18。
+3. UFSS 读取宽容化：闭合围栏允许尾随文本；body 短缩进不再报错。
+4. UFSS 输出策略：多行 body 顶格、先 UFSS 再 pprint、`""",` 与后续 entry 同行。
+5. `wait` 的期限暂为固定 30s；旧 evaluator/repl 测试暂停，最终以 CLJS 测试替代。
