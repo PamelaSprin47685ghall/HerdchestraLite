@@ -83,6 +83,21 @@
 (defn- parked-receipt [name value]
   (merge {:name name} value))
 
+(defn unpark [request]
+  (try
+    (sandbox/unpark request)
+    (catch :default error
+      (if (= :PROGRAM_UNKNOWN (:code (ex-data error)))
+        (let [entry (get @programs (:name request))]
+          (if (and entry
+                   (= :parked (:state entry))
+                   (false? (:recoverable entry)))
+            {:name (:name request)
+             :state :unrecoverable
+             :reason :deadline}
+            (throw error)))
+        (throw error)))))
+
 (defn abandon [request]
   (let [name (:name request)
         result (sandbox/abandon request)

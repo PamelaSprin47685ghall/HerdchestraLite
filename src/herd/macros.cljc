@@ -4,7 +4,7 @@
   (list 'await (list 'herd.sandbox/park-with-name '__herd-program-name (first args))))
 
 (defmacro unpark [& args]
-  (list 'await (cons 'herd.sandbox/unpark args)))
+  (list 'await (cons 'herd.repl/unpark args)))
 
 (defmacro abandon [& args]
   (list 'await (cons 'herd.repl/abandon args)))

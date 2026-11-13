@@ -65,7 +65,8 @@
 
 ## D22 `wait` 超时的 runtime-parked 无法 `unpark`
 
-- **缺口**：`wait` 超时的 `park-all!` 已把程序标为 `:parked :deadline :recoverable false`，但这些程序没有 `sandbox/parked` 的 `:resolve`；`unpark` 仍抛 `:PROGRAM_UNKNOWN`，程序继续运行，只能等它完成或 `abandon`。
+- **现状**：`park-all!` 标 `:parked :deadline :recoverable false`；`repl/unpark` 对这类程序返回 `{:state :unrecoverable :reason :deadline}`，不再抛 `:PROGRAM_UNKNOWN`。
+- **缺口**：它不是表达式级挂起；程序仍在后台运行，无法真正暂停/恢复，只能等完成或 `abandon`。
 - **影响**：回执已明示不可恢复；`park-all` 仍不是真正的表达式级挂起。
 - **下一步**：为超时程序注入可暂停的 await 点，或明确文档化为“只降级为后台完成”。
 
