@@ -165,47 +165,26 @@
                   (apply str (repeat (smallest-multi body) "#")))]
       (str fence "\"\"\"\n" body "\n\"\"\"" fence))))
 
-(defn- read-standard-string [s start]
-  (let [n (count s)]
-    (loop [i (inc start) body []]
-      (if (>= i n)
-        nil
-        (let [ch (subs s i (inc i))]
-          (cond
-            (= ch "\"") [(apply str body) (inc i)]
-            (= ch "\\")
-            (let [next (subs s (inc i) (min n (+ i 2)))]
-              (case next
-                "\"" (recur (+ i 2) (conj body "\""))
-                "\\" (recur (+ i 2) (conj body "\\"))
-                "n" (recur (+ i 2) (conj body "\n"))
-                "t" (recur (+ i 2) (conj body "\t"))
-                "r" (recur (+ i 2) (conj body "\r"))
-                "b" (recur (+ i 2) (conj body "\b"))
-                "f" (recur (+ i 2) (conj body "\f"))
-                "u" (let [hex (subs s (+ i 2) (min n (+ i 6)))]
-                      (recur (+ i 6) (conj body (js/String.fromCharCode (js/parseInt hex 16)))))
-                (recur (+ i 2) (conj body next))))
-            :else (recur (inc i) (conj body ch))))))))
+(deftype UfssString [body]
+  Object
+  (toString [_] (format-string body))
+  IPrintWithWriter
+  (-pr-writer [_ writer _opts]
+    (-write writer (format-string body))))
 
-(defn wrap
-  "Upgrade standard strings to the shortest UFSS fence."
-  [text]
-  (let [n (count text)]
-    (loop [i 0 out []]
-      (if (>= i n)
-        (apply str out)
-        (let [ch (subs text i (inc i))]
-          (if (= ch "\"")
-            (if-let [[body end] (read-standard-string text i)]
-              (recur end (conj out (format-string body)))
-              (recur (inc i) (conj out ch)))
-            (recur (inc i) (conj out ch))))))))
+(defn- to-ufss-value [value]
+  (cond
+    (string? value) (UfssString. value)
+    (map? value) (into {} (map (fn [[k v]] [(to-ufss-value k) (to-ufss-value v)]) value))
+    (vector? value) (mapv to-ufss-value value)
+    (set? value) (set (map to-ufss-value value))
+    (list? value) (apply list (map to-ufss-value value))
+    :else value))
 
 (defn print
   "Print a value as EDN + UFSS."
   [value]
-  (wrap (with-out-str (pp/pprint value))))
+  (with-out-str (pp/pprint (to-ufss-value value))))
 
 (def UFSS_PROMPT_NOTE
   (str/join
