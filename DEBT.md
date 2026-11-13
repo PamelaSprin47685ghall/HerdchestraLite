@@ -69,9 +69,3 @@
 - **影响**：回执已明示不可恢复；`park-all` 仍不是真正的表达式级挂起。
 - **下一步**：为超时程序注入可暂停的 await 点，或明确文档化为“只降级为后台完成”。
 
-## D24 `stamp` 的 nsec 由浮点 `mtimeMs` 推导
-
-- **缺口**：`stamp-of` 用 `(mod mtimeMs 1000) * 1e6` 计算 `:mtimeNsec`，精度低于旧实现的 bigint `mtimeNs`；极端情况下同一 `(sec, nsec, size)` 可能碰撞。
-- **影响**：`__expectedStamp` 的冲突检测弱于旧 mjs；默认面 LLM 不传该字段，影响面小。
-- **下一步**：改用 `fs.statSync(path, #js {:bigint true})` 的 `mtimeNs`，按 bigint 拆分秒与纳秒。
-

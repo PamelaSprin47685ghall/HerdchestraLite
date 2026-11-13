@@ -102,8 +102,8 @@
 
 - `wait` 期限已按 `1000ms + bytes × 50ms` 计算并触发 `park-all`；runtime-parked 没有 `:resolve`，`unpark` 不能恢复，见 `DEBT.md` D22。
 - `/clj-status` 已取消；`time_leap`、`ask_beacon` 与提示词注入已迁移；`ask_beacon` 已接只读模型查询。
-- 错误回执已统一为 EDN `:code`；错误路径的 call-id 重放会返回成功形状，见 D23。
-- `call` 已有可注入的内联/日志上限、唯一日志名与跨进程写锁；批量写预算已接（可注入）。`read` 已代理宿主 native；`glob` 已用受控 8 并发，见 D24–D31（D26/D28/D31 已关闭）。
+- 错误回执已统一为 EDN `:code`，失败路径的 call-id 重放原样返回。
+- `call` 已有可注入的内联/日志上限、唯一日志名与跨进程写锁；批量写预算已接（可注入）。`read` 已代理宿主 native；`glob` 已用受控 8 并发；批量预算与 bigint stamp 已接。
 - 旧 `src/*.mjs` 模块仍存在但不再由默认入口加载；最终删除。
 
 ## 6 人类批准记录（2026-11-13）
