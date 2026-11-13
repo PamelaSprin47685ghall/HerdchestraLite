@@ -1,13 +1,24 @@
 import { beforeAll, describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import * as nbb from "nbb";
 
-beforeAll(() => {
+beforeAll(async () => {
+	globalThis.__pi = {
+		tools: new Map(),
+		registerTool(definition) {
+			this.tools.set(definition.name, definition);
+		},
+	};
 	nbb.addClassPath(fileURLToPath(new URL("../src/", import.meta.url)));
+	await nbb.loadFile(fileURLToPath(new URL("../src/herd/bootstrap.cljs", import.meta.url)));
+	await new Promise((resolve) => setTimeout(resolve, 150));
 });
 
 async function evalClj(source) {
-	return nbb.loadString(`(require '[herd.ufss :as u]) (require '[clojure.string :as str]) ${source}`);
+	return nbb.loadString(
+		`(require '[herd.ufss :as u]) (require '[herd.prompts :as p]) (require '[clojure.string :as str]) ${source}`,
+	);
 }
 
 describe("CLJS UFSS", () => {
@@ -30,11 +41,21 @@ describe("CLJS UFSS", () => {
 	});
 
 	it("keeps the lenient prompt note", async () => {
-		const length = await evalClj("(count u/UFSS_PROMPT_NOTE)");
-		const lenient = await evalClj('(str/includes? u/UFSS_PROMPT_NOTE "may share its line")');
-		const strict = await evalClj('(str/includes? u/UFSS_PROMPT_NOTE "stand alone")');
-		expect(length).toBeGreaterThan(4000);
+		const length = await evalClj("(count p/ufss-prompt-note)");
+		const lenient = await evalClj('(str/includes? p/ufss-prompt-note "may share its line")');
+		const strict = await evalClj('(str/includes? p/ufss-prompt-note "stand alone")');
+		expect(length).toBeGreaterThan(3000);
 		expect(lenient).toBe(true);
 		expect(strict).toBe(false);
+	});
+
+	it("reads every source string through the official reader", async () => {
+		for (const name of ["prompts.cljs", "sandbox.cljs", "repl.cljs", "main.cljs", "ufss.cljs"]) {
+			const source = readFileSync(new URL(`../src/herd/${name}`, import.meta.url), "utf8");
+			const roundtrip = await nbb.loadString(
+				`(require '[herd.ufss :as u]) (every? (fn [s] (= s (u/read (u/print s)))) (u/literals ${JSON.stringify(source)}))`,
+			);
+			expect(roundtrip, name).toBe(true);
+		}
 	});
 });

@@ -1,12 +1,17 @@
 (ns herd.ufss
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
+            [edamame.core :as edamame]
             [cljs.pprint :as pp]))
 
 (def ^:private quote-code 34)
 (def ^:private backslash-code 92)
 (def ^:private semicolon-code 59)
 (def ^:private space-char \space)
+(def ^:private quote-str (str (char 34)))
+(def ^:private triple-quote (apply str (repeat 3 (char 34))))
+(def ^:private newline-str (str (char 10)))
+(def ^:private backslash-str (str (char 92)))
 
 (defn- char-code [s i] (.charCodeAt s i))
 
@@ -24,7 +29,7 @@
 (defn- strip-block [body indent]
   (let [lines (str/split body #"\n" -1)]
     (str/join
-     "\n"
+     newline-str
      (map (fn [line]
             (if (empty? line)
               ""
@@ -33,13 +38,13 @@
           lines))))
 
 (defn- read-multi [s hashes q]
-  (let [fence (str "\"\"\"" (apply str (repeat hashes "#")))
+  (let [fence (str triple-quote (apply str (repeat hashes "#")))
         body-start (+ q 4)
         n (count s)]
     (loop [line-start body-start]
       (if (>= line-start n)
         (throw (ex-info "unclosed raw block" {:code :UFSS_UNCLOSED}))
-        (let [line-end (or (str/index-of s "\n" line-start) n)
+        (let [line-end (or (str/index-of s newline-str line-start) n)
               line (subs s line-start line-end)
               spaces (count (take-while #(= % space-char) line))
               after (subs line spaces)]
@@ -52,9 +57,9 @@
 
 (defn- read-single [s hashes q]
   (let [fence (apply str (repeat hashes "#"))
-        close (str "\"" fence)
+        close (str quote-str fence)
         end (str/index-of s close (inc q))]
-    (when (and end (not (str/includes? (subs s (inc q) end) "\n")))
+    (when (and end (not (str/includes? (subs s (inc q) end) newline-str)))
       [(subs s (inc q) end) (+ end (count close))])))
 
 (defn- read-fence [s i min-hashes]
@@ -64,8 +69,8 @@
                    (recur (inc h))
                    h))
         q (+ i hashes)]
-    (when (and (>= hashes min-hashes) (< q n) (= "\"" (subs s q (inc q))))
-      (if (str/starts-with? (subs s q) "\"\"\"\n")
+    (when (and (>= hashes min-hashes) (< q n) (= quote-str (subs s q (inc q))))
+      (if (str/starts-with? (subs s q) (str triple-quote newline-str))
         (read-multi s hashes q)
         (read-single s hashes q)))))
 
@@ -84,12 +89,12 @@
         (let [c (char-code source i)]
           (cond
             (= c semicolon-code)
-            (let [nl (str/index-of source "\n" i)
+            (let [nl (str/index-of source newline-str i)
                   end (if nl (inc nl) n)]
               (recur end (conj out (subs source i end))))
 
             (= c quote-code)
-            (if (str/starts-with? (subs source i) "\"\"\"\n")
+            (if (str/starts-with? (subs source i) (str triple-quote newline-str))
               (if-let [[body end] (read-multi source 0 i)]
                 (recur end (conj out (pr-str body)))
                 (recur (inc i) (conj out (subs source i (inc i)))))
@@ -113,6 +118,21 @@
   [text]
   (edn/read-string (unwrap text 1)))
 
+(defn literals
+  "Return every string literal in `source`.
+
+  Parsing is delegated to the official reader (`edamame`), never to a byte
+  scanner. Fences are unwrapped first, so the reader sees standard CLJS."
+  [source]
+  (let [forms (edamame/parse-string-all (unwrap source) {:deref true :fn true :regex true})]
+    (letfn [(walk [x]
+              (cond
+                (string? x) [x]
+                (map? x) (mapcat (fn [[k v]] (concat (walk k) (walk v))) x)
+                (coll? x) (mapcat walk x)
+                :else []))]
+      (vec (mapcat walk forms)))))
+
 (defn- invisible-control? [s]
   (boolean (some (fn [ch]
                    (let [code (.charCodeAt ch 0)]
@@ -126,10 +146,10 @@
     (loop [i 0 maximum 0]
       (if (>= i n)
         maximum
-        (if (not= "\"" (subs s i (inc i)))
+        (if (not= quote-str (subs s i (inc i)))
           (recur (inc i) maximum)
           (let [quote-end (loop [j i]
-                            (if (and (< j n) (= "\"" (subs s j (inc j))))
+                            (if (and (< j n) (= quote-str (subs s j (inc j))))
                               (recur (inc j))
                               j))
                 hashes (loop [h 0]
@@ -146,25 +166,25 @@
   (inc (max-hash-run s 3)))
 
 (defn- bare-multiline? [s]
-  (and (not (str/includes? s "\"\"\""))
-       (not (str/includes? s "\\"))
-       (not-any? #(str/starts-with? % "\"\"\"") (str/split s #"\n" -1))))
+  (and (not (str/includes? s triple-quote))
+       (not (str/includes? s backslash-str))
+       (not-any? #(str/starts-with? % triple-quote) (str/split s #"\n" -1))))
 
 (defn- format-string [body]
   (cond
     (invisible-control? body) (pr-str body)
 
-    (not (str/includes? body "\n"))
-    (if (or (str/includes? body "\"") (str/includes? body "\\"))
+    (not (str/includes? body newline-str))
+    (if (or (str/includes? body quote-str) (str/includes? body backslash-str))
       (let [fence (apply str (repeat (smallest-single body) "#"))]
-        (str fence "\"" body "\"" fence))
-      (str "\"" body "\""))
+        (str fence quote-str body quote-str fence))
+      (str quote-str body quote-str))
 
     :else
     (let [fence (if (bare-multiline? body)
                   ""
                   (apply str (repeat (smallest-multi body) "#")))]
-      (str fence "\"\"\"\n" body "\n\"\"\"" fence))))
+      (str fence triple-quote newline-str body newline-str triple-quote fence))))
 
 (deftype UfssString [body]
   Object
@@ -186,61 +206,3 @@
   "Print a value as EDN + UFSS."
   [value]
   (with-out-str (pp/pprint (to-ufss-value value))))
-
-(def UFSS_PROMPT_NOTE
-  (str/join
-   "\n"
-   ["# Universal Fence-Scaled String (UFSS): Arbitrary-Depth Raw Fences"
-    "UFSS is the raw string notation used in every EDN receipt. It avoids escaping quotes, backslashes, and newlines by choosing a fence deeper than any closing sequence in the body. Use `##` by default for ordinary text; use `###` when developing HerdchestraLite itself, because its source, docs, and prompts contain many quotes, backslashes, and fence-like sequences. Fence depth is arbitrary: zero hashes (bare multi-line), one, or more all work; the printer picks the smallest, but you're free. Raise the fence instead of escaping."
-    ""
-    "Every receipt you get is EDN, and every string in it is printed as UFSS (Universal Fence-Scaled String). You are not restricted to one escaping style; you are expected to pick the strongest one."
-    ""
-    "Three string forms, all accepted by the same reader:"
-    "1. Standard escaped string — only for short text with no quote, no backslash, no newline. This is the fallback, not the default."
-    "2. Single-line raw fence: `##\"...\"##` for ordinary text, or `###\"...\"###` when developing HerdchestraLite. The body is taken verbatim: quotes, backslashes, and hash characters inside stay literal."
-    "3. Multi-line raw block: `##\"\"\"...\"\"\"##` for ordinary text, or `###\"\"\"...\"\"\"###` when developing HerdchestraLite. The closing indent is stripped from every non-empty body line; shorter lines are accepted as-is; a trailing newline is preserved exactly."
-    ""
-    "Scaling is the point. With two hashes the forms are `##\"...\"##` and `##\"\"\"...\"\"\"##`; with three hashes, `###\"...\"###` and `###\"\"\"...\"\"\"###`. If the body already contains a quote, a backslash, or a line beginning with three quotes, raise the fence by one hash; continue without a ceiling. The printer chooses the smallest n whose closing sequence does not appear in the body, so a raw fence always exists. The reader and printer are a bijection: round-tripping any string returns it byte for byte."
-    ""
-    "Examples (all obey the default depth):"
-    "- Ordinary text: `##\"He said \"hello\".\"##`"
-    "- Herd source: `###\"const marker = '\"\"\"';\"###`"
-    "- Ordinary block:"
-    "##\"\"\""
-    "ordinary body with \"quotes\""
-    "\"\"\"##"
-    "- Herd block:"
-    "###\"\"\""
-    "const marker = '\"\"\"';"
-    "\"\"\"###"
-    ""
-    ""
-    "Concrete repair example (Herd source, so `###`):"
-    "LLM classic: models often say `strawberry` has two r's. The wrong text is `2 r's`; the repair must hit that exact occurrence and leave the rest untouched."
-    "Before: `###\"export const STRAWBERRY_FACT = \"strawberry has 2 r's\";\"###`"
-    "Program:"
-    "(let [path \"src/llm-meme.mjs\""
-    "      src  (cat {:path path})"
-    "      [b e] (where {:content src"
-    "                    :needle ###\"export const STRAWBERRY_FACT = \"strawberry has 2 r's\";\"###})]"
-    "  (write {:path path"
-    "          :content (str (subs src 0 b)"
-    "                        ###\"export const STRAWBERRY_FACT = \"strawberry has 3 r's\";\"###"
-    "                        (subs src e))}))"
-    ""
-    "Why this beats `python/replace` or `apply_patch`:"
-    "- `cat` is byte-exact; `read` may reformat and is not a patch basis."
-    "- `where` returns one exact UTF-16 span; 0 or multiple matches park with candidates instead of guessing."
-    "- UFSS `###` keeps inner quotes literal; the needle and replacement need no escaping."
-    "- `write` replaces only `[b e]`; surrounding text is never retyped."
-    "- Python `str.replace` defaults to all occurrences and silently no-ops when the target drifts; regex adds escaping noise."
-    "- `apply_patch` depends on diff context and line drift; the model must reproduce surrounding lines. This path uses the real file text and exact spans."
-    ""
-    "WARNING — the mistakes that actually break a fence:"
-    "- A raw fence is not a regex. `##\"...\"##` is a raw string; write regexes as `(re-pattern ##\"...\"##)`."
-    "- Never hand-build backslash escapes for quotes, backslashes, or newlines in code, paths, diffs, or multi-line prose. If the body needs those escapes, raise the fence depth instead."
-    "- The closing fence may share its line with trailing syntax such as `}`; the string ends at the fence and parsing continues with the rest of the line."
-    "- Body indentation is stripped up to the closing fence indent; shorter lines are accepted as-is."
-    "- If the body contains three consecutive quotes, a closing-fence sequence, or a line of hashes, raise the fence by one hash until the closing sequence does not occur in the body."
-    "- Control characters other than newline and tab cannot live in a raw fence; use a standard escaped string for those."
-    "- JSON, standard EDN, and UFSS are all accepted on input and normalized. On output the framework never sends escaped JSON noise for text a fence can carry; do not pre-escape it yourself."]))

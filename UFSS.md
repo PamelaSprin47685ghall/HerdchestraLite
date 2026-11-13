@@ -120,4 +120,5 @@ ufssify(cljs) = pprint(ufss(cljs))
 ## 8 已知偏差
 
 - `nbb` 的 `cljs.pprint` 未暴露 `*print-right-margin*`（仅有 `*print-pprint-dispatch*` 等），D4 目前只能作为目标；实现需在 writer 层模拟宽度或在 `DEBT.md` 记录。
-- 源码级 canonicalize 仍未改为官方 reader 驱动的区间替换；E1 尚未完全落地，见 `DEBT.md`。
+- 源码规范化不再提供逐字节 `canonicalize`；`herd.ufss/literals` 使用官方 `edamame` reader（`:deref`、`:fn`、`:regex`）读取源码并收集字符串。源码文本的自动替换仍由生成器/人工保证，不在运行时做区间改写。
+- `edamame` 在 nbb 中的 `:location?`/`:postprocess` 不可用（`H.call` 错误），因此无法在解析回调中直接替换字符串；只能解析后遍历。
