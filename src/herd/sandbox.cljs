@@ -158,9 +158,17 @@
                        :limit max-write-bytes})))
     (with-lock
       (fn []
-        (let [absolute (resolve-path path)]
+        (let [absolute (resolve-path path)
+              native (.-__herdNative js/globalThis)
+              runner (when native ((.-getRunner native)))]
+          (when-not (and runner (.hasNativeTool runner "write"))
+            (throw (ex-info "host native write is unavailable"
+                            {:code :HOST_API_MISMATCH :path path})))
           (check-stamp! absolute (:__expectedStamp request))
-          (.writeFile fs-promises absolute content "utf8"))))))
+          (-> (.invokeNativeTool runner "write"
+                                 #js {:path absolute :content content}
+                                 #js {})
+              (.then (fn [_] nil))))))))
 
 (defn mkdir [{:keys [path]}]
   (with-lock (fn [] (.mkdir fs-promises (resolve-path path) #js {:recursive true}))))
