@@ -176,7 +176,7 @@ Lite 的实现只能依赖以下宿主语义。具体类型签名以 `omp` 当�
 7. **工作区写入一律经 ClojureScript 沙箱 VFS 干跑 + 纳秒 `stamp` + 写入口 $W$（L07）。** `cat` / `stat` 不加锁，自动采集精确凭据 `stamp = {mtime-sec, mtime-nsec, size}`（忽略 `atime`）。REPL 内的 `write` / `mkdir` / `rm` / `mv` 先按执行顺序作用于批内内存 VFS；程序正常返回（或 `call` 前排空）时申请该 tenure 的写锁 $W$，在锁内复核全部 `read-set`（含只读依赖文件）与结构条件，固定 `:applying` 资格后一次性原子落盘。任何可拒绝冲突必须在触碰真实磁盘前拒绝；正常路径零回滚。见 §4.3。
 8. **抢令牌（`board_take_or_die`）不可逆，持令者独占 `call` 且无责即死，新生无记忆（L08）。** 普通个体在 `clj_worker` 中调用 `(call ...)` 一律拒收 `:TOKEN_REQUIRED`。个体仅在耗尽有价值的受保护工作且存在未结 `:needs-token` 任务时调用 `board_take_or_die`：赢者成为唯一 `Holder`，动态承担全看板 `:needs-token` 责任（仅在单次 `call` 运行期或文件提交期占 $W$，等待期释放 $W$）；输者在同一看板锁事务内公开移交剩余责任与认领并逻辑死亡；`Holder` 在完整责任集合 $R(a) = \emptyset$ 时同事务释放令牌并逻辑死亡。死亡槽位拉起全新 `agent_id`，绝不继承前世上下文。见 §3.5。
 9. **规划期源码只读锁与模型归属铁律（L09）。** S1–S4 的 `Plan` 除通过 `review` 空账 + `attach_*` 交出阶段交付物外，无任何仓库文件写入能力；调查仓库事实只能调用同步工具 `devops`，复用本任期专属 `Plan DevOps`；它是带 `call` 特权的 Worker，不是只读探针。`Plan`、`Reviewer`、`Manual Auditor`、`Blocker Oracle`、`Coordinator` 使用主模型；`Plan DevOps`、`Swarm Worker`、`Swarm Holder` 使用用户配置的 `@task` 模型。一切子代理经 `runSubprocess` 持久化产物并在 Agent Hub 实名可见。见 §2.1、§4.2。
-10. **投影不改写：Time Leap++ 枝桠剪裁、Ariadne 预算治理与系统输出一律 EDN + UFSS（L10）。** 彻底废弃旧式 Scope/intent/retention 复杂注解。会话通过零成本的 Ariadne's Thread（`ariadne_budget` + `ariadne_goal`）约束每一次关键执行；当假设被证伪、回合预算告急或阶段完成时，必须通过 `time_leap` 主动剪切当前枝桠回退到过去的干净锚点，携带完整经验（`experience`）与只读记忆灯塔（`beacon`）重新起步，彻底解决长上下文污染问题。每次出站请求末尾注入简体中文思考与输出要求（附带未决 `:parked` 提醒）；框架向模型返回的一切工具回执、看板快照、挂起诊断与错误详情，一律渲染为支持 UFSS 的 EDN，严禁投喂带 `\"`、`\\`、`\n` 转义噪音的裸 JSON。见 §4.7 与 §5。
+10. **投影不改写：Time Leap++ 枝桠剪裁、Ariadne 预算治理与系统输出一律 EDN + UFSS（L10）。** 彻底废弃旧式 Scope/intent/retention 复杂注解。会话通过零成本的 Ariadne's Thread（`ariadne_budget` + `ariadne_goal`）约束每一次关键执行；当假设被证伪、回合预算告急或阶段完成时，必须通过 `time_leap` 主动剪切当前枝桠回退到过去的干净锚点，携带完整经验（`experience`，其中必须逐项列出当前仍在运行、阻塞或尚未收集的 subagent 名称与状态；没有则写 `none`）与只读记忆灯塔（`beacon`）重新起步，彻底解决长上下文污染问题。每次出站请求末尾注入简体中文思考与输出要求（附带未决 `:parked` 提醒）；框架向模型返回的一切工具回执、看板快照、挂起诊断与错误详情，一律渲染为支持 UFSS 的 EDN，严禁投喂带 `\"`、`\\`、`\n` 转义噪音的裸 JSON。见 §4.7 与 §5。
 
 **补充：终局可解释。** 用户侧只有三种状态词：**进行中**、**已交付**、**未交付（必附具体理由与教训）**。中间过程（等待、重试、应用中等）属于实现细节，不向用户暴露细分状态。允许善意误解：用户的心智模型可以比实现简单，只要有助于理解产品。
 
@@ -894,7 +894,7 @@ COMMON_RULES
 1. **零成本锚点**：每次 `clj_*` 调用的 `:name`（缺省自动生成 `repl-<uuid>`）都是潜在的干净分支锚点。
 2. **主动剪枝回退（Time Leap）**：当遇到思路死胡同、上下文被冗长工具输出污染、或者完成了一段独立探索时，严禁在污染的上下文里继续打补丁，必须调用 `time_leap` 回退到历史锚点：
    - `target`：目标 `clj_*` 锚点名；
-   - `experience`：带回主线的完整主观经验（已证实事实、已证伪路径、精确文件/符号、下一步明确行动）；
+   - `experience`：带回主线的完整主观经验（已证实事实、已证伪路径、精确文件/符号、下一步明确行动，并必须逐项列出当前仍在运行、阻塞或尚未收集的 subagent 名称与状态；没有则写 `none`。不新增独立字段）；
    - `beacon`：留在被封存枝桠上的只读灯塔摘要。
 3. **只读灯塔记忆库（Beacon）**：被剪掉的枝桠绝不复活，但通过 `ask_beacon({ target, question })` 可以在需要时以纯文本形式向该枝桠查询细节，彻底避免死路重走与上下文膨胀之间的两难。
 4. **尾轮增量同步（hackContext）**：`context` 钩子通过计算分支与公共前缀差异，以单行追加（`branch` + `appendMessage`）持久化新分支，避免全量重写磁盘历史。
