@@ -111,6 +111,21 @@ describe('Time Leap++ pending resolve + Ariadne thread + read-only beacons', () 
 		).toThrow(/already pending/);
 	});
 
+	it('resets constraints across compaction and handoff boundaries', () => {
+		const store = createAriadneStore();
+		const sk = 's-reset';
+		const pre = { role: 'assistant', content: [{ type: 'toolCall', id: 'c-pre', name: 'clj_plan', arguments: { name: 'shared', ariadne_budget: 2, ariadne_goal: 'old' } }] };
+		const compaction = { type: 'compaction', id: 'compact-x', message: { role: 'compactionSummary' } };
+		const post = { role: 'assistant', content: [{ type: 'toolCall', id: 'c-post', name: 'clj_plan', arguments: { name: 'post', ariadne_budget: 2, ariadne_goal: 'new' } }] };
+		store.recoverHistory(sk, [pre, compaction, post], [pre, compaction, post]);
+		expect(store.status(sk).budgets.map((b) => b.programName)).toEqual(['post']);
+		expect(() => store.validateAndApplyFork(sk, { ariadne_budget: 1, ariadne_goal: 'reuse' }, 'shared', 'c-reuse', 'clj_plan')).not.toThrow();
+		const handoff = { type: 'branch_summary', id: 'handoff-x', summary: 'continue elsewhere' };
+		const handoffPost = { role: 'assistant', content: [{ type: 'toolCall', id: 'c-handoff', name: 'clj_plan', arguments: { name: 'handoff-post', ariadne_budget: 1, ariadne_goal: 'new context' } }] };
+		store.recoverHistory(sk, [pre, compaction, post, handoff, handoffPost], [pre, compaction, post, handoff, handoffPost]);
+		expect(store.status(sk).budgets.map((b) => b.programName)).toEqual(['handoff-post']);
+	});
+
 	it('does not let a pre-compaction anchor enter the active stack', () => {
 		const store = createAriadneStore();
 		const sk = 's-boundary';

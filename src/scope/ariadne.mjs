@@ -27,6 +27,8 @@ export const ARIADNE_BUDGET_FIELD = "ariadne_budget";
 export const ARIADNE_GOAL_FIELD = "ariadne_goal";
 
 const CLJ_TOOL_NAME = /^clj_(plan|devops|review|worker|auditor)$/;
+const BOUNDARY_ENTRY_TYPES = new Set(["compaction", "branch_summary", "reset_boundary"]);
+const BOUNDARY_MESSAGE_ROLES = new Set(["compactionSummary", "branchSummary", "handoff"]);
 
 function createEmptyVerse() {
 	return {
@@ -49,7 +51,7 @@ function findFrame(verse, target) {
 	return null;
 }
 
-function sliceAfterLatestCompaction(entries) {
+function sliceAfterLatestBoundary(entries) {
 	if (!Array.isArray(entries) || entries.length === 0) {
 		return { compactionKey: null, postEntries: [] };
 	}
@@ -58,7 +60,7 @@ function sliceAfterLatestCompaction(entries) {
 	for (let i = 0; i < entries.length; i += 1) {
 		const entry = entries[i];
 		const message = entry?.message ?? entry;
-		if (entry?.type === "compaction" || message?.role === "compactionSummary") {
+		if (BOUNDARY_ENTRY_TYPES.has(entry?.type) || BOUNDARY_MESSAGE_ROLES.has(message?.role)) {
 			lastCompactionIdx = i;
 			compactionKey = entry?.id ?? `idx:${i}`;
 		}
@@ -244,12 +246,20 @@ export function createAriadneStore() {
 			}
 		}
 
-		const { compactionKey, postEntries } = sliceAfterLatestCompaction(activeEntries);
+		const { compactionKey, postEntries } = sliceAfterLatestBoundary(activeEntries);
 		if (session.compactionKey !== compactionKey) {
 			session.compactionKey = compactionKey;
 			session.active = createEmptyVerse();
+			session.usedNames.clear();
+			session.pendingLeap = null;
 		}
 
+		for (const entry of postEntries) {
+			for (const call of callsOf(entry, nameByCallId)) {
+				if (call.id === currentCallId) continue;
+				if (!session.usedNames.has(call.name)) session.usedNames.set(call.name, call.id);
+			}
+		}
 		for (const entry of postEntries) {
 			for (const call of callsOf(entry, nameByCallId)) {
 				if (call.id === currentCallId) continue;
@@ -412,6 +422,7 @@ export function createAriadneStore() {
 		verse.stack.length = found.index;
 		verse.currentTurn = targetFrame.turnAtCall;
 		verse.turnDirty = false;
+		session.usedNames = new Map(verse.stack.map((frame) => [frame.programName, frame.toolCallId]));
 
 		session.beacons.set(pending.beaconName, {
 			name: pending.beaconName,
