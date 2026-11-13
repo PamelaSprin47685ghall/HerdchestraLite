@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { registerCljTools } from "../src/clj-main.mjs";
 
 const WORKERS = "more_workers_without_hitting_mythical_man_month";
-const nudgeFor = (count) => `你刚刚在工具参数中说还可以增派 ${String(count)} 个工人，现在请你立刻兑现。`;
+const nudgeFor = (count) => `<system-reminder>\n<skill version="1.0">你刚刚在工具参数中说还可以增派 ${String(count)} 个工人，现在请你立刻兑现。</skill>\n</system-reminder>`;
 
 describe("Mythical Man-Month worker self-check", () => {
 	const activeHosts = [];
@@ -40,7 +40,7 @@ describe("Mythical Man-Month worker self-check", () => {
 
 	it("declares the worker field on all clj tools and requires proof in wait counterfactual description", () => {
 		const tools = fakeHost();
-		for (const name of ["clj_plan", "clj_devops", "clj_review", "clj_worker", "wait"]) {
+		for (const name of ["clj_devops", "wait"]) {
 			const definition = tools.get(name).parameters.properties[WORKERS];
 			expect(definition.type).toBe("integer");
 			expect(definition.minimum).toBe(0);
@@ -52,15 +52,15 @@ describe("Mythical Man-Month worker self-check", () => {
 
 	it("appends the delivery nudge only when the declared count is positive", async () => {
 		const tools = fakeHost();
-		const cljPlan = tools.get("clj_plan");
+		const cljDevops = tools.get("clj_devops");
 
-		const withThree = await cljPlan.execute("w-3", { code: "1", ariadne_budget: 5, ariadne_goal: "test", [WORKERS]: 3 }, undefined, undefined, { cwd: root });
+		const withThree = await cljDevops.execute("w-3", { code: "1", ariadne_budget: 5, ariadne_goal: "test", [WORKERS]: 3 }, undefined, undefined, { cwd: root });
 		expect(withThree.content.at(-1).text).toBe(nudgeFor(3));
 
-		const zero = await cljPlan.execute("w-0", { code: "1", ariadne_budget: 5, ariadne_goal: "test", [WORKERS]: 0 }, undefined, undefined, { cwd: root });
+		const zero = await cljDevops.execute("w-0", { code: "1", ariadne_budget: 5, ariadne_goal: "test", [WORKERS]: 0 }, undefined, undefined, { cwd: root });
 		expect(zero.content.some((block) => typeof block.text === "string" && block.text.includes("立刻兑现"))).toBe(false);
 
-		const absent = await cljPlan.execute("w-none", { code: "1", ariadne_budget: 5, ariadne_goal: "test" }, undefined, undefined, { cwd: root });
+		const absent = await cljDevops.execute("w-none", { code: "1", ariadne_budget: 5, ariadne_goal: "test" }, undefined, undefined, { cwd: root });
 		expect(absent.content.some((block) => typeof block.text === "string" && block.text.includes("立刻兑现"))).toBe(
 			false,
 		);
@@ -68,9 +68,9 @@ describe("Mythical Man-Month worker self-check", () => {
 
 	it("rejects negative, fractional, or non-integer worker counts", async () => {
 		const tools = fakeHost();
-		const cljPlan = tools.get("clj_plan");
+		const cljDevops = tools.get("clj_devops");
 		for (const [index, value] of [-1, 1.5, "3"].entries()) {
-			const result = await cljPlan.execute(
+			const result = await cljDevops.execute(
 				`w-bad-${String(index)}`,
 				{ code: "1", ariadne_budget: 5, ariadne_goal: "test", [WORKERS]: value },
 				undefined,

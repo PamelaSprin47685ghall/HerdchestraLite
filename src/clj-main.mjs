@@ -22,6 +22,7 @@ import { hostSessionKey } from "./host/session-key.mjs";
 import { COMMON_RULES_TEXT } from "./prompts/common.mjs";
 
 import { appendOutboundContextTail } from "./prompts/runtime-wires.mjs";
+import { printUfss } from "./clj-sandbox/ufss.mjs";
 import {
 	ARIADNE_BUDGET_FIELD,
 	ARIADNE_GOAL_FIELD,
@@ -67,7 +68,7 @@ const WORKERS_FIELD = "more_workers_without_hitting_mythical_man_month";
 const WORKERS_FIELD_DESCRIPTION =
 	"自检：按 Brooks《人月神话》推导此刻还能增派多少工人。只数与既有契约互不相交、跨切片通信成本 O(1) 且现在已就绪的切片；无法证明互不相交的一律计 0。";
 const FORK_ALLOWED_FIELDS = new Set(["name", "code", "i", WORKERS_FIELD, ARIADNE_BUDGET_FIELD, ARIADNE_GOAL_FIELD]);
-const TIME_LEAP_ALLOWED_FIELDS = new Set(["target", "experience", "beacon", "i"]);
+const TIME_LEAP_ALLOWED_FIELDS = new Set(["target", "experience", "beacon_name", "beacon_description", "i"]);
 const ASK_BEACON_ALLOWED_FIELDS = new Set(["target", "question", "i"]);
 const WAIT_ALLOWED_FIELDS = new Set(["otherwise_independent_work", "i", WORKERS_FIELD]);
 
@@ -163,14 +164,14 @@ export const HOST_TOOL_BLACKLIST = Object.freeze([
 const TIME_LEAP_PARAMETERS = Object.freeze({
 	type: "object",
 	additionalProperties: false,
-	required: ["target", "experience", "beacon"],
+	required: ["target", "experience", "beacon_name", "beacon_description"],
 	properties: {
 
 		target: {
 			type: "string",
 			minLength: 1,
 			description:
-				"The :name of a clj_* program anchor on the CURRENT timeline AFTER the latest compaction. Pre-compaction or other-branch anchors are unknown, so only post-compaction clj_* names are valid leap targets. Before choosing, inspect the anchor list in <ARIADNE-THREAD>: each anchor states its updated budget (the Ariadne remaining you would get after jumping back). Prefer an anchor with little irrelevant context and an updated budget that covers your remaining work and is materially larger than the current line; do not leap merely because it is the most recent, cleanest, most relevant, or has the largest updated budget. If recent anchors are unsuitable, actively consider distant anchors with cleaner context and sufficient updated budget. In experience, still pass the normal experience (proven facts, falsified paths, exact files/symbols, remaining plan, and next move), and additionally enumerate completed, partially completed, and not-started user requirements in exhaustive detail. Carry missing facts in `experience`.",
+				"The :name of a clj_* program anchor on the CURRENT timeline AFTER the latest compaction. Pre-compaction or other-branch anchors are unknown, so only post-compaction clj_* names are valid leap targets. Before choosing, inspect the current <skill> Ariadne reminder and your own clj_* history; prefer an anchor with little irrelevant context whose updated budget covers your remaining work and is materially larger than the current line; do not leap merely because it is the most recent, cleanest, most relevant, or has the largest updated budget. If recent anchors are unsuitable, actively consider distant anchors with cleaner context and sufficient updated budget. In experience, still pass the normal experience (proven facts, falsified paths, exact files/symbols, remaining plan, and next move), and additionally enumerate completed, partially completed, and not-started user requirements in exhaustive detail. Carry missing facts in `experience`.",
 		},
 		experience: {
 			type: "string",
@@ -178,11 +179,17 @@ const TIME_LEAP_PARAMETERS = Object.freeze({
 			description:
 				"Your full subjective lived experience to pour into the rewritten timeline: proven facts, falsified paths, exact files/symbols, remaining plan, and the single next move — especially facts that were unknown at the target anchor's time. Do not replace this normal experience with the requirement list. In addition to it, the experience MUST enumerate, in exhaustive detail, every user requirement that is already completed (with exact files/symbols and verification), which are partially done, and which are not started, so the future self never redoes finished work. This string may carry a long, structured prose report; do not compress it into a one-liner. It MUST explicitly list every subagent still running, blocked, or not yet collected at leap time, by name and current status; write \"none\" when no subagent is outstanding.",
 		},
-		beacon: {
+		beacon_name: {
 			type: "string",
 			minLength: 1,
 			description:
-				"Mandatory read-only Beacon summarizing the sealed branch you are departing from; future turns query it with ask_beacon. This string may carry a long summary, so write enough for ask_beacon to answer precisely. Sealed branches are never resurrected or jumped back to.",
+				"Name of the read-only Beacon left on the sealed branch. Must be unique among existing Beacons; a duplicate name is rejected with :NAME_TAKEN.",
+		},
+		beacon_description: {
+			type: "string",
+			minLength: 1,
+			description:
+				"Read-only description of the sealed branch; future turns query it with ask_beacon. This string may carry a long summary, so write enough for ask_beacon to answer precisely. Sealed branches are never resurrected or jumped back to.",
 		},
 	},
 });
@@ -195,7 +202,7 @@ const ASK_BEACON_PARAMETERS = Object.freeze({
 		target: {
 			type: "string",
 			minLength: 1,
-			description: "The Beacon :name from <BEACONS> to query. Beacons are read-only sealed branches and are never resurrected or switched to.",
+			description: "The Beacon :name from a time_leap receipt's :beacons list to query. Beacons are read-only sealed branches and are never resurrected or switched to.",
 		},
 		question: {
 			type: "string",
@@ -287,7 +294,7 @@ function withWorkerNudge(result, workers) {
 	if (!Number.isInteger(workers) || workers <= 0) return result;
 	if (result === null || typeof result !== "object" || result.isError === true) return result;
 	const content = Array.isArray(result.content) ? result.content : [];
-	const nudge = `你刚刚在工具参数中说还可以增派 ${workers} 个工人，现在请你立刻兑现。`;
+	const nudge = `<system-reminder>\n<skill version="1.0">你刚刚在工具参数中说还可以增派 ${workers} 个工人，现在请你立刻兑现。</skill>\n</system-reminder>`;
 	return { ...result, content: [...content, { type: "text", text: nudge }] };
 }
 
@@ -531,16 +538,22 @@ export function registerCljTools(pi, deps = {}) {
 			resolvePark({ ok: false, code: "HOST_API_MISMATCH" });
 		}
 	};
-	const invokeHostTool = async (ctx, name, params) => {
-		const holders = [ctx, ctx?.session, ctx?.sessionManager];
-		let tool = null;
-		for (const holder of holders) {
+	const hostToolOf = (ctx, name) => {
+		for (const holder of [ctx, ctx?.session, ctx?.sessionManager]) {
 			if (holder && typeof holder.getToolByName === "function") {
-				tool = holder.getToolByName(name);
-				if (tool) break;
+				const tool = holder.getToolByName(name);
+				if (tool && typeof tool.execute === "function") return tool;
 			}
 		}
-		if (!tool || typeof tool.execute !== "function") {
+		return null;
+	};
+	const detectHostTools = (ctx) => ({
+		read: hostToolOf(ctx, "read") !== null,
+		write: hostToolOf(ctx, "write") !== null,
+	});
+	const invokeHostTool = async (ctx, name, params) => {
+		const tool = hostToolOf(ctx, name);
+		if (tool === null) {
 			throw herdError("HOST_API_MISMATCH", `host tool is unavailable: ${name}`, { tool: name });
 		}
 		return await tool.execute(`host-${name}-${randomUUID()}`, params, undefined, undefined, ctx);
@@ -859,6 +872,7 @@ export function registerCljTools(pi, deps = {}) {
 							programName: validated.programName,
 							code: validated.code,
 							deadlineAt: Date.now() + forkDeadlineMs,
+							hostTools: detectHostTools(ctx),
 						});
 					})
 						.catch((error) => toolFailure(error))
@@ -1131,7 +1145,7 @@ export function registerCljTools(pi, deps = {}) {
 			name: "time_leap",
 			label: "Time Leap++",
 			description:
-				"Time Leap++: cut the CURRENT post-compaction timeline back to a past clj_* anchor, carrying your full `experience` and leaving a mandatory read-only `beacon` on the departed branch. Resolve parked clj_* programs first with unpark or abandon, because a leap that predates them is refused. Never accepts `ariadne_budget`/`ariadne_goal` (re-anchor on your next `clj_*` call) and never resurrects old universes.",
+				"Time Leap++: cut the CURRENT post-compaction timeline back to a past clj_* anchor, carrying your full `experience` and leaving a read-only `beacon_name` + `beacon_description` on the departed branch. Resolve parked clj_* programs first with unpark or abandon, because a leap that predates them is refused. Never accepts `ariadne_budget`/`ariadne_goal` (re-anchor on your next `clj_*` call) and never resurrects old universes.",
 			parameters: TIME_LEAP_PARAMETERS,
 			async execute(toolCallId, params = {}, _signal, _onUpdate, ctx) {
 				if (!isPlainObject(params)) {
@@ -1157,7 +1171,14 @@ export function registerCljTools(pi, deps = {}) {
 					const parkedNames = (pool.parkedList ?? []).map((item) => item.name);
 					recoverAriadneHistory(ariadne, sessionKey, ctx);
 					const res = ariadne.timeLeap(sessionKey, params, { jumpCallId, leafId, parkedNames });
-					const text = `{:state :time-leaped :target ${JSON.stringify(res.target)} :beacon ${JSON.stringify(res.beaconName)} :updated-budget ${res.updatedBudget === null ? "nil" : res.updatedBudget}}`;
+					const beacons = Array.isArray(res.beacons) ? res.beacons : [];
+					const beaconsEdn = beacons
+						.map(
+							(b) =>
+								`{:name ${printUfss(String(b.name))} :description ${b.description == null ? "nil" : printUfss(String(b.description))}}`,
+						)
+						.join(" ");
+					const text = `{:time-leaped-from ${printUfss(String(res.beaconName))} :updated-budget ${res.updatedBudget === null ? "nil" : res.updatedBudget} :available-beacons [${beaconsEdn}]}`;
 					return { content: [{ type: "text", text }], details: res };
 				} catch (error) {
 					return toolFailure(error);

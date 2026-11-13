@@ -176,7 +176,7 @@ Lite 的实现只能依赖以下宿主语义。具体类型签名以 `omp` 当�
 7. **工作区写入一律经 ClojureScript 沙箱 VFS 干跑 + 纳秒 `stamp` + 写入口 $W$（L07）。** `cat` / `stat` 不加锁，自动采集精确凭据 `stamp = {mtime-sec, mtime-nsec, size}`（忽略 `atime`）。REPL 内的 `write` / `mkdir` / `rm` / `mv` 先按执行顺序作用于批内内存 VFS；程序正常返回（或 `call` 前排空）时申请该 tenure 的写锁 $W$，在锁内复核全部 `read-set`（含只读依赖文件）与结构条件，固定 `:applying` 资格后一次性原子落盘。任何可拒绝冲突必须在触碰真实磁盘前拒绝；正常路径零回滚。默认 Worker 的 `read`/`write` 直接代理宿主工具，不进入 VFS/`read-set`/$W$；`cat`/`stat` 与无 host 端口时的 VFS 回退仍遵守本节。见 §4.3。
 8. **抢令牌（`board_take_or_die`）不可逆，持令者独占 `call` 且无责即死，新生无记忆（L08）。** 普通个体在 `clj_worker` 中调用 `(call ...)` 一律拒收 `:TOKEN_REQUIRED`。个体仅在耗尽有价值的受保护工作且存在未结 `:needs-token` 任务时调用 `board_take_or_die`：赢者成为唯一 `Holder`，动态承担全看板 `:needs-token` 责任（仅在单次 `call` 运行期或文件提交期占 $W$，等待期释放 $W$）；输者在同一看板锁事务内公开移交剩余责任与认领并逻辑死亡；`Holder` 在完整责任集合 $R(a) = \emptyset$ 时同事务释放令牌并逻辑死亡。死亡槽位拉起全新 `agent_id`，绝不继承前世上下文。见 §3.5。
 9. **规划期源码只读锁与模型归属铁律（L09）。** S1–S4 的 `Plan` 除通过 `review` 空账 + `attach_*` 交出阶段交付物外，无任何仓库文件写入能力；调查仓库事实只能调用同步工具 `devops`，复用本任期专属 `Plan DevOps`；它是带 `call` 特权的 Worker，不是只读探针。`Plan`、`Reviewer`、`Manual Auditor`、`Blocker Oracle`、`Coordinator` 使用主模型；`Plan DevOps`、`Swarm Worker`、`Swarm Holder` 使用用户配置的 `@task` 模型。一切子代理经 `runSubprocess` 持久化产物并在 Agent Hub 实名可见。见 §2.1、§4.2。
-10. **投影不改写：Time Leap++ 枝桠剪裁、Ariadne 预算治理与系统输出一律 EDN + UFSS（L10）。** 彻底废弃旧式 Scope/intent/retention 复杂注解。会话通过零成本的 Ariadne's Thread（`ariadne_budget` + `ariadne_goal`）约束每一次关键执行；当假设被证伪、回合预算告急或阶段完成时，必须通过 `time_leap` 主动剪切当前枝桠回退到过去的干净锚点，携带完整经验（`experience`，其中必须逐项列出当前仍在运行、阻塞或尚未收集的 subagent 名称与状态；没有则写 `none`）与只读记忆灯塔（`beacon`）重新起步，彻底解决长上下文污染问题。每次出站请求末尾注入简体中文思考与输出要求（附带未决 `:parked` 提醒）；框架向模型返回的一切工具回执、看板快照、挂起诊断与错误详情，一律渲染为支持 UFSS 的 EDN，严禁投喂带 `\"`、`\\`、`\n` 转义噪音的裸 JSON。见 §4.7 与 §5。
+10. **投影不改写：Time Leap++ 枝桠剪裁、Ariadne 预算治理与系统输出一律 EDN + UFSS（L10）。** 彻底废弃旧式 Scope/intent/retention 复杂注解。会话通过零成本的 Ariadne's Thread（`ariadne_budget` + `ariadne_goal`）约束每一次关键执行；当假设被证伪、回合预算告急或阶段完成时，必须通过 `time_leap` 主动剪切当前枝桠回退到过去的干净锚点，携带完整经验（`experience`，其中必须逐项列出当前仍在运行、阻塞或尚未收集的 subagent 名称与状态；没有则写 `none`）与只读记忆灯塔（`beacon_name` + `beacon_description`）重新起步，彻底解决长上下文污染问题。每次出站请求末尾注入简体中文思考与输出要求（附带未决 `:parked` 提醒）；框架向模型返回的一切工具回执、看板快照、挂起诊断与错误详情，一律渲染为支持 UFSS 的 EDN，严禁投喂带 `\"`、`\\`、`\n` 转义噪音的裸 JSON。见 §4.7 与 §5。
 
 **补充：终局可解释。** 用户侧只有三种状态词：**进行中**、**已交付**、**未交付（必附具体理由与教训）**。中间过程（等待、重试、应用中等）属于实现细节，不向用户暴露细分状态。允许善意误解：用户的心智模型可以比实现简单，只要有助于理解产品。
 
@@ -641,7 +641,7 @@ clj_<role>({ code[, name][, more_workers_without_hitting_mythical_man_month] })
 wait({ otherwise_independent_work[, more_workers_without_hitting_mythical_man_month] })
 ```
 
-`more_workers_without_hitting_mythical_man_month` 是 Brooks《人月神话》自检：只数与既有契约互不相交、跨切片通信成本 $O(1)$ 且现在已就绪的切片，无法证明互不相交的一律计 0。`wait` 的反事实参数 `otherwise_independent_work` 的描述要求从人月神话推导出该量并给出证明。该量为正时，工具回执末尾追加“你刚刚在工具参数中说还可以增派 X 个工人，现在请你立刻兑现。”；为 0 时该句不出现。
+`more_workers_without_hitting_mythical_man_month` 是 Brooks《人月神话》自检：只数与既有契约互不相交、跨切片通信成本 $O(1)$ 且现在已就绪的切片，无法证明互不相交的一律计 0。`wait` 的反事实参数 `otherwise_independent_work` 的描述要求从人月神话推导出该量并给出证明。该量为正时，工具回执末尾追加 `<system-reminder><skill version="1.0">你刚刚在工具参数中说还可以增派 X 个工人，现在请你立刻兑现。</skill></system-reminder>`；为 0 时该块不出现。
 
 `code` 是 REPL 输入：任意数量的顶层表达式，最后一个值作为回执返回；`name` 可选；省略时框架生成 `repl-<id>`，内部命名只服务 `park`/`unpark`。**单一写法铁律**：同一个能力只有一种调用写法——**裸函数名 + 单个 EDN map 参数**。不存在接收者写法或位置参数；`this` 不绑定。顶层结构化原语是**独立工具**，不在 REPL 内调用；也不要在聊天正文里“调用”沙箱函数。
 
@@ -795,7 +795,7 @@ wait({ otherwise_independent_work[, more_workers_without_hitting_mythical_man_mo
    - 慢 `call` 因 `wait` 超时 `park` 时，将自上次展示以来的增量 `{:stdout ... :stderr ...}` 放入 `:payload`，满足 `sum(各次 park) + final === all`。
    - `(unpark {:name ... :value ...})` 恢复 `pendingCall` 时，字符串或 `{:stdin ... :eof ...}` 作为键盘输入灌入子进程 `stdin`。
    - `(abandon {:name ...})` 抛弃挂起程序、丢弃未提交 VFS、中止遗留 `call` 子进程释放 `$W$` 并释放内存。
-   - `context` 钩子在每次 LLM 请求末尾总是注入 `<skill version="1.0">…</skill>` 语言纪律块强制简体中文思考与输出，并在存在未裁决 `:parked` 程序时同消息另附 `<UNDECIDED-PARKED-PROGRAMS>` 文本块提醒模型裁决。
+   - `context` 钩子在每次 LLM 请求末尾总是注入 `<skill version="1.0">…</skill>` 语言纪律块强制简体中文思考与输出，并在存在未裁决 `:parked` 程序时同消息另附 `<skill version="1.0">你有以下停靠程序未裁决……</skill>` 块提醒模型裁决。
    - 同回合混发 `call` 与写操作遇到 `$W$` 被占用时排队等待（并触发后台化 `:state :forked`），先抢到锁的先执行，禁止同步 hang。
 8. **名字占用**：同名程序仍处于 `:running` / `:waiting` / `:parked` 时，新程序占用同名启动被拒 `:NAME_TAKEN`；进入 `:completed` / `:failed` 后名字可复用。同一物理工具调用（同一 `call-id`）带相同载荷再次到达，直接重放原回执；不同载荷返回 `:CALL_REPLAY_MISMATCH`。
 9. **`ask_user` 与挂起的关系**：`ask_user` 属于 S1，语义等价于“挂起 + 中断回合 + 交还人类”。人类回答后，模型在新程序中 `unpark` 原程序；回答只作为新需求进入上下文，不重开任期、不制造评审。S5 仅保留一个例外：初任 `Reviewer` 首次空账、主工作区已满足契约且无 Slice 可做时，允许一次性询问；问完即恢复无人值守，不得把 `ask_user` 当作常规评审出口。
@@ -855,9 +855,9 @@ wait({ otherwise_independent_work[, more_workers_without_hitting_mythical_man_mo
 `src/scope/ariadne.mjs` 为单会话提供表达式级分叉栈与版本切换，当前 dogfood 已接入。
 
 - **状态**：`createAriadneStore()` 持有 `sessions: Map`，按 `hostSessionKey` 分区；每个 session 保存 `active` verse、`activatedVerses`、`usedNames`、`historical`、`anchors` 与 `pendingJump`。verse 的 `stack` 记录每次 `clj_*`/`time_leap` 的程序帧（`programName`、`toolCallId`、目标与 beacon）。
-- **字段**：`ariadne_budget` 与 `ariadne_goal` 均为必填：前者是正整数回合预算，后者是非空字符串。到期只发 `<ARIADNE-THREAD>` 软提醒，不硬阻塞工具执行。
+- **字段**：`ariadne_budget` 与 `ariadne_goal` 均为必填：前者是正整数回合预算，后者是非空字符串。到期只发 `<skill version="1.0">…</skill>` 软提醒，不硬阻塞工具执行。
 - **恢复**：`recoverHistory` 从 `sessionManager.getEntries()`/`getBranch()` 重放历史锚点；不写 `.herd/`，也不跨 `agent_id` 传递。进程重启后内存态丢失，只能从宿主会话历史恢复锚点。
-- **出站注入**：`formatAriadneBlock` 生成 `<ARIADNE-THREAD>` 与 `<OTHER-VERSES>`，由 `appendOutboundContextTail` 每轮附加；`hackContext` 把增量通过 `branch(parentId)` + `appendMessage(...)` 追加到宿主 `.jsonl`，不重写全量历史。
+- **出站注入**：`formatAriadneBlock` 只生成 `<skill version="1.0">…</skill>` 提醒块，由 `appendOutboundContextTail` 每轮附加；`<BEACONS>` 严禁进入每轮出站注入。`hackContext` 把增量通过 `branch(parentId)` + `appendMessage(...)` 追加到宿主 `.jsonl`，不重写全量历史。
 - **Time Leap**：`time_leap` 写入 `pendingJump` 并切换分支；下一次 `context` 消费该记录，调用 `applyTimeLeapToMessages`，随后由 `hackContext` 持久化新分支。
 - **Time Leap 的 experience 必填内容**：每次 `time_leap` 的 `experience` 必须逐项列出当前仍在运行、阻塞或尚未收集的 subagent 名称与状态；没有则写 `none`。不新增独立字段。
 
@@ -898,15 +898,15 @@ COMMON_RULES
 2. **主动剪枝回退（Time Leap）**：当遇到思路死胡同、上下文被冗长工具输出污染、或者完成了一段独立探索时，严禁在污染的上下文里继续打补丁，必须调用 `time_leap` 回退到历史锚点：
    - `target`：目标 `clj_*` 锚点名；
    - `experience`：带回主线的完整主观经验（已证实事实、已证伪路径、精确文件/符号、下一步明确行动，并必须逐项列出当前仍在运行、阻塞或尚未收集的 subagent 名称与状态；没有则写 `none`。不新增独立字段）；
-   - `beacon`：留在被封存枝桠上的只读灯塔摘要。
+   - `beacon_name` / `beacon_description`：灯塔名与留在被封存枝桠上的只读摘要；名称必须唯一，重复返回 `:NAME_TAKEN`。
 3. **只读灯塔记忆库（Beacon）**：被剪掉的枝桠绝不复活，但通过 `ask_beacon({ target, question })` 可以在需要时以纯文本形式向该枝桠查询细节，彻底避免死路重走与上下文膨胀之间的两难。
 4. **尾轮增量同步（hackContext）**：`context` 钩子通过计算分支与公共前缀差异，以单行追加（`branch` + `appendMessage`）持久化新分支，避免全量重写磁盘历史。
 
 ### 5.3 请求尾注语言要求与未决程序提醒
 
-- 由 `context` 钩子在每次 LLM 请求末尾通过统一的 `appendOutboundContextTail` 注入 `<skill version="1.0">…</skill>` 语言块强制简体中文思考与输出。
-- 存在未裁决的 `:parked` 挂起程序时，同消息另附 `<UNDECIDED-PARKED-PROGRAMS>` 文本块，提醒模型及时 `unpark` 或 `abandon`。
-- 附加 `<ARIADNE-THREAD>` 紧迫度提醒与 `<BEACONS>` 只读灯塔清单，驱动模型在最合适的时间主动触发 `time_leap`。
+- 所有注入块合并进单一 `<system-reminder>…</system-reminder>`，内部按序排列语言纪律、Ariadne 与停靠程序三个 `<skill version=\"1.0\">` 块。由 `context` 钩子在每次 LLM 请求末尾通过统一的 `appendOutboundContextTail` 无条件追加到 messages 末尾；不扫描历史、不做幂等判断。 `<skill version="1.0">…</skill>` 语言块强制简体中文思考与输出。
+- 存在未裁决的 `:parked` 挂起程序时，同消息另附 `<skill version="1.0">你有以下停靠程序未裁决……</skill>` 块，提醒模型及时 `unpark` 或 `abandon`。
+- 附加 `<skill version="1.0">如果你在未来跳回这里，你将剩余 N 回合……</skill>` 紧迫度提醒，驱动模型在最合适的时间主动触发 `time_leap`。`<BEACONS>` 标签不再输出；Beacon 清单只在 `time_leap` 成功回执中以 EDN `:available-beacons` 字段渲染，便于当场决定是否用 `ask_beacon` 打捞。
 
 ### 5.4 Pair Hint、双块锚点与缓存
 
@@ -1457,7 +1457,7 @@ Finish strictly by calling `submit_case_audit` once with `case_id: "${caseSpec.c
 
 ```text
 export const LANGUAGE_SKILL =
-  '<skill version="1.0">强制以简体中文思考，尤其要以简体中文词开头。强制简体中文回答用户。你必须维持住并行工人与切片推进力度，本着按因果最大化并发的原则，严禁越干越少或退化为单线串行。</skill>';
+  '<skill version="1.0">强制以简体中文思考，尤其要以简体中文词开头。强制简体中文回答用户。</skill>';
 ```
 
 保留 `<skill version="1.0">` 外形：它让模型把这段文本当作系统级纪律，而不是普通用户内容。旧实现的 NUL + BOM 前缀是弊病，不得复现。不要把它改成普通 Markdown。
@@ -1493,7 +1493,7 @@ more_workers_without_hitting_mythical_man_month: {
 }
 ```
 
-该字段为 0 时工具回执不追加增派提醒；为正时回执末尾追加“你刚刚在工具参数中说还可以增派 X 个工人，现在请你立刻兑现。”。不得为同一字段维护英文与中文两份描述。
+该字段为 0 时工具回执不追加增派提醒；为正时回执末尾追加 `<system-reminder><skill version="1.0">你刚刚在工具参数中说还可以增派 X 个工人，现在请你立刻兑现。</skill></system-reminder>`。不得为同一字段维护英文与中文两份描述。
 
 #### 8.5.4 无人值守 Nudge
 

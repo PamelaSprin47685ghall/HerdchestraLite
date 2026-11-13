@@ -72,7 +72,7 @@ describe("hackContext", () => {
 		});
 	});
 
-	it("persists language requirement once in O(1) and skips duplicate writes on subsequent turns", async () => {
+	it("appends the tail on every turn without idempotence checks", async () => {
 		const handlers = new Map();
 		const pi = {
 			on(name, fn) {
@@ -95,11 +95,12 @@ describe("hackContext", () => {
 		expect(sm.calls[0].op).toBe("appendMessage");
 		expect(sm.calls[0].message.content[0].text).toContain('<skill version="1.0">');
 
-		// Turn 2: already present -> zero disk writes, zero duplication
+		// Turn 2: appends another tail; no history scan, no dedupe
 		sm.calls.length = 0;
 		const res2 = await handlers.get("context")({ messages: sm.getBranch().map((e) => e.message) }, ctx);
-		expect(res2.messages).toHaveLength(2);
-		expect(sm.calls).toHaveLength(0);
+		expect(res2.messages).toHaveLength(3);
+		expect(sm.calls).toHaveLength(1);
+		expect(sm.calls[0].message.content[0].text).toContain('<skill version="1.0">');
 	});
 
 	it("rewrites only the modified tail via branch(parentId) + appendMessage", async () => {

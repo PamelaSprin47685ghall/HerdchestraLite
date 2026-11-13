@@ -15,7 +15,7 @@
  * The outbound `context` tail is its only injection path.
  */
 export const LANGUAGE_SKILL =
-	'<skill version="1.0">强制以简体中文思考，尤其要以简体中文词开头。强制简体中文回答用户。你必须维持住并行工人与切片推进力度，本着按因果最大化并发的原则，严禁越干越少或退化为单线串行。</skill>';
+	'<skill version="1.0">强制以简体中文思考，尤其要以简体中文词开头。强制简体中文回答用户。</skill>';
 
 /**
  * Rewrite only the outbound copy of the host vibe-mode context.
@@ -72,70 +72,37 @@ export function buildUnattendedNudge({ stage, expectedTool, openItems = [], park
  * @param {{ parkedPrograms?: Array<{ toolName?: string, name: string }> }} [options]
  * @returns {{ role: "user", content: Array<{ type: "text", text: string }> }}
  */
-function messageText(message) {
-	if (!message || typeof message !== "object") return "";
-	if (typeof message.content === "string") return message.content;
-	if (!Array.isArray(message.content)) return "";
-	return message.content.map((block) => (block && typeof block.text === "string" ? block.text : "")).join("\n");
-}
-
-const LANGUAGE_SKILL_MARKER = '<skill version="1.0">';
-
-function hasLanguageSkill(messages) {
-	if (!Array.isArray(messages)) return false;
-	return messages.some((msg) => messageText(msg).includes(LANGUAGE_SKILL_MARKER));
-}
 
 export function buildOutboundTailReminder({ parkedPrograms = [], ariadneBlock = null, includeLanguage = true } = {}) {
-	const content = [];
-	if (includeLanguage) {
-		content.push({ type: "text", text: LANGUAGE_SKILL });
-	}
-	if (typeof ariadneBlock === "string" && ariadneBlock.length > 0) {
-		content.push({ type: "text", text: ariadneBlock });
-	}
+	const parts = [];
+	if (includeLanguage) parts.push(LANGUAGE_SKILL);
+	if (typeof ariadneBlock === "string" && ariadneBlock.length > 0) parts.push(ariadneBlock);
 	if (Array.isArray(parkedPrograms) && parkedPrograms.length > 0) {
 		const undecided = parkedPrograms.map((item) =>
 			item?.toolName ? `- ${item.toolName}: ${item.name}` : `- ${item?.name ?? item}`,
 		);
-		content.push({
-			type: "text",
-			text: [
-				"<system-reminder>",
-				"<UNDECIDED-PARKED-PROGRAMS>",
-				"The following sandbox programs are still parked and undecided (holding continuations and memory).",
-				'Resolve each one by calling `(unpark {:name "..." :value ...})` to resume or `(abandon {:name "..."})` to abort and discard it:',
-				...undecided,
-				"</UNDECIDED-PARKED-PROGRAMS>",
-				"</system-reminder>",
-			].join("\n"),
-		});
+		parts.push([
+			'<skill version="1.0">你有以下停靠程序未裁决：',
+			...undecided,
+			'逐项用 `(unpark {:name "..." :value ...})` 恢复，或用 `(abandon {:name "..."})` 放弃并丢弃。</skill>',
+		].join("\n"));
 	}
-	return { role: "user", content };
+	const text = parts.length === 0 ? "" : `<system-reminder>\n${parts.join("\n")}\n</system-reminder>`;
+	return { role: "user", content: text.length === 0 ? [] : [{ type: "text", text }] };
 }
 
 /**
  * Append the outbound tail reminder to a shallow copy of `messages`.
  * The `<skill version="1.0">` language block is persisted once; later
- * turns add `<ARIADNE-THREAD>` (when active) and optional parked reminders.
+ * turns add `<skill version="1.0">` Ariadne and parked reminders.
  *
  * @param {unknown} messages
  * @param {{ parkedPrograms?: Array<{ toolName?: string, name: string }>, ariadneBlock?: string | null }} [options]
  * @returns {unknown[]}
  */
 export function appendOutboundContextTail(messages, options = {}) {
-	const parkedPrograms = Array.isArray(options?.parkedPrograms) ? options.parkedPrograms : [];
-	const ariadneBlock = typeof options?.ariadneBlock === "string" ? options.ariadneBlock : null;
-	const alreadyHasLang = hasLanguageSkill(messages);
-	const lastText = Array.isArray(messages) && messages.length > 0 ? messageText(messages[messages.length - 1]) : "";
-	const effectiveAriadne = ariadneBlock && lastText.includes(ariadneBlock) ? null : ariadneBlock;
-	if (alreadyHasLang && parkedPrograms.length === 0 && !effectiveAriadne) {
-		return Array.isArray(messages) ? messages : [];
-	}
-	const reminder = buildOutboundTailReminder({
-		parkedPrograms,
-		ariadneBlock: effectiveAriadne,
-		includeLanguage: !alreadyHasLang,
-	});
-	return Array.isArray(messages) ? [...messages, reminder] : [reminder];
+	const list = Array.isArray(messages) ? messages : [];
+	const reminder = buildOutboundTailReminder(options);
+	if (reminder.content.length === 0) return list;
+	return [...list, reminder];
 }

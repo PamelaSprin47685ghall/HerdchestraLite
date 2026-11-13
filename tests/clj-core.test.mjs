@@ -771,7 +771,7 @@ describe("clj-only async dogfood surface", () => {
 		const tailText = out.messages[1].content[0].text;
 		expect(tailText).toContain('<skill version="1.0">');
 		expect(tailText).toContain("简体中文");
-		expect(tailText).not.toContain("<UNDECIDED-PARKED-PROGRAMS>");
+		expect(tailText).not.toContain("停靠程序未裁决");
 	});
 	it("abandons parked programs cleanly and reminds LLM of undecided parked programs in context hook", async () => {
 		const { tools, hooks } = fakeHost();
@@ -792,9 +792,10 @@ describe("clj-only async dogfood surface", () => {
 		expect(withParked?.messages?.length).toBe(2);
 		expect(withParked.messages[1].role).toBe("user");
 		const blocks = withParked.messages[1].content;
+		expect(blocks).toHaveLength(1);
 		expect(blocks[0].text).toContain('<skill version="1.0">');
-		expect(blocks[1].text).toContain("<UNDECIDED-PARKED-PROGRAMS>");
-		expect(blocks[1].text).toContain("clj_devops: abandoned-job");
+		expect(blocks[0].text).toContain("停靠程序未裁决");
+		expect(blocks[0].text).toContain("clj_devops: abandoned-job");
 
 		const abandoned = await callTool(
 			tools,

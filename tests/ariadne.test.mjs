@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerCljTools } from "../src/clj-main.mjs";
-import { ALPHA_VERSE, applyTimeLeapToMessages, createAriadneStore } from "../src/scope/ariadne.mjs";
+import { applyTimeLeapToMessages, createAriadneStore } from "../src/scope/ariadne.mjs";
 import { BEACON_TOOL_SCOLD, queryBeacon } from "../src/scope/beacon-query.mjs";
 
 describe("Time Leap++ + Ariadne's Thread + Read-Only Beacons", () => {
@@ -59,7 +59,8 @@ describe("Time Leap++ + Ariadne's Thread + Read-Only Beacons", () => {
 			store.timeLeap(sk, {
 				target: "p2",
 				experience: "go back",
-				beacon: "left off at p2",
+				beacon_name: "b1",
+				beacon_description: "left off at p2",
 				ariadne_budget: 3,
 			}),
 		).toThrow(/ariadne_budget/);
@@ -67,7 +68,8 @@ describe("Time Leap++ + Ariadne's Thread + Read-Only Beacons", () => {
 			store.timeLeap(sk, {
 				target: "p2",
 				experience: "go back",
-				beacon: "left off at p2",
+				beacon_name: "b1",
+				beacon_description: "left off at p2",
 				ariadne_goal: "new goal",
 			}),
 		).toThrow(/ariadne_goal/);
@@ -75,27 +77,27 @@ describe("Time Leap++ + Ariadne's Thread + Read-Only Beacons", () => {
 		// Valid time_leap back to p2: restores turn=1, pops p2 so p1 (remaining=5) is restored (updatedBudget=5)
 		const res = store.timeLeap(
 			sk,
-			{ target: "p2", experience: "approach A failed; try B", beacon: "Redis race details live here" },
+			{ target: "p2", experience: "approach A failed; try B", beacon_name: "alpha", beacon_description: "Redis race details live here" },
 			{ jumpCallId: "tl-1", leafId: "leaf-alpha" },
 		);
 		expect(res.target).toBe("p2");
-		expect(res.beaconName).toBe(ALPHA_VERSE);
+		expect(res.beaconName).toBe("alpha");
 		expect(res.remaining).toBe(5);
 		expect(res.updatedBudget).toBe(5);
 
 		
 
 		// Cannot jump to or resurrect the sealed beacon "alpha"
-		expect(() => store.timeLeap(sk, { target: "alpha", experience: "resurrect", beacon: "b2" })).toThrow(
+		expect(() => store.timeLeap(sk, { target: "alpha", experience: "resurrect", beacon_name: "b2", beacon_description: "b2" })).toThrow(
 			/Unknown target/,
 		);
 
 		const block = store.formatAriadneBlock(sk);
-		expect(block).toContain("<BEACONS>");
-		expect(block).toContain("alpha");
-		expect(block).toContain("Beacon: Redis race details live here");
-		expect(block).toContain("ask_beacon");
-		expect(block).not.toContain("<OTHER-VERSES>");
+		expect(block).not.toContain("<BEACONS>");
+		const beacons = store.listBeacons(sk);
+		expect(beacons).toHaveLength(1);
+		expect(beacons[0].name).toBe("alpha");
+		expect(beacons[0].description).toBe("Redis race details live here");
 	});
 
 	it("treats compaction as a hard boundary and hides pre-compaction anchors", () => {
@@ -123,12 +125,12 @@ describe("Time Leap++ + Ariadne's Thread + Read-Only Beacons", () => {
 		store.recoverHistory(sk, [preCall, compactEntry, postCall], [preCall, compactEntry, postCall]);
 
 		// Pre-compaction anchor is treated as NOT FOUND
-		expect(() => store.timeLeap(sk, { target: "pre-anchor", experience: "back", beacon: "b" })).toThrow(
+		expect(() => store.timeLeap(sk, { target: "pre-anchor", experience: "back", beacon_name: "b1", beacon_description: "b" })).toThrow(
 			/Unknown target/,
 		);
 
 		// Post-compaction anchor IS reachable
-		const res = store.timeLeap(sk, { target: "post-anchor", experience: "back", beacon: "b" });
+		const res = store.timeLeap(sk, { target: "post-anchor", experience: "back", beacon_name: "b1", beacon_description: "b" });
 		expect(res.target).toBe("post-anchor");
 	});
 
@@ -165,9 +167,9 @@ describe("Time Leap++ + Ariadne's Thread + Read-Only Beacons", () => {
 
 		const ctxRes = await hooks.get("context")[0]({ messages: [{ role: "user", content: "hi" }] }, ctx);
 		const blocks = ctxRes.messages[1].content;
+		expect(blocks).toHaveLength(1);
 		expect(blocks[0].text).toContain('<skill version="1.0">');
-		expect(blocks[1].text).toContain("<ARIADNE-THREAD>");
-		expect(blocks[1].text).toContain("出门太久忘本了");
+		expect(blocks[0].text).toContain("出门太久忘本了");
 	});
 
 	it("rewrites messages forward-cleanly with applyTimeLeapToMessages without branch switching", () => {
@@ -200,8 +202,7 @@ describe("Time Leap++ + Ariadne's Thread + Read-Only Beacons", () => {
 		];
 		const beacon = {
 			name: "alpha",
-			goal: "find bug",
-			beacon: "has exact line number",
+			description: "has exact line number",
 			messagesSnapshot: cachedMessages,
 		};
 
@@ -287,13 +288,16 @@ describe("Time Leap++ + Ariadne's Thread + Read-Only Beacons", () => {
 			.get("time_leap")
 			.execute(
 				"tl-1",
-				{ target: "p1", experience: "retry clean", beacon: "alpha knew line 42" },
+				{ target: "p1", experience: "retry clean", beacon_name: "alpha", beacon_description: "alpha knew line 42" },
 				undefined,
 				undefined,
 				ctx,
 			);
 		expect(leapRes.isError).not.toBe(true);
-		expect(leapRes.content[0].text).toContain(":state :time-leaped");
+		expect(leapRes.content[0].text).toContain(":time-leaped-from");
+		expect(leapRes.content[0].text).toContain(":available-beacons [");
+		expect(leapRes.content[0].text).toContain(":description");
+		expect(leapRes.content[0].text).toContain(":name");
 
 		// Trigger context hook so leaving beacon's messagesSnapshot is captured
 		const beforeLeapMessages = [

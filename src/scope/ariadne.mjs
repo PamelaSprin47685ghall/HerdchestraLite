@@ -4,13 +4,13 @@
  * - Single active timeline (`"alpha"` at origin) with an O(1) Min-Deadline Stack.
  * - Compaction is a hard boundary: anchors before the latest `compaction` entry
  *   are invisible (`:PROGRAM_UNKNOWN`), so a leap never cuts across compaction.
- * - `time_leap({ target, experience, beacon })`:
+ * - `time_leap({ target, experience, beacon_name, beacon_description })`:
  *     - Target MUST exist in the active post-compaction stack.
  *     - Pops `target` and all later frames, restores `currentTurn`, and rewrites
  *       messages from `target`'s toolCall onward into one `user` message
  *       (`Goal + experience`).
  *     - NO `ariadne_budget` / `ariadne_goal` on `time_leap` (re-anchor on next `clj_*`).
- *     - Leaves a mandatory read-only `beacon` + `messagesSnapshot` for the sealed
+ *     - Leaves a named `beacon_description` + `messagesSnapshot` for the sealed
  *       branch so `ask_beacon` can query it while reusing its prefix cache.
  *     - Sealed beacons CANNOT be jumped back to or resurrected.
  */
@@ -19,11 +19,9 @@ import { herdError } from "../util/errors.mjs";
 
 export const ARIADNE_BUDGET_FIELD = "ariadne_budget";
 export const ARIADNE_GOAL_FIELD = "ariadne_goal";
-export const ALPHA_VERSE = "alpha";
 
-function createEmptyVerse(verseName = ALPHA_VERSE) {
+function createEmptyVerse() {
 	return {
-		verseName,
 		currentTurn: 0,
 		turnDirty: false,
 		stack: [],
@@ -62,7 +60,7 @@ export function createAriadneStore() {
 		let s = sessions.get(sessionKey);
 		if (!s) {
 			s = {
-				active: createEmptyVerse(ALPHA_VERSE),
+				active: createEmptyVerse(),
 				beacons: new Map(),
 				usedNames: new Map(),
 				compactionKey: null,
@@ -210,7 +208,7 @@ export function createAriadneStore() {
 		const { compactionKey, postEntries } = sliceAfterLatestCompaction(activeEntries);
 		if (s.compactionKey !== compactionKey) {
 			s.compactionKey = compactionKey;
-			s.active = createEmptyVerse(s.active.verseName || ALPHA_VERSE);
+			s.active = createEmptyVerse();
 			s.historyRecovered = false;
 		}
 		if (s.historyRecovered) return;
@@ -241,7 +239,7 @@ export function createAriadneStore() {
 		const s = getSession(sessionKey);
 		const out = [];
 		for (const b of s.beacons.values()) {
-			out.push({ name: b.name, goal: b.goal, beacon: b.beacon });
+			out.push({ name: b.name, description: b.description });
 		}
 		return out;
 	}
@@ -268,15 +266,19 @@ export function createAriadneStore() {
 		}
 		const targetProgram = params.target;
 		const experience = params.experience;
-		const beacon = params.beacon;
+		const beaconNameParam = params.beacon_name;
+		const beaconDescription = params.beacon_description;
 		if (typeof targetProgram !== "string" || targetProgram.trim().length === 0) {
 			throw herdError("INVALID_ARGUMENT", "time_leap requires a non-empty target string", { field: "target" });
 		}
 		if (typeof experience !== "string" || experience.trim().length === 0) {
 			throw herdError("INVALID_ARGUMENT", "time_leap requires a non-empty experience string", { field: "experience" });
 		}
-		if (typeof beacon !== "string" || beacon.trim().length === 0) {
-			throw herdError("INVALID_ARGUMENT", "time_leap requires a non-empty beacon string", { field: "beacon" });
+		if (typeof beaconNameParam !== "string" || beaconNameParam.trim().length === 0) {
+			throw herdError("INVALID_ARGUMENT", "time_leap requires a non-empty beacon_name string", { field: "beacon_name" });
+		}
+		if (typeof beaconDescription !== "string" || beaconDescription.trim().length === 0) {
+			throw herdError("INVALID_ARGUMENT", "time_leap requires a non-empty beacon_description string", { field: "beacon_description" });
 		}
 
 		const s = getSession(sessionKey);
@@ -307,22 +309,17 @@ export function createAriadneStore() {
 		}
 
 		const targetFrame = v.stack[idx];
-		const prevTop = topFrame(v);
-		
-		const leavingGoal = prevTop?.ownGoal ?? nearestGoal(v);
-
-		const baseName = v.verseName || ALPHA_VERSE;
-		let beaconName = baseName;
-		if (s.beacons.has(beaconName) || beaconName === targetProgram) {
-			let seq = 2;
-			while (s.beacons.has(`${baseName}#${seq}`) || `${baseName}#${seq}` === targetProgram) seq += 1;
-			beaconName = `${baseName}#${seq}`;
+		const beaconName = beaconNameParam.trim();
+		if (s.beacons.has(beaconName)) {
+			throw herdError("NAME_TAKEN", `Beacon name already exists: ${beaconName}`, {
+				name: beaconName,
+				beacons: [...s.beacons.keys()],
+			});
 		}
 
 		s.beacons.set(beaconName, {
 			name: beaconName,
-			goal: leavingGoal,
-			beacon: beacon.trim(),
+			description: beaconDescription.trim(),
 			leafId,
 			messagesSnapshot: null,
 		});
@@ -332,7 +329,6 @@ export function createAriadneStore() {
 		for (const frame of discarded) {
 			v.indexByProgram.delete(frame.programName);
 		}
-		v.verseName = targetProgram;
 		v.currentTurn = targetFrame.turnAtCall;
 		v.turnDirty = false;
 
@@ -382,7 +378,6 @@ export function createAriadneStore() {
 		const beacons = listBeacons(sessionKey);
 		return {
 			initialized: remaining !== null,
-			verseName: v.verseName,
 			currentTurn: v.currentTurn,
 			remaining,
 			budgets,
@@ -392,42 +387,11 @@ export function createAriadneStore() {
 
 	function formatAriadneBlock(sessionKey) {
 		const st = status(sessionKey);
-		const parts = [];
-		if (st.initialized) {
-			const anchors = st.budgets
-				.map((b) => `- ${b.programName}（目标：${b.goal}；如果你在未来跳回这里，updated budget = ${formatTurns(b.updatedBudget)} 回合，Ariadne 剩余将变为 ${formatTurns(b.updatedBudget)} 回合。这也是你当前 Ariadne 到期前还能进行的回合数，请你合理安排工作。）`)
-				.join("\n");
-			const lines = ["<ARIADNE-THREAD>"];
-			if (st.remaining <= 0) {
-				const overdue = Math.abs(st.remaining);
-				lines.push(
-					`【阿里阿德涅之线已绷断 · 出门太久忘本了！（各锚点平均已超期 ${formatTurns(overdue)} 回合，剩余 ${formatTurns(st.remaining)} 回合）】`,
-					"线团早已放尽，你还在迷宫深处独自打转——最危险的不是走错，而是忘了最初为什么要出发。",
-					"在当前时间线上设置新目标无法重置已绷断的线——**唯一的解法就是用 `time_leap` 跳回当前时间线上（最近一次 compaction 之后的）过去锚点**；优先选不含无关上下文的锚点；近期锚点不合适时积极考虑远期锚点，并比较 updated budget，选 updated budget 足以覆盖剩余工作且最大的锚点；不要跳到 updated budget 同样为负的锚点。用 experience 回传该锚点当时还不知道的信息；正常的 experience 内容必须照常完整回传，并额外事无巨细列出哪些用户需求已经完成、哪些部分完成、哪些未开始，避免重复做。完成清单不能替代正常 experience。写清 `experience` 与 `beacon`（`time_leap` 不带预算参数，跳回后在下一条 `clj_*` 重新系上 `ariadne_budget` 与 `ariadne_goal`）。",
-					"任何暂时没有关键路径工作的 idle 时刻都必须优先考虑立刻 `time_leap`：超期线每多留一回合，上下文越长、跳转成本越高，等于持续烧钱。",
-				);
-			} else {
-				lines.push(
-					`【阿里阿德涅之线 · 各锚点平均还剩 ${formatTurns(st.remaining)} 回合】`,
-					anchors,
-					"补给点选择：优先选不含无关上下文的锚点，并确认其 updated budget（跳回后的 Ariadne 剩余）足以覆盖剩余工作、且明显高于当前线；不要只因为最近、目标最相关或 updated budget 大就跳。用 experience 把该锚点当时还不知道的信息回传：之后验证的事实、被证伪的路径、精确文件/符号、剩余计划与下一步；尤其要事无巨细列出哪些用户需求已经完成（含精确文件/符号与验证方式）、哪些部分完成、哪些未开始，避免未来重复做。正常的 experience 内容必须照常完整回传，完成清单只是额外补充，不能替代前者。若近期锚点都含有过多无关上下文或 updated budget 不足，不要就此停在当前线；积极考虑更远期的锚点，选上下文更干净、updated budget 足以覆盖剩余工作的旧锚点，并在 experience 中回传它当时不知道的信息；正常的 experience 内容照常完整回传，同时额外事无巨细列出用户需求的完成、部分完成与未开始状态。你看到的是当前 <ARIADNE-THREAD> 的锚点清单，以当前清单为准。",
-				);
-			}
-			lines.push("</ARIADNE-THREAD>");
-			parts.push(lines.join("\n"));
+		if (!st.initialized) return null;
+		if (st.remaining <= 0) {
+			return '<skill version="1.0">警告：你出门太久忘本了！Ariadne 线团早已放尽，你还在迷宫深处独自打转——最危险的不是走错，而是忘了最初为什么要出发。在当前时间线上设置新目标无法重置已绷断的线——唯一的解法就是用 `time_leap` 跳回过去。优先选不含无关上下文的锚点；近期锚点不合适时积极考虑远期锚点，这样才能恢复 budget 到锚点处的值。尽量多恢复一点。用 experience 回传该锚点当时还不知道的信息，完整回传；额外地，你需要事无巨细列出哪些用户需求已经完成、哪些部分完成、哪些未开始，避免重复做。完成清单不能替代正常 experience。任何没有关键工作的 idle 时刻都必须优先考虑立刻 `time_leap`：超期线每多留一回合，上下文越长、跳转成本越高，等于持续烧钱。</skill>';
 		}
-		if (st.beacons.length > 0) {
-			const beaconLines = st.beacons.map(formatBeaconEntry);
-			parts.push(
-				[
-					"<BEACONS>",
-					"以下已封存分支的 Beacon 均为**只读记忆灯塔**（上下文已超标封存，**严禁复活或跳回**；如需打捞细节，请用 `ask_beacon({ target, question })` 直接向该灯塔提问）：",
-					...beaconLines,
-					"</BEACONS>",
-				].join("\n"),
-			);
-		}
-		return parts.length > 0 ? parts.join("\n\n") : null;
+		return `<skill version="1.0">如果你在未来跳回这里，你将剩余 ${formatTurns(st.remaining)} 回合，恰好是你当前 Ariadne 到期前还能进行的回合数。</skill>`;
 	}
 
 	return {
@@ -451,11 +415,6 @@ function formatTurns(value) {
 	return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
-function formatBeaconEntry(b) {
-	const goalPart = b.goal ? `（Goal: ${b.goal}）` : "";
-	const beaconPart = b.beacon ? ` — Beacon: ${b.beacon}` : "";
-	return `- ${b.name}${goalPart}${beaconPart}`;
-}
 
 function buildTimeLeapUserMessage({ targetGoal, experience }) {
 	const sections = [];

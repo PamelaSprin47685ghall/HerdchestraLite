@@ -125,14 +125,14 @@ function createControl() {
 	};
 }
 
-function createPorts(root, ownerId, withWriteGate, onCallActivity, onWaitLock, sessionKey) {
+function createPorts(root, ownerId, withWriteGate, onCallActivity, onWaitLock, sessionKey, hostTools = {}) {
 	return {
 		...(withWriteGate ? { writeGate: createWriteGate(root, ownerId, onWaitLock) } : {}),
 		control: createControl(),
 		identity: { agent_id: ownerId, status: "alive", term_id: "clj-core" },
 		claim: { claim_id: "clj-core", status: "active", term_id: "clj-core" },
-		hostRead: (args) => callHostTool(sessionKey, "read", args),
-		hostWrite: (args) => callHostTool(sessionKey, "write", args),
+		...(hostTools.read === true ? { hostRead: (args) => callHostTool(sessionKey, "read", args) } : {}),
+		...(hostTools.write === true ? { hostWrite: (args) => callHostTool(sessionKey, "write", args) } : {}),
 		callMeta: (toolCallId) => state.callMeta.get(toolCallId),
 		agentId: ownerId,
 		sessionKey: ownerId,
@@ -152,7 +152,7 @@ function callHostTool(sessionKey, name, params) {
 	});
 }
 
-function buildBundle(role, root, ownerId, onCallActivity, onWaitLock, sessionKey) {
+function buildBundle(role, root, ownerId, onCallActivity, onWaitLock, sessionKey, hostTools = {}) {
 	const callLogDir = role === "devops" ? join(root, ".herd", "artifacts", "clj-core") : undefined;
 	if (callLogDir !== undefined) mkdirSync(callLogDir, { recursive: true });
 	return buildSandboxTools({
@@ -161,7 +161,7 @@ function buildBundle(role, root, ownerId, onCallActivity, onWaitLock, sessionKey
 			writeRoot: root,
 			...(callLogDir !== undefined ? { callLogDir } : {}),
 		},
-		ports: createPorts(root, ownerId, role === "worker" || role === "devops", onCallActivity, onWaitLock, sessionKey),
+		ports: createPorts(root, ownerId, role === "worker" || role === "devops", onCallActivity, onWaitLock, sessionKey, hostTools),
 	});
 }
 
@@ -227,7 +227,7 @@ if (parentPort && workerData?.__sandboxWorker === true) {
 		}
 
 		if (msg.type === "exec") {
-			const { id, sessionKey, role, root, ownerId, callId, programName, code, deadlineAt } = msg;
+			const { id, sessionKey, role, root, ownerId, callId, programName, code, deadlineAt, hostTools } = msg;
 			const bundleKey = `${sessionKey}\u0000${role}`;
 			let built = state.bundles.get(bundleKey);
 			try {
@@ -238,7 +238,7 @@ if (parentPort && workerData?.__sandboxWorker === true) {
 					const onWaitLock = (waiting = true) => {
 						parentPort.postMessage({ type: "waitLock", id, sessionKey, role, waiting });
 					};
-					built = buildBundle(role, root, `${ownerId}:${role}`, onCallActivity, onWaitLock, sessionKey);
+					built = buildBundle(role, root, `${ownerId}:${role}`, onCallActivity, onWaitLock, sessionKey, hostTools);
 					state.bundles.set(bundleKey, built);
 				}
 			} catch (error) {

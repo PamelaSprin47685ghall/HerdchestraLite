@@ -125,7 +125,7 @@ export async function queryBeacon({ beacon, question, model, apiKey, systemPromp
 	return {
 		ok: true,
 		target: beacon.name,
-		beacon: beacon.beacon,
+		description: beacon.description,
 		answer,
 		retried,
 	};
