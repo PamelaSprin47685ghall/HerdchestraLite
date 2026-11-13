@@ -41,7 +41,7 @@
                          :stage :s1
                          :revision 0
                          :tenure (or (:tenure options)
-                                     {:tenure-id (.randomUUID crypto)
+                                     {:tenure-id "T-1"
                                       :index 1
                                       :started-at timestamp
                                       :ended-at nil})
@@ -96,23 +96,23 @@
       current
       (let [mission (:mission current)
             result (loop [entries (seq patch)
-                          next mission
+                          current-mission mission
                           error nil]
                      (if (or (nil? entries) error)
-                       {:mission next :error error}
+                       {:mission current-mission :error error}
                        (let [[key value] (first entries)]
                          (cond
                            (and (nil? value) (protected-keys key))
-                           (recur (next entries) next
+                           (recur (next entries) current-mission
                                   {:code :INVALID_ARGUMENT
                                    :message (str "mission field " (name key) " cannot be removed")
                                    :field key})
 
                            (nil? value)
-                           (recur (next entries) (dissoc next key) nil)
+                           (recur (next entries) (dissoc current-mission key) nil)
 
                            :else
-                           (recur (next entries) (assoc next key value) nil)))))]
+                           (recur (next entries) (assoc current-mission key value) nil)))))]
         (if (:error result)
           {:ok false :error (:error result)}
           (let [timestamp (or (:updated-at patch) (.toISOString (js/Date.)))

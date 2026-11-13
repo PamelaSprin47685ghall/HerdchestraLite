@@ -41,7 +41,9 @@
    :error (merge {:code code :message message} data)})
 
 (defn- tenure-id-of [mission board]
-  (let [id (or (:tenure-id board) (:tenure-id mission))]
+  (let [id (or (:tenure-id board)
+             (:tenure-id mission)
+             (get-in mission [:tenure :tenure-id]))]
     (when (text? id) (string/trim id))))
 
 (defn- sequence-of [mission board]
@@ -230,6 +232,10 @@
              :stage to
              :tenure-id successor-id
              :tenure-seq (inc (sequence-of mission (:board mission)))
+             :tenure {:tenure-id successor-id
+                      :index (inc (sequence-of mission (:board mission)))
+                      :started-at timestamp
+                      :ended-at nil}
              :created-at timestamp
              :updated-at timestamp
              :board (assoc (empty-board successor-id) :attach-ready false)
