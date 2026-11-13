@@ -97,36 +97,28 @@ export function syncSessionDelta(sessionManager, before, after, prefixLen) {
 	}
 	let branched = false;
 	if (prefixLen < before.length) {
-		if (prefixLen === 0) {
-			// No common prefix: start a fresh root branch. The host rejects
-			// branch(null) with "Entry null not found", so resetLeaf is the
-			// only root operation.
-			if (typeof sessionManager.resetLeaf !== "function") {
-				return { persisted: false, branched: false, appended: 0 };
+		// Prefer branch(parentId): it keeps the shared prefix and the
+		// original entry identities. resetLeaf is the last resort when no
+		// parent entry can be resolved.
+		const branchEntries = sessionManager.getBranch();
+		const messageEntries = Array.isArray(branchEntries)
+			? branchEntries.filter((entry) => entry && MESSAGE_ENTRY_TYPES.has(entry.type))
+			: [];
+		const replaced = before[prefixLen];
+		let replacedEntry = null;
+		for (let index = messageEntries.length - 1; index >= 0; index -= 1) {
+			const entry = messageEntries[index];
+			if (deepEqual(entry.message ?? entry, replaced)) {
+				replacedEntry = entry;
+				break;
 			}
+		}
+		if (replacedEntry !== null && replacedEntry.parentId != null) {
+			sessionManager.branch(replacedEntry.parentId);
+		} else if (typeof sessionManager.resetLeaf === "function") {
 			sessionManager.resetLeaf();
 		} else {
-			const branchEntries = sessionManager.getBranch();
-			const messageEntries = Array.isArray(branchEntries)
-				? branchEntries.filter((entry) => entry && MESSAGE_ENTRY_TYPES.has(entry.type))
-				: [];
-			const replaced = before[prefixLen];
-			let replacedEntry = null;
-			for (let index = messageEntries.length - 1; index >= 0; index -= 1) {
-				const entry = messageEntries[index];
-				if (deepEqual(entry.message ?? entry, replaced)) {
-					replacedEntry = entry;
-					break;
-				}
-			}
-			if (replacedEntry === null || replacedEntry.parentId == null) {
-				if (typeof sessionManager.resetLeaf !== "function") {
-					return { persisted: false, branched: false, appended: 0 };
-				}
-				sessionManager.resetLeaf();
-			} else {
-				sessionManager.branch(replacedEntry.parentId);
-			}
+			return { persisted: false, branched: false, appended: 0 };
 		}
 		branched = true;
 	}

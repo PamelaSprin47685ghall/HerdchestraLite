@@ -224,4 +224,17 @@ describe("hackContext", () => {
 		const noSm = await handlers.get("context")({ messages: [{ role: "user", content: "orig" }] }, {});
 		expect(noSm.messages[0].content).toBe("replaced");
 	});
+
+	it("branches to the first replaced message's parent when no prefix is shared", async () => {
+		const handlers = new Map();
+		const pi = { on: (name, fn) => handlers.set(name, fn) };
+		hackContext(pi, () => ({ messages: [{ role: "user", content: "after" }] }));
+		const sm = fakeSessionManager([
+			{ type: "message", id: "e1", parentId: null, message: { role: "user", content: "seed" } },
+			{ type: "message", id: "e2", parentId: "e1", message: { role: "user", content: "before" } },
+		]);
+		await handlers.get("context")({ messages: [{ role: "user", content: "before" }] }, { sessionManager: sm });
+		expect(sm.calls[0]).toEqual({ op: "branch", branchFromId: "e1" });
+		expect(sm.getBranch().map((entry) => entry.message.content)).toEqual(["seed", "after"]);
+	});
 });
