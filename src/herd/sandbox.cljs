@@ -115,6 +115,71 @@
 (defn ls [{:keys [path]}]
   (.readdir fs-promises (resolve-path path)))
 
+(defn- glob->regex [pattern]
+  (-> pattern
+      (string/replace #"[.+^${}()|\\]" #"\$&"#)
+      (string/replace "**" "")
+      (string/replace "*" "[^/]*")
+      (string/replace "?" "[^/]")
+      (string/replace "" ".*")
+      re-pattern))
+
+(defn- walk-entries [root]
+  (let [walk (fn walk [dir]
+               (-> (.readdir fs-promises dir #js {:withFileTypes true})
+                   (.then
+                     (fn [entries]
+                       (-> (js/Promise.all
+                             (into-array
+                               (map
+                                 (fn [entry]
+                                   (let [name (.-name entry)
+                                         full (path/join dir name)]
+                                     (if (.isDirectory entry)
+                                       (walk full)
+                                       (js/Promise.resolve [[full (.isFile entry)]]))))
+                                 (array-seq entries))))
+                           (.then (fn [groups] (reduce (fn [acc group] (into acc group)) [] (array-seq groups)))))))))]
+    (walk root)))
+
+(defn glob [{:keys [pattern path dot onlyFiles only-files exec] :as request}]
+  (when-not (and (string? pattern) (pos? (count pattern)))
+    (throw (ex-info "pattern must be a non-empty string"
+                    {:code :INVALID_ARGUMENT :field :pattern})))
+  (let [call-fn (or exec (:fn request))]
+    (when-not (fn? call-fn)
+      (throw (ex-info "glob requires a callable :exec (or :fn) function"
+                      {:code :INVALID_ARGUMENT :function :glob})))
+    (let [root (resolve-path (or path "."))
+          matcher (glob->regex pattern)
+          files-only? (not (false? (or onlyFiles only-files)))]
+      (-> (walk-entries root)
+          (.then
+            (fn [entries]
+              (let [relative (->> entries
+                                  (filter (fn [[full is-file]]
+                                            (and (or (not files-only?) is-file)
+                                                 (or dot
+                                                     (not (string/starts-with?
+                                                            (path/basename full) "."))))))
+                                  (map (fn [[full _]]
+                                         (-> full
+                                             (subs (inc (count root)))
+                                             (string/replace #"\"# "/"))))
+                                  (filter #(re-matches matcher %))
+                                  sort
+                                  vec)
+                    prefix (if (and path (pos? (count path)))
+                             (str (string/replace path #"/+$" "") "/")
+                             "")
+                    results (js/Promise.all
+                              (into-array (map (fn [rel] (call-fn (str prefix rel))) relative)))]
+                (-> results
+                    (.then (fn [values]
+                             {:exists true
+                              :entries relative
+                              :results (vec (array-seq values))}))))))))))
+
 (defn stat [{:keys [path]}]
   (-> (.stat fs-promises (resolve-path path))
       (.then (fn [s] {:exists true

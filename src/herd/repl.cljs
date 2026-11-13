@@ -9,7 +9,7 @@
 
 (def ^:private prelude
   (str """
-(require '[herd.sandbox :refer [cat read stat ls write mkdir rm mv whereAll call]])
+(require '[herd.sandbox :refer [cat read stat ls write mkdir rm mv whereAll call glob]])
 (require '[herd.macros :refer-macros [park unpark abandon where]])
 """
        "\n"))
