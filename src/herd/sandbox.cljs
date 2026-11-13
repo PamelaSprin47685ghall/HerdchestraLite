@@ -245,6 +245,9 @@
 (def ^:private max-write-bytes (* 2 1024 1024))
 
 (defn write [{:keys [path content] :as request}]
+  (when-not (string? content)
+    (throw (ex-info "content must be a string"
+                    {:code :INVALID_ARGUMENT :field :content})))
   (let [bytes (js/Buffer.byteLength content "utf8")]
     (when (> bytes max-write-bytes)
       (throw (ex-info "write exceeds the 2 MiB limit"
@@ -291,8 +294,12 @@
     (fn [] (with-lock (fn [] (.rename fs-promises (resolve-path source) (resolve-path target)))))))
 
 (defn write-with-name [name request]
-  (charge! name (js/Buffer.byteLength (:content request) "utf8") 1)
-  (write request))
+  (let [content (:content request)]
+    (when-not (string? content)
+      (throw (ex-info "content must be a string"
+                      {:code :INVALID_ARGUMENT :field :content})))
+    (charge! name (js/Buffer.byteLength content "utf8") 1)
+    (write request)))
 
 (defn mkdir-with-name [name request]
   (charge! name 0 1)
@@ -545,6 +552,9 @@
                           (nearest-line (:content request) (:needle request))))))
 
 (defn where [{:keys [content needle] :as request}]
+  (when-not (string? content)
+    (throw (ex-info "content must be a string"
+                    {:code :INVALID_ARGUMENT :field :content})))
   (when (or (not (string? needle)) (zero? (count needle)))
     (throw (ex-info "needle must be a non-empty string"
                     {:code :INVALID_ARGUMENT :field :needle :value needle})))
@@ -554,6 +564,9 @@
       (park-where request matches))))
 
 (defn whereAll [{:keys [content needle]}]
+  (when-not (string? content)
+    (throw (ex-info "content must be a string"
+                    {:code :INVALID_ARGUMENT :field :content})))
   (when (or (not (string? needle)) (zero? (count needle)))
     (throw (ex-info "needle must be a non-empty string"
                     {:code :INVALID_ARGUMENT :field :needle :value needle})))
@@ -625,8 +638,10 @@
                 (let [argv (vec argv)
                       inline-limit (or max-inline-bytes default-max-inline-bytes)
                       log-limit (or max-log-bytes default-max-log-bytes)
-                      _ (when (zero? (count argv))
-                          (throw (ex-info "argv must not be empty" {:code :INVALID_ARGUMENT})))
+                      _ (when (or (zero? (count argv))
+                                  (not-every? string? argv))
+                          (throw (ex-info "argv must be a non-empty array of strings"
+                                          {:code :INVALID_ARGUMENT :field :argv})))
                       log-path (call-log-path)
                       child (cp/spawn (first argv) (clj->js (rest argv))
                                       #js {:cwd cwd :stdio #js ["ignore" "pipe" "pipe"]})

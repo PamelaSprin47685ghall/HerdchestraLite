@@ -166,7 +166,7 @@ Question:
                              :answer nil
                              :degraded "runEphemeralTurn is unavailable in this host")))))))
 (defn- code-schema [] {:type "string"})
-(defn- name-schema [] {:type "string"})
+(defn- name-schema [] {:type "string" :minLength 1})
 (defn- budget-schema [] {:type "integer" :minimum 1})
 (defn- goal-schema [] {:type "string" :minLength 1})
 (defn- workers-schema [] {:type "integer" :minimum 0})
