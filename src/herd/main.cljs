@@ -14,17 +14,18 @@
 
 (defn- normalized-error [error]
   (let [data (ex-data error)
-        message (str error)]
-    (merge data
-           {:code (or (:code data)
-                      (when (str/includes? message "Could not resolve symbol")
-                        :CAPABILITY_DENIED)
-                      :INTERNAL)
-            :message message})))
-
-(defn- tool-error [error]
-  {:isError true
-   :content [(text-block (ufss/print (normalized-error error)))]})
+        message (or (ex-message error) (.-message error) (str error))]
+    (cond-> {:code (or (:code data)
+                       (when (str/includes? message "Could not resolve symbol")
+                         :CAPABILITY_DENIED)
+                       :INTERNAL)
+             :message message}
+      (:name data) (assoc :name (:name data))
+      (:path data) (assoc :path (:path data))
+      (:field data) (assoc :field (:field data)))))
+[error]
+{:isError true
+ :content [(text-block (ufss/print (normalized-error error)))]})
 
 (defn- byte-length [text]
   (js/Buffer.byteLength text "utf8"))
