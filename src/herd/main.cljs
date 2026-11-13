@@ -169,6 +169,13 @@ Question:
    :properties {:target (target-schema)
                 :question (question-schema)}})
 
+(defn- safe-execute [handler]
+  (fn [tool-call-id params signal on-update ctx]
+    (try
+      (handler tool-call-id params signal on-update ctx)
+      (catch :default error
+        (clj->js (tool-error error))))))
+
 (defn- register! [definition]
   (.registerTool js/globalThis.__pi (clj->js definition)))
 
@@ -177,22 +184,22 @@ Question:
               :label "Clojure Sandbox (Plan DevOps)"
               :description "Evaluate ClojureScript in the current workspace."
               :parameters (devops-parameters)
-              :execute execute})
+              :execute (safe-execute execute)})
   (register! {:name "wait"
               :label "Wait"
               :description "Collect the next completed sandbox program."
               :parameters (wait-parameters)
-              :execute wait-execute})
+              :execute (safe-execute wait-execute)})
   (register! {:name "time_leap"
               :label "Time Leap"
               :description "Cut back to a clean sandbox anchor."
               :parameters (time-leap-parameters)
-              :execute time-leap-execute})
+              :execute (safe-execute time-leap-execute)})
   (register! {:name "ask_beacon"
               :label "Ask Beacon"
               :description "Query a read-only pruned branch."
               :parameters (ask-beacon-parameters)
-              :execute ask-beacon-execute}))
+              :execute (safe-execute ask-beacon-execute)}))
 
 (def host-tool-blacklist
   #{"read" "write" "edit" "apply_patch" "ast_edit" "ast_grep"

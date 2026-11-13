@@ -1,5 +1,6 @@
 (ns herd.repl
   (:require
+   [clojure.string :as string]
    [herd.sandbox :as sandbox]
    [herd.ufss :as ufss]
    [nbb.core :as nbb]))
@@ -35,26 +36,28 @@
       (swap! sandbox/notifiers assoc name resolve))))
 
 (defn- source [name code]
-  (str prelude
-       """
-(defn ^:async __run []
+  (let [run-sym (str "__run-" (string/replace name #"[^A-Za-z0-9_-]" "_"))]
+    (str prelude
+         "(defn ^:async " run-sym """
+ []
 
 """
-       "(let [__herd-program-name " (pr-str name) """
+         "(let [__herd-program-name " (pr-str name) """
 ]
 
 """
-       (ufss/unwrap code)
-       """
+         (ufss/unwrap code)
+         """
 
 ))
-(__run)
+(
+""" run-sym """
+)
 
-"""))
+""")))
 
 (defn- evaluate [name code]
   (nbb/load-string (source name code)))
-
 (defn- parked? [value]
   (and (map? value) (= :parked (:state value))))
 
@@ -97,8 +100,14 @@
 (defn- track! [name promise]
   (remember! name {:state :running :promise promise})
   (.then promise
-         #(mark-completed! name %)
-         #(mark-failed! name %)))
+         (fn [value]
+           (mark-completed! name value)
+           (swap! running disj name)
+           value)
+         (fn [error]
+           (mark-failed! name error)
+           (swap! running disj name)
+           nil)))
 
 (defn run [name code deadline-ms]
   (already-running! name)
@@ -110,8 +119,7 @@
     (track! name p)
     (-> (with-deadline (js/Promise.race #js [p n]) (or deadline-ms 30000))
         (.then (fn [value] (receipt name value)))
-        (.catch (fn [error] (failed-receipt name error)))
-        (.finally (fn [] (swap! running disj name))))))
+        (.catch (fn [error] (failed-receipt name error))))))
 
 (defn- finished? [entry]
   (or (= :completed (:state entry))
