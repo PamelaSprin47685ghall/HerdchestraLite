@@ -89,14 +89,14 @@
          #(mark-completed! name %)
          #(mark-failed! name %)))
 
-(defn run [name code]
+(defn run [name code deadline-ms]
   (already-running! name)
   (swap! running conj name)
   (reset! sandbox/current-name name)
   (let [n (notifier)
         p (evaluate code)]
     (track! name p)
-    (-> (js/Promise.race #js [p n])
+    (-> (with-deadline (js/Promise.race #js [p n]) (or deadline-ms 30000))
         (.then (fn [value] (receipt name value)))
         (.catch (fn [error] (failed-receipt name error)))
         (.finally (fn [] (swap! running disj name))))))

@@ -16,11 +16,17 @@
   {:isError true
    :content [(text-block (str error))]})
 
+(defn- byte-length [text]
+  (js/Buffer.byteLength text "utf8"))
+
+(defn- sandbox-deadline [code]
+  (+ 1000 (* 50 (byte-length code))))
+
 (defn- execute [tool-call-id params _signal]
   (let [name (.-name params)
         code (.-code params)]
     (ariadne/record-anchor! name tool-call-id)
-    (-> (repl/run name code)
+    (-> (repl/run name code (sandbox-deadline code))
         (.then (fn [result] (clj->js (tool-result (ufss/print result)))))
         (.catch (fn [error] (clj->js (tool-error error)))))))
 
