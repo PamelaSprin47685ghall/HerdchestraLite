@@ -95,6 +95,9 @@
 
 (defn- wait-execute [_tool-call-id params _signal _on-update ctx]
   (let [work (.-otherwise_independent_work params)]
+    (when-not (string? work)
+      (throw (ex-info "otherwise_independent_work must be a string"
+                      {:code :INVALID_ARGUMENT :field :otherwise_independent_work})))
     (-> (repl/wait-for-result (sandbox-deadline work))
         (.then (fn [result]
                  (if (= :idle (:state result))

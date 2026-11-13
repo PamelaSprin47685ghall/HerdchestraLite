@@ -121,6 +121,12 @@
            nil)))
 
 (defn run [name code deadline-ms]
+  (when-not (and (string? name) (pos? (count (string/trim name))))
+    (throw (ex-info "name must be a non-empty string"
+                    {:code :INVALID_ARGUMENT :field :name})))
+  (when-not (string? code)
+    (throw (ex-info "code must be a string"
+                    {:code :INVALID_ARGUMENT :field :code})))
   (already-running! name)
   (sandbox/reset-budget! name)
   (swap! running conj name)
