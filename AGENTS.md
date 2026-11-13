@@ -113,7 +113,7 @@ Lite 版不把模型当傻子。它不把每个动作都拆成一条“爷爷辈
 
 运行时是 `nbb`（Node 上的 SCI）。沙箱代码全部是 `src/herd/*.cljs`：`sandbox.cljs` 提供 `cat`/`read`/`write`/`mkdir`/`rm`/`mv`/`ls`/`stat`/`where`/`whereAll`/`call`/`park`/`unpark`/`abandon`；`macros.cljc` 把 `park`/`where`/`unpark`/`abandon` 展开为 `await`；`repl.cljs` 负责程序状态、超时、`wait`；`ufss.cljs` 负责 UFSS pre-pass 与 post-pass。`.mjs` 只做宿主引导与 `pi` 注入。
 
-默认模式注册 `clj_devops`、`wait`、`time_leap`、`ask_beacon`，并附 `/clj-status`。当前迁移只接通 `clj_devops` 与 `wait`；`time_leap`、`ask_beacon`、`/clj-status` 与提示词注入按 `MIGRATION.md` 台账补齐，未完成前不得宣称可用，但规格目标不缩减。`src/main.mjs`、`src/stages/`、`src/swarm/`、`src/scope/`、`src/tui/` 是保留的完整装配代码，当前清单不加载。
+默认模式注册 `clj_devops`、`wait`、`time_leap`、`ask_beacon`。`/clj-status` 已由人类操作员取消，不再属于默认面。当前迁移只接通 `clj_devops` 与 `wait`；`time_leap`、`ask_beacon` 与提示词注入按 `MIGRATION.md` 台账补齐，未完成前不得宣称可用，但规格目标不缩减。`src/main.mjs`、`src/stages/`、`src/swarm/`、`src/scope/`、`src/tui/` 是保留的完整装配代码，当前清单不加载。
 
 默认模式下每次 `clj_*` 调用必须显式提供唯一 `name`、`ariadne_budget`、`ariadne_goal`；`name` 在运行中不可复用，同一 `toolCallId` 重放返回原回执。
 

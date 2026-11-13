@@ -10,8 +10,8 @@
 - [x] 回执为 EDN + UFSS：`{:name ... :state :completed|:failed|:parked, :value ...}`。
 - [x] `wait({otherwise_independent_work})`：`:idle`、一次性返回积压、等待在途完成。
 - [ ] `time_leap`、`ask_beacon`。
-- [ ] `/clj-status`。
-- [ ] 默认模式只暴露 `clj_devops` + `wait` + `time_leap` + `ask_beacon` + `/clj-status`。
+- [-] `/clj-status`（人类操作员取消，不再属于默认面）。
+- [ ] 默认模式只暴露 `clj_devops` + `wait` + `time_leap` + `ask_beacon`。
 
 ### 1.2 能力
 - [x] `cat`、`read`、`write`、`mkdir`、`rm`、`mv`、`ls`、`stat`（基础 fs）。
@@ -35,7 +35,7 @@
 - [x] UFSS post-pass（最短 fence、裸多行、尾随闭合文本）。
 - [x] UFSS pre-pass（单行/多行 fence → 标准字符串；宽容缩进与尾随闭合文本）。
 - [x] `#"..."`、`#(...)`、`#?` 等官方 reader 语义（nbb 负责）。
-- [ ] 语言尾注与 `UFSS_PROMPT_NOTE` 注入。
+- [~] `COMMON_RULES_TEXT` / `UFSS_PROMPT_NOTE` 已在 `herd.prompts` 中组合；`before_agent_start` 注入未接。
 
 ### 1.5 提示词与命令
 - [ ] `COMMON_RULES_TEXT` 注入（`before_agent_start`）。
@@ -76,7 +76,7 @@
 | `src/swarm/auditors.mjs` | K 路审计、提交落盘 | 未迁移 | [ ] |
 | `src/tui/*.mjs` | 双态看板 | 未迁移 | [ ] |
 | `src/host/*.mjs` | imports、native runner、hack context、health | 未迁移；nbb 直接 require Node | [ ] |
-| `src/prompts/*.mjs` | COMMON、角色、尾注 | 未迁移 | [ ] |
+| `src/prompts/*.mjs` | COMMON、角色、尾注 | `herd/prompts.cljs`（UFSS 书写）；注入未接 | [~] |
 | `src/main.mjs` | 完整装配 | 未迁移 | [ ] |
 | `src/bootstrap-main.mjs` | 完整入口 | 未迁移 | [ ] |
 
@@ -110,3 +110,4 @@
 3. UFSS 读取宽容化：闭合围栏允许尾随文本；body 短缩进不再报错。
 4. UFSS 输出策略：多行 body 顶格、先 UFSS 再 pprint、`""",` 与后续 entry 同行。
 5. `wait` 的期限暂为固定 30s；旧 evaluator/repl 测试暂停，最终以 CLJS 测试替代。
+6. `/clj-status` 取消，不再实现或注入。

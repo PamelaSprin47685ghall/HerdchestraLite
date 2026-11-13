@@ -59,6 +59,6 @@
 
 ## D19 默认模式迁移未收口
 
-- **缺口**：默认模式目前只接通 `clj_devops` 与 `wait`；`time_leap`、`ask_beacon`、`/clj-status`、`COMMON_RULES_TEXT` / `UFSS_PROMPT_NOTE` 注入、宿主工具黑名单尚未在 CLJS 主程序实现。
+- **缺口**：默认模式目前只接通 `clj_devops` 与 `wait`；`time_leap`、`ask_beacon`、`COMMON_RULES_TEXT` / `UFSS_PROMPT_NOTE` 注入、宿主工具黑名单尚未在 CLJS 主程序实现。
 - **影响**：规格 §0.4 的默认可见面不完整；迁移期间不得宣称这些能力可用。
 - **下一步**：按 `MIGRATION.md` 台账逐项补齐；每项完成后更新台账与本节。

@@ -1,0 +1,28 @@
+(ns herd.bootstrap
+  (:require [nbb.core :as nbb]
+            [nbb.classpath :as cp]
+            [herd.ufss :as ufss]
+            ["node:fs" :as fs]
+            ["node:path" :as path]))
+
+(defn- module-path [name]
+  (path/join (js/process.cwd) "src" "herd" (str name ".cljs")))
+
+(defn- preprocess! [root name]
+  (let [target (path/join root "herd" (str name ".cljs"))
+        source (fs/readFileSync (module-path name) "utf8")]
+    (fs/writeFileSync target (ufss/unwrap source))))
+
+(defn ^:async main []
+  (let [root (path/join (js/process.cwd) ".herd" "eval" "herd-src")]
+    (fs/mkdirSync (path/join root "herd") #js {:recursive true})
+    (await (nbb/load-file (module-path "ufss")))
+    (doseq [name ["prompts" "sandbox" "repl"]]
+      (preprocess! root name))
+    (cp/add-classpath root)
+    (doseq [name ["prompts" "sandbox" "repl"]]
+      (await (nbb/load-file (path/join root "herd" (str name ".cljs")))))
+    (preprocess! root "main")
+    (await (nbb/load-file (path/join root "herd" "main.cljs")))))
+
+(main)
