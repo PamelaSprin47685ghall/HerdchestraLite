@@ -1,7 +1,7 @@
 (ns herd.macros)
 
 (defmacro park [& args]
-  (list 'await (cons 'herd.sandbox/park args)))
+  (list 'await (list 'herd.sandbox/park-with-name '__herd-program-name (first args))))
 
 (defmacro unpark [& args]
   (list 'await (cons 'herd.sandbox/unpark args)))
@@ -10,7 +10,7 @@
   (list 'await (cons 'herd.sandbox/abandon args)))
 
 (defmacro where [& args]
-  (list 'await (cons 'herd.sandbox/where args)))
+  (list 'await (list 'herd.sandbox/where-with-name '__herd-program-name (first args))))
 
 (defmacro cat [& args] (list 'await (cons 'herd.sandbox/cat args)))
 (defmacro read [& args] (list 'await (cons 'herd.sandbox/read args)))

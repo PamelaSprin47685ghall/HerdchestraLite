@@ -29,24 +29,31 @@
                  (js/clearTimeout timer)
                  (reject error)))))))
 
-(defn- notifier []
+(defn- notifier [name]
   (js/Promise.
     (fn [resolve]
-      (reset! sandbox/current-notifier resolve))))
+      (swap! sandbox/notifiers assoc name resolve))))
 
-(defn- source [code]
+(defn- source [name code]
   (str prelude
-       "(defn ^:async __run []"
-       "\n"
+       """
+(defn ^:async __run []
+
+"""
+       "(let [__herd-program-name " (pr-str name) """
+]
+
+"""
        (ufss/unwrap code)
        """
-)
-(__run)
-"""
-       "\n"))
 
-(defn- evaluate [code]
-  (nbb/load-string (source code)))
+))
+(__run)
+
+"""))
+
+(defn- evaluate [name code]
+  (nbb/load-string (source name code)))
 
 (defn- parked? [value]
   (and (map? value) (= :parked (:state value))))
@@ -98,8 +105,8 @@
   (already-running! name)
   (swap! running conj name)
   (reset! sandbox/current-name name)
-  (let [n (notifier)
-        p (evaluate code)]
+  (let [n (notifier name)
+        p (evaluate name code)]
     (track! name p)
     (-> (with-deadline (js/Promise.race #js [p n]) (or deadline-ms 30000))
         (.then (fn [value] (receipt name value)))

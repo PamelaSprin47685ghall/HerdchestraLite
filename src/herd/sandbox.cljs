@@ -214,21 +214,28 @@
                (conj acc [at (+ at (count needle))]))))))
 
 (defonce current-notifier (atom nil))
+(defonce notifiers (atom {}))
 (defonce current-name (atom nil))
 (defonce parked (atom {}))
 
 (defn- remember-park! [name resolve payload]
   (swap! parked assoc name {:resolve resolve :payload payload}))
 
-(defn- notify-park! [payload]
-  (when-let [notify @current-notifier]
+(defn- notify-park! [name payload]
+  (when-let [notify (or (get @notifiers name) @current-notifier)]
     (notify {:state :parked :payload payload})))
 
 (defn park [payload]
-  (js/Promise.
-    (fn [resolve]
-      (remember-park! @current-name resolve payload)
-      (notify-park! payload))))
+  (let [name (or (:name payload) @current-name)]
+    (js/Promise.
+      (fn [resolve]
+        (remember-park! name resolve payload)
+        (notify-park! name payload)))))
+
+(defn park-with-name [name payload]
+  (park (if (map? payload)
+          (assoc payload :name name)
+          {:payload payload :name name})))
 
 (defn- line-spans [content]
   (loop [from 0 acc []]
@@ -311,6 +318,9 @@
     (throw (ex-info "needle must be a non-empty string"
                     {:code :INVALID_ARGUMENT :field :needle :value needle})))
   (spans content needle))
+
+(defn where-with-name [name request]
+  (where (assoc request :name name)))
 
 (defn- forget-park! [name]
   (swap! parked dissoc name))
