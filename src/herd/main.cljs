@@ -263,14 +263,16 @@ Question:
                     (remove host-tool-blacklist)
                     (concat herd-tools)
                     distinct
+                    (sort-by identity)
                     vec)]
-      (ignore-rejection (.setActiveTools pi (clj->js kept))))
+      (when (not= active kept)
+        (ignore-rejection (.setActiveTools pi (clj->js kept)))))
     (catch :default _ nil)))
 
 (defn- prompt-with-rules [prompt]
   (if (str/includes? prompt "# Repo-aware Rules")
     prompt
-    (str prompt "\n\n" prompts/common-rules-text)))
+    (str prompts/common-rules-text "\n\n" prompt)))
 
 (defn- before-agent-start [event _ctx]
   (try
