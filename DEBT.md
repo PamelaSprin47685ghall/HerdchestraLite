@@ -74,5 +74,5 @@
 ## D33 scores 核心已迁移，审计证据链未收口
 
 - **现状**：`stages/scores.cljs` 已实现 CASE/提交/阈值/min(U,D)/PASS-FAIL-INCOMPLETE 与 canonical 覆盖。
-- **缺口**：`writeS5Report`、批准签发与 `attach_case_audit` 接线仍未迁移。
+- **缺口**：`writeS5Report`、批准签发与 `attach_case_audit` 接线仍未迁移。`compose-report` 对 `aggregate` 产出的 rows 触发 SCI `Invalid arity: 3`（等值手写字面量却正常），未完成的 `report.cljs` 已删除；先隔离该 analyzer 问题再恢复报告层。
 - **下一步**：接 `writeS5Report` 与批准签发，再与 `attach_case_audit` 对接。
