@@ -82,7 +82,7 @@ Lite 版不把模型当傻子。它不把每个动作都拆成一条“爷爷辈
 | **评分细则（Rubric）** | 每个 CASE 记录中 `rubric` 字段携带的 0–100 可复现评分规则，随 CASE 一起冻结；要求两名独立审计员面对同一证据时分差不超过 ±5。 |
 | **WTP** | Willingness to Pay，主观支付意愿。每个 CASE 分 `user_score`（外部用户价值）与 `developer_score`（内部工程质量），最终分取 `min(user_score, developer_score)`。 |
 | **审计员（Manual Auditor）** | S5 终局为单个 CASE 启动的可见子代理；K 个 CASE 同时启动 K 名，互不共享上下文。 |
-| **静止（Quiescence）** | 单任期收束条件：无在途 `:applying`/`:running`/`:uncertain` 动作、无未结令牌任务、不持有 $W$、可 `--ff-only` 合入。 |
+| **静止（Quiescence）** | 单任期收束条件：无在途 `:applying`/`:running`/`:uncertain` 动作、无未结令牌任务、不持有 $W$。`--ff-only` 合入仅适用于多 worktree 装配，当前单工作区 S5 不要求。 |
 | **上下文屏障（Context Barrier）** | 换任时切掉前任全部对话与内心过程，只保留用户原始输入、冻结契约、真实工作区现场与继任提示。 |
 | **Blocker Oracle** | 同一阻塞指纹连续失败达阈值时启动的只读主模型会诊；只写建议，不改文件、不结项。 |
 
@@ -172,7 +172,7 @@ Lite 的实现只能依赖以下宿主语义。具体类型签名以 `omp` 当�
 1. **结构化与长文交付一律走专用工具调用（L01）。** 任何时刻需要模型产出结构化数据（阶段元数据、CASE 清单、review 台账、看板变更、审计打分、会诊建议、调查结论）或大段文本（S1–S4 阶段文档、调查报告、审计报告），必须通过带严格参数 Schema 的原生工具调用实现；大段 Markdown / 文本直接作为工具的大 `string` 参数传入，由框架校验并原子落盘。严禁从模型自由聊天正文中用正则抠取业务数据或状态标记（如 `<approved/>`）。见 §2.3、§8.1。
 2. **仅 S1 过程/门禁与 S5 初任空账可征求人类，其余自动一气呵成（L02）。** 每个 Plan tenure 以 `review` 台账判断达标；空账只置 attach-ready，必须显式调用 `attach_brainstorm` / `attach_manual_tests` / `attach_dev_guide` / `attach_coordination` 才写交付物、退休 tenure、写 barrier、启动继任者并注入下一阶段简报。S1 过程中允许 `ask_user` 澄清；S1 最后唯有 `attach_brainstorm` 实际停下征求手工批准：真实产品运行必须由人类操作员明确批准；隔离测试环境可由获用户授权的 AI 操作员操作真实确认界面模拟，但测试操作不冒充人类批准或生产授权。未批准则留在 S1 继续打磨，并清除 attach-ready。S1 获批后，S2–S4 的 attach 校验通过即自动晋级，无缝进入 S5 蜂群开发与并发实操验收。S5 的唯一人类交互是：初任 `Reviewer` 首次空账且主工作区已满足契约、没有任何任务可做时，允许一次性 `ask_user`；除此之外 S5 全程无人值守。见 §2.3、§2.5、§2.7。
 3. **方法论按 attach 逐阶段披露，严禁前置堆砌（L03）。** 基础系统提示词绝不提前暴露 S2–S5 的大师名字与阶段细则：S1 启动时只披露 S1 方法论；S2 简报仅在 `attach_brainstorm` 成功后的 successor 初始化中首次披露；S3 仅在 `attach_manual_tests` 后披露；S4 仅在 `attach_dev_guide` 后披露；S5 仅在 `attach_coordination` 后披露。旧 tenure 在 barrier 后退休，不能继续看到下一阶段简报。见 §2.4、§8.3。
-4. **全 CASE 并发独立实操审计，框架确定性汇总（L04）。** S5 收尾时，若 `.herd/missions/<slug>/s2-cases.edn` 定义了 $K$ 个 CASE，框架同时启动 $K$ 名独立的可见 `Manual Auditor`（每名只负责 1 个 CASE，各自拥有独立的 `tmux` 会话名、`/tmp` 破坏副本与 `plans/<slug>/evidence/<case_id>/` 目录，对主工作区严格只读）。CASE 数据集是 CASE 成员、阈值、路径与评分细则的唯一定义来源；每名审计员通过 `submit_case_audit` 提交双视角得分与报告；框架收集全部 $K$ 份结果，计算 `min(user_score, developer_score)`，汇总写出 `plans/<slug>/s5-report.md`，裁决结案或打回返工。任何自动化测试、CI、构建或覆盖率都不构成验收证据。见 §2.6。
+4. **全 CASE 并发独立实操审计，框架确定性汇总（L04）。** S5 收尾时，若 `.herd/missions/<slug>/s2-cases.edn` 定义了 $K$ 个 CASE，框架同时启动 $K$ 名独立的可见 `Manual Auditor`（每名只负责 1 个 CASE，各自拥有独立的 `tmux` 会话名与 `/tmp` 破坏副本，对主工作区严格只读）。CASE 数据集是 CASE 成员、阈值、路径与评分细则的唯一定义来源；每名审计员通过 `attach_case_audit` 提交双视角得分与报告；框架收集全部 $K$ 份结果，计算 `min(user_score, developer_score)`，汇总写出 `plans/<slug>/s5-report.md`，裁决结案或打回返工。任何自动化测试、CI、构建或覆盖率都不构成验收证据。见 §2.6。
 5. **宏观中心化换任与微观去中心化蜂群严格咬合（L05）。** S5 在单工作区内以中心化评估窗口开启：单一主模型 `Reviewer` 用只读 `clj_review` 核验现场并调用 `review`；若 `findings` 非空，`Reviewer` 退场，系统把每条台账实例化为看板根任务并 `wake-all` 唤醒 `@task` 蜂群；仅当全部根任务 `:done`、未结任务集合为空、无在途动作且 `Holder` 已无责退休时，原子触发接力屏障：退休本任、写入上下文屏障、启动无前任对话包袱的新任 `Reviewer`。没有 Slice 队列、worktree 或 join 循环。见 §2.5。
 6. **父项始终保留实质，严禁子项完成自动关闭父项（L06）。** 看板中拆分优先于原子认领；父任务 `board_split` 出子项后进入 `:waiting`，子项全部 `:done` 仅解除父项等待使其恢复 `:ready`，绝不自动折算为父项 `:done`，且严禁在同一回合内顺手关闭刚恢复的父项。父项必须凭独立的合龙与集成结果显式 `board_finish`。见 §3.4。
 7. **工作区写入一律经写入口 $W$ 直通落盘（L07）。** `cat` / `stat` 只返回内容与观察值，不加锁、不记录 `read-set`。REPL 内的 `write` / `mkdir` / `rm` / `mv` 按执行顺序逐步直接作用于真实磁盘；需要互斥时在该步前申请 $W$。失败保留此前已写部分，这就是正确现场：不做预演、不复核内容凭据、不回滚。`read` / `write` 必须代理宿主内建；宿主入口不可用即 fail-closed。见 §4.3。
@@ -202,7 +202,7 @@ Lite 在宏观上只有一个任务周期：一次 Mission 从 S1 走到 S5，�
 | `Reviewer` | S5-Phase A | `runSubprocess` 干净子会话 | `clj_review`（`cat`/`stat`/`ls`/`where`/`whereAll`/`unpark`）、`review`、`ask_user`（仅主工作区初任空账例外）、Ariadne/Beacon 辅助。无写方法、无 `call`。 | 主模型 |
 | `Swarm Worker` | S5-Phase B | `runSubprocess` 固定槽位池 | `clj_worker`（文件/文本/续体；无 `call`）、`board_split` / `board_claim` / `board_finish` / `board_cancel` / `board_replace` / `board_release` / `board_reopen` / `board_comment` / `board_update` / `board_park_slot` / `board_take_or_die`、Ariadne/Beacon 辅助。 | `@task` |
 | `Swarm Holder` | S5-Phase B | `runSubprocess`（每个 S5 tenure 至多 1 名） | 同 `Swarm Worker`，另加 `clj_worker` 的 `call`。 | `@task` |
-| `Manual Auditor` ($\times K$) | S5 终局验收 | `runSubprocess` 独立可见子会话 | `clj_auditor`（只读主工作区、`tmux` 抓屏、`/tmp` 隔离实验、证据写入白名单）、`submit_case_audit`、Ariadne/Beacon 辅助。**禁止 spawn 子代理。** | 主模型 |
+| `Manual Auditor` ($\times K$) | S5 终局验收 | `runSubprocess` 独立可见子会话 | `clj_auditor`（只读主工作区、`tmux` 抓屏、`/tmp` 隔离实验）、`attach_case_audit`、Ariadne/Beacon 辅助。**禁止 spawn 子代理。** | 主模型 |
 | `Blocker Oracle` | S5 按需会诊 | `runSubprocess` 只读子会话 | `clj_review`（只读子集）、`submit_oracle_advice`。 | 主模型 |
 
 **模型归属铁律**：主模型负责“判断与验收”，`@task` 模型负责“施工与调查”。不要让审计员用 `@task`（它需要最强的证伪能力），也不要让蜂群普通个体用主模型（成本与并发都不允许）。模型不可用时明确失败，不静默降级。
@@ -263,14 +263,18 @@ S5 的 `review` 仍由 Reviewer 调用；非空 findings 直接成为 board 根�
 1. 校验参数。
 2. 逐个原子写交付物；全部成功后才进入 barrier。
 3. 在一个 mission 事务中：归档当前 board 到 `boards/<tenure-id>.edn`；写 barrier；当前 tenure 退休；清空 attach-ready / pending；stage 前进；创建 successor tenure 与空 board；递增 control-version；追加事件。
-4. 事务提交后：切换工具面；启动 successor Plan 会话；只向 successor 注入下一阶段简报。
+4. 事务提交后：切换工具面；通过 hackContext 把宿主会话历史切到 barrier 分支（branch + appendMessage），旧 tenure 的对话从当前叶子不可见；接力是逻辑接力，不新开会话进程；只向 successor 注入下一阶段简报。
 
 barrier 记录包含 from/to、retired-tenure、successor-tenure、board-archive、review-summary、written-at。旧 tenure 的迟到 `review` / `attach_*` 一律 `:TENURE_RETIRED`。attach 文件写完后、barrier 前崩溃：stage 不变，保留 `:attach.pending`，同 `call-id` 重试复用/覆盖文件并补 barrier；barrier 已提交但 successor 未启动：只补启动与简报注入，不重跑 attach。
 
 #### 2.3.5 S1 人工批准
 
-`attach_brainstorm` 写 `s1-brainstorm.md` 后，读回磁盘正文并打开确认面板。`pending` 返回 `awaiting-user` 并抑制 Nudge；`revise` 清 attach-ready、留在 S1，修改后必须重新 `review([])`；`approve` 重新读取磁盘正文后直接 barrier。没有 `s1-summary.md`，没有 `non_goals` 参数；Non-Goals 写在 markdown 内。
-
+`attach_brainstorm` 写 `s1-brainstorm.md` 后，读回磁盘正文并打开确认面板，工具执行内阻塞等待：
+- `approve`：重新读取磁盘正文，提交 barrier，解除阻塞并在同一回合继续。
+- `revise`：清 attach-ready、留在 S1，修改后必须重新 `review([])`。
+- `deny`：不提交 barrier，转为 `ask_user` 语义，等待人类说明后继续 S1。
+- 面板无法打开或宿主中断时返回 `pending` / `awaiting-user` 并抑制 Nudge；这是降级路径，不是正常出口。
+没有 `s1-summary.md`，没有 `non_goals` 参数；Non-Goals 写在 markdown 内。
 #### 2.3.6 frozen 只是约定
 
 本版删除 `:frozen` 哈希、`contract-line`、`realign_frozen` 与所有哈希不匹配错误。交付物由提示词声明为 frozen，系统不校验；外部修改、审计员误写都不会被机器发现。`mission.edn` 不保存 `:contract` 路径清单；继任者路径由 `slug + stage` 推导。
@@ -281,7 +285,7 @@ S1–S4 只有当前一个 active Plan tenure 写 `mission.edn`、`board.edn` �
 
 ### 2.4 渐进披露：attach 后换血
 
-S1 简报在 `/herd` 启动时注入。S2–S5 简报不再由 `advance_*` 回执注入，而是由 `attach_*` 成功后的 successor 初始化注入；旧 tenure 在 barrier 后退休，不能继续看到下一阶段简报。基础提示词不得提前出现 S2–S5 的大师名字、CASE 字段、attach 参数或审计流程。
+S1 简报在 `/herd` 启动时注入。S2–S5 简报不再由 `advance_*` 回执注入，而是由 `attach_*` 成功后的 successor 初始化注入；旧 tenure 在 barrier 后退休——通过 hackContext 切分支使其对话从当前叶子不可见，不能继续看到下一阶段简报。基础提示词不得提前出现 S2–S5 的大师名字、CASE 字段、attach 参数或审计流程。
 
 ### 2.5 S5：单工作区 Reviewer ⇄ Swarm
 
@@ -1000,7 +1004,7 @@ Lite 在 `omp` 编辑器上方挂载单一 `HerdDashboardWidget`，与 `/herd-st
 4. **锁窗口**：只扫描 `.herd/locks/s5-board.lock`；用 PID 存活检测识别死进程遗留，不盲目删除。
 5. **临时文件窗口**：扫描同目录 `.tmp-*`，确认是否有未完成 `rename`；保留证据，不静默清空。
 6. **账本窗口**：读 `events.jsonl` 的最后已提交字节偏移与 `checkpoint.edn`；不重放全量历史。
-7. **证据窗口**：检查 `plans/<slug>/evidence/` 是否有未收束的审计产物。
+7. **审计回执窗口**：检查 `.herd/missions/<slug>/audit/` 是否有未收束的审计提交。
 
 恢复规则：
 
@@ -1063,7 +1067,7 @@ Lite 不启动独立服务；控制状态由 `omp` 进程内的主会话与子�
 └── settings.edn
 ```
 
-`plans/<slug>/` 是用户可见交付物：`s1-brainstorm.md`、`s2-manual-tests.md`、`s3-dev-guide.md`、`s4-coordination.md`、`s4-coordination.pml`、`s5-report.md` 与 `evidence/<case_id>/`。
+`plans/<slug>/` 是用户可见交付物：`s1-brainstorm.md`、`s2-manual-tests.md`、`s3-dev-guide.md`、`s4-coordination.md`、`s4-coordination.pml`、`s5-report.md`。审计结果由 `attach_case_audit` 落到 `.herd/missions/<slug>/audit/`。
 
 **边界**：
 
@@ -1417,13 +1421,13 @@ ${formatCaseRecord(caseSpec)}
 Mindset & Hard Rules (Bach · Myers · Weinberg):
 - Executor claims, commit messages, file counts, typechecks, linters, builds, unit/integration suites, and CI green lights are NOT acceptance evidence (Testing != Checking). They must NEVER raise a score.
 - Never mutate product code, tests, docs, or `.herd/` state in the main workspace. The framework observes the workspace; any mutation invalidates the audit.
-- Isolation: for TUI observations, run omp inside dedicated tmux session `herd-${mission.slug}-${caseSpec.case_id}`, send real keystrokes, capture panes to `plans/${mission.slug}/evidence/${caseSpec.case_id}/`, and cite exact capture paths and visible lines. Never claim an uncaptured TUI path.
+- Isolation: for TUI observations, run omp inside dedicated tmux session `herd-${mission.slug}-${caseSpec.case_id}`, send real keystrokes, capture panes, and quote the exact captured lines inside `report_markdown`. Never claim an uncaptured TUI path.
 - If the CASE exercises the S1 manual-approval gate, you may act as a user-authorized test operator ONLY inside the isolated copy: display the real on-disk document, perform an explicit approve-or-revise interaction against `attach_brainstorm`, and note in your report that this approval was performed by an AI test operator in the isolated copy; the product does not need operator-identity fields or test modes. Never impersonate human approval or production authorization, and never do this in the main workspace or a real production mission. This exception does NOT extend to `ask_user` clarification or the S5 initial-empty-ledger question; those still require a human answer.
 - For destructive, missing-dependency, or corrupt-config paths, copy the repo to `/tmp/herd-audit-${mission.slug}-${caseSpec.case_id}-<uuid>`, break the copy, and test there.
 - Disapprove scaffolds, imitations, silent fallbacks, or unexercised error branches. If an environment/GUI/service is unavailable, record the failure and score below threshold—never skip or pass on faith.
 - Score twice from your own subjective willingness to pay, strictly following this CASE's `rubric` (which includes the minimum evidence requirements; reproducible within +-5): `user_score` (external value a user would pay for) and `developer_score` (internal quality a developer would pay for). Wow folds into both; final verdict uses `min(user_score, developer_score)`.
 
-Finish strictly by calling `submit_case_audit` once with `case_id: "${caseSpec.case_id}"`, finite `user_score` (0..100), finite `developer_score` (0..100), `evidence_paths`, and complete human-readable `report_markdown`.
+Finish strictly by calling `attach_case_audit` once with `case_id: "${caseSpec.case_id}"`, finite `user_score` (0..100), finite `developer_score` (0..100), and complete human-readable `report_markdown`.
 ```
 
 `formatCaseRecord(caseSpec)` 必须是 CASE 记录的确定性 EDN + UFSS 渲染：不得增删字段、改写阈值或重排步骤；它不是第二份数据，只是同一记录的只读呈现。审计员不读整份 `s2-cases.edn`；S1 背景直接读 `s1-brainstorm.md`。\n\n### 8.5 请求尾部与运行时接线
@@ -1528,7 +1532,7 @@ HerdchestraLite/
 ├── package.json                  # dependencies: { "cherry-cljs": "<exact>" }；声明清单入口
 ├── biome.json
 ├── .herd/                        # 运行期控制态 (mission.edn、board.edn、boards/、s2-cases.edn 等)
-├── plans/                        # 用户可见交付物 (plans/<slug>/s1..s4、s5-report.md 与 evidence/)
+├── plans/                        # 用户可见交付物 (plans/<slug>/s1..s4、s5-report.md)
 └── src/
     ├── AGENTS.md                 # 全局架构师装配笔记与模块单向依赖图
     ├── bootstrap-main.mjs        # 清单入口 1：惰性 import("./main.mjs")
@@ -1659,9 +1663,9 @@ scope → main
 
 1. **`s2-cases.edn` 是唯一 CASE 权威**：框架读取 `.herd/missions/<slug>/s2-cases.edn`，校验 Schema 与 `case_id` 唯一，然后为每个 CASE 启动一名 Auditor。不再计算或比对 frozen 哈希。
 2. **并发**：K 个 CASE 对应 K 名审计员，同时启动；运行时限制可排队，但不得串行跳过。
-3. **隔离**：每名审计员独立 tmux 会话、`/tmp` 副本、`plans/<slug>/evidence/<case_id>/`；主工作区只读；审计员只消费注入的单条 CASE 记录，不读整份数据集。
+3. **隔离**：每名审计员独立 tmux 会话与 `/tmp` 副本；主工作区只读；审计员只消费注入的单条 CASE 记录，不读整份数据集；审计结果通过 `attach_case_audit` 返回，不写 evidence 目录。
 4. **评分**：`final = min(user_score, developer_score)`；阈值与 `rubric` 来自 CASE 记录，不来自审计员自报。
-5. **报告**：按 `s2-cases.edn` 顺序合成 `s5-report.md`，包含得分表、证据路径、审计员报告全文与总判定。
+5. **报告**：按 `s2-cases.edn` 顺序合成 `s5-report.md`，包含得分表、审计员报告全文与总判定。
 6. **结案**：全部 PASS → 写报告并签发 `(mission-id, revision)` 批准；任何 FAIL 或审计异常 → 未达标 CASE 转为 board 根任务，修复后重跑同一 CASE，循环直到全 PASS 或人类取消。审计员失败不是通过理由。
 7. **无哈希复核**：审计前后不比对 frozen 哈希；工作区或 CASE 数据是否被改，由审计员观察并记录。审计员不得修改主工作区。
 ### 9.6 实施顺序与旧实现迁移
@@ -1829,7 +1833,6 @@ scope → main
 | `:AUDIT_UNKNOWN_CASE` | 提交了不存在的 case_id |
 | `:AUDIT_DUPLICATE_CASE` | 同一 CASE 多次有效提交 |
 | `:AUDIT_INVALID_SCORE` | 分数非有限/越界 |
-| `:AUDIT_EVIDENCE_MISSING` | 证据路径不存在或越界 |
 | `:AUDIT_TIMEOUT` | 审计员超时 |
 | `:AUDIT_ABORTED` | 审计员被取消/崩溃 |
 | `:STALLED` | 上游配额/计费/模型确定性错误 |
@@ -1867,7 +1870,11 @@ scope → main
 | 看板原语 | 独立 `board_*` 工具，不塞进 REPL | 结构化数据走工具；沙箱只做工作区/续体 | 沙箱内 `(split ...)` 与工具双入口 |
 | 审计员写权限 | 只写 `evidence/<case_id>/` 与专属 `/tmp` | 既保留证据，又不污染主工作区 | 完全只读导致无法抓屏；开放全仓写 |
 | S2 评分 | 每个 CASE 内置专属 `rubric` + 双视角 WTP `min`；`rubric` 存于 `s2-cases.edn` | 防止通用权重与单视角掩盖；不做 Markdown 摘要对账 | 统一权重模板；只打一个总分；把 rubric 写在 Markdown 再解析 |
-| 与标准版关系 | 同构语义，不同物理实现 | 共享验收语料与术语，降低双线维护 | 把 Lite 做成标准版的裁剪；把标准版机制硬塞进 Lite |### 10.5 参考索引
+| 与标准版关系 | 同构语义，不同物理实现 | 共享验收语料与术语，降低双线维护 | 把 Lite 做成标准版的裁剪；把标准版机制硬塞进 Lite |
+| attach 接力 | 逻辑接力：attach 提交后切换 tenure，用 hackContext 切分支使旧对话不可见，不新开会话 | 主会话保持 Coordinator，避免每次 attach 重建上下文 | 每次 attach 启动新的 Plan 子会话 |
+| 单工作区静止 | 单工作区 S5 的 quiescence 不含 `--ff-only`；ff 仅多 worktree 装配适用 | 当前 dogfood 没有 worktree，保留 ff 会制造不存在的条件 | 在单工作区要求 ff dry-run |
+| 审计返回 | 新增 `attach_case_audit` 提交分数与报告；不要求 evidence 目录 | 能用流程解决的不用证据目录；避免与审计员路径边界冲突 | 强制 `plans/<slug>/evidence/<case_id>/` |
+| attach 面板 | 工具执行内阻塞：approve 解除并继续，revise 留下重做，deny 转 `ask_user`，面板不可用才 pending | 阻塞符合旧面板行为；deny 交回人类说明 | 全部走 pending 异步 |### 10.5 参考索引
 
 外部权威只用于支撑方法与工程判据，不替代本规格。实现时以本文件与宿主类型声明为准。
 
