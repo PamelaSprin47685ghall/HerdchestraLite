@@ -292,24 +292,46 @@
         (conj acc [from (count content)])
         (recur (inc nl) (conj acc [from nl]))))))
 
+(defn- trim-common [a b]
+  (let [n (count a)
+        m (count b)
+        prefix (loop [i 0]
+                 (if (and (< i n) (< i m) (= (nth a i) (nth b i)))
+                   (recur (inc i))
+                   i))
+        suffix (loop [i 0]
+                 (if (and (< i (- n prefix))
+                          (< i (- m prefix))
+                          (= (nth a (- n 1 i)) (nth b (- m 1 i))))
+                   (recur (inc i))
+                   i))]
+    [(subs a prefix (- n suffix))
+     (subs b prefix (- m suffix))]))
+
 (defn- bounded-edit-distance [a b k]
   (let [n (count a)
         m (count b)]
     (if (> (js/Math.abs (- n m)) k)
       nil
-      (loop [i 1 prev (vec (range (inc m)))]
-        (if (> i n)
-          (peek prev)
-          (let [row (loop [j 1 curr [i]]
-                      (if (> j m)
-                        curr
-                        (let [cost (if (= (nth a (dec i)) (nth b (dec j))) 0 1)
-                              value (min (inc (nth curr (dec j)))
-                                         (inc (nth prev j))
-                                         (+ (nth prev (dec j)) cost))]
-                          (recur (inc j) (conj curr value)))))]
-            (if (> (peek row) k)
-              nil
+      (let [inf (inc k)]
+        (loop [i 1 prev (assoc (vec (repeat (inc m) inf)) 0 0)]
+          (if (> i n)
+            (let [result (nth prev m)]
+              (when (<= result k) result))
+            (let [lo (max 0 (- i k))
+                  hi (min m (+ i k))
+                  row (loop [j 0 curr (vec (repeat (inc m) inf))]
+                        (if (> j m)
+                          curr
+                          (if (or (< j lo) (> j hi))
+                            (recur (inc j) curr)
+                            (let [value (if (zero? j)
+                                          i
+                                          (let [cost (if (= (nth a (dec i)) (nth b (dec j))) 0 1)]
+                                            (min (inc (nth curr (dec j)))
+                                                 (inc (nth prev j))
+                                                 (+ (nth prev (dec j)) cost))))]
+                              (recur (inc j) (assoc curr j value))))))]
               (recur (inc i) row))))))))
 
 (defn- nearest-line [content needle]
@@ -322,19 +344,20 @@
         (when best
           {:span best
            :text (subs content (first best) (second best))
-           :distance best-distance})
+           :distance best-distance
+           :budget-exhausted (<= @budget 0)})
         (let [[start end] (first spans)
               line (subs content start end)
-              cells (* (inc (count line)) (inc (count needle)))]
+              [a b] (trim-common line needle)
+              cells (* (inc (count a)) (inc (count b)))]
           (swap! budget - cells)
           (let [distance (when (pos? @budget)
-                           (bounded-edit-distance line needle k))]
+                           (bounded-edit-distance a b k))]
             (cond
               (nil? distance) (recur (next spans) best best-distance)
               (or (nil? best-distance) (< distance best-distance))
               (recur (next spans) [start end] distance)
               :else (recur (next spans) best best-distance))))))))
-
 (defn- span-context [content [start end]]
   (subs content
         (max 0 (- start 80))
