@@ -218,8 +218,8 @@
 (defonce current-name (atom nil))
 (defonce parked (atom {}))
 
-(defn- remember-park! [name resolve payload]
-  (swap! parked assoc name {:resolve resolve :payload payload}))
+(defn- remember-park! [name resolve reject payload]
+  (swap! parked assoc name {:resolve resolve :reject reject :payload payload}))
 
 (defn- notify-park! [name payload]
   (when-let [notify (or (get @notifiers name) @current-notifier)]
@@ -228,8 +228,8 @@
 (defn park [payload]
   (let [name (or (:name payload) @current-name)]
     (js/Promise.
-      (fn [resolve]
-        (remember-park! name resolve payload)
+      (fn [resolve reject]
+        (remember-park! name resolve reject payload)
         (notify-park! name payload)))))
 
 (defn park-with-name [name payload]
@@ -335,8 +335,12 @@
     value))
 
 (defn abandon [{:keys [name]}]
-  (forget-park! name)
-  nil)
+  (if-let [entry (@parked name)]
+    (do
+      ((:reject entry) (ex-info "program abandoned" {:code :ABANDONED :name name}))
+      (forget-park! name)
+      {:name name :state :abandoned :cleared true})
+    {:name name :state :unknown :cleared false}))
 
 (def ^:private max-inline-bytes (* 1024 1024))
 

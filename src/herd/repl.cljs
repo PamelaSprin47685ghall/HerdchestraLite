@@ -113,13 +113,17 @@
         (.catch (fn [error] (failed-receipt name error)))
         (.finally (fn [] (swap! running disj name))))))
 
-(defn- completed-entries []
+(defn- finished? [entry]
+  (or (= :completed (:state entry))
+      (= :failed (:state entry))))
+
+(defn- finished-entries []
   (->> @programs
-       (filter (fn [[_ entry]] (= :completed (:state entry))))
+       (filter (fn [[_ entry]] (finished? entry)))
        (sort-by first)))
 
-(defn- take-completed! []
-  (let [entries (completed-entries)]
+(defn- take-finished! []
+  (let [entries (finished-entries)]
     (when (seq entries)
       (swap! programs #(apply dissoc % (map first entries)))
       entries)))
@@ -136,7 +140,9 @@
    :message "No sandbox tasks are running or queued."})
 
 (defn- receipt-of [[name entry]]
-  (completed-receipt name (:value entry)))
+  (if (= :failed (:state entry))
+    {:name name :state :failed :error (:error entry)}
+    (completed-receipt name (:value entry))))
 
 (defn- results-receipt [entries]
   (if (= 1 (count entries))
@@ -144,7 +150,7 @@
     {:state :joined :results (mapv receipt-of entries)}))
 
 (defn- collect-or-wait []
-  (if-let [entries (take-completed!)]
+  (if-let [entries (take-finished!)]
     (results-receipt entries)
     (if-let [promises (seq (running-promises))]
       (-> (js/Promise.race (clj->js promises))
