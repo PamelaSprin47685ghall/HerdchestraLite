@@ -207,8 +207,12 @@
           (if (= ch "\"")
             (if-let [[body end] (read-standard-string text i)]
               (let [indent (string-column out)
-                    rendered (format-string body indent)]
-                (recur end (conj out rendered)))
+                    rendered (format-string body indent)
+                    multiline? (str/includes? rendered "\"\"\"\n")
+                    suffix (if multiline?
+                             (str "\n" (apply str (repeat indent " ")))
+                             "")]
+                (recur end (conj out (str rendered suffix))))
               (recur (inc i) (conj out ch)))
             (recur (inc i) (conj out ch))))))))
 
