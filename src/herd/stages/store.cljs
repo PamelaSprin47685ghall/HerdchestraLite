@@ -59,6 +59,45 @@
                  :path (:path written)
                  :existed (:existed written)}))))))))
 
+(declare read-mission)
+
+(def ^:private protected-keys
+  #{:mission-id :slug :revision :created-at :stage :tenure :attach :barrier :approval})
+
+(defn ^:async update-mission! [root slug patch]
+  (let [current (await (read-mission root slug))]
+    (if-not (:ok current)
+      current
+      (let [mission (:mission current)
+            result (loop [entries (seq patch)
+                          next mission
+                          error nil]
+                     (if (or (nil? entries) error)
+                       {:mission next :error error}
+                       (let [[key value] (first entries)]
+                         (cond
+                           (and (nil? value) (protected-keys key))
+                           (recur (next entries) next
+                                  {:code :INVALID_ARGUMENT
+                                   :message (str "mission field " (name key) " cannot be removed")
+                                   :field key})
+
+                           (nil? value)
+                           (recur (next entries) (dissoc next key) nil)
+
+                           :else
+                           (recur (next entries) (assoc next key value) nil)))))]
+        (if (:error result)
+          {:ok false :error (:error result)}
+          (let [timestamp (or (:updated-at patch) (.toISOString (js/Date.)))
+                next (assoc (:mission result) :updated-at timestamp)
+                valid (mission/validate-mission next)]
+            (if-not (:ok valid)
+              valid
+              (let [written (await (atomic/write-edn-atomic!
+                                     (path/join (or root ".") (paths/mission-path-of slug))
+                                     next))]
+                {:ok true :mission next :path (:path written)}))))))))
 (defn ^:async read-mission [root slug]
   (let [target (path/join (or root ".") (paths/mission-path-of slug))]
     (try
