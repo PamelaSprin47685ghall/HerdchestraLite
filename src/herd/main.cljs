@@ -1,6 +1,7 @@
 (ns herd.main
-  (:require [herd.repl :as repl]
-            [herd.ufss :as ufss]))
+  (:require
+   [herd.repl :as repl]
+   [herd.ufss :as ufss]))
 
 (defn- text-block [text]
   {:type "text" :text text})

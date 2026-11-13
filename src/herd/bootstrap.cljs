@@ -1,9 +1,10 @@
 (ns herd.bootstrap
-  (:require [nbb.core :as nbb]
-            [nbb.classpath :as cp]
-            [herd.ufss :as ufss]
-            ["node:fs" :as fs]
-            ["node:path" :as path]))
+  (:require
+   ["node:fs" :as fs]
+   ["node:path" :as path]
+   [herd.ufss :as ufss]
+   [nbb.classpath :as cp]
+   [nbb.core :as nbb]))
 
 (defn- module-path [name]
   (path/join (js/process.cwd) "src" "herd" (str name ".cljs")))

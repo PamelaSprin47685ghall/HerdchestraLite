@@ -32,6 +32,7 @@
     "bun": ">=1.4.4"
   },
   "dependencies": {
+    "@chrisoakman/standard-clojure-style": "0.29.0",
     "nbb": "1.6.215"
   },
   "devDependencies": {

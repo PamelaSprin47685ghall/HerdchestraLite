@@ -1,8 +1,11 @@
 (ns herd.ufss
-  (:require [clojure.edn :as edn]
-            [clojure.string :as str]
-            [edamame.core :as edamame]
-            [cljs.pprint :as pp]))
+  (:require
+   ["@chrisoakman/standard-clojure-style" :as formatter-module]
+   [clojure.edn :as edn]
+   [clojure.string :as str]
+   [edamame.core :as edamame]))
+
+(def ^:private formatter (.-default formatter-module))
 
 (def ^:private quote-code 34)
 (def ^:private backslash-code 92)
@@ -29,13 +32,13 @@
 (defn- strip-block [body indent]
   (let [lines (str/split body #"\n" -1)]
     (str/join
-     newline-str
-     (map (fn [line]
-            (if (empty? line)
-              ""
-              (let [spaces (count (take-while #(= % space-char) line))]
-                (subs line (min spaces indent)))))
-          lines))))
+      newline-str
+      (map (fn [line]
+             (if (empty? line)
+               ""
+               (let [spaces (count (take-while #(= % space-char) line))]
+                 (subs line (min spaces indent)))))
+           lines))))
 
 (defn- read-multi [s hashes q]
   (let [fence (str triple-quote (apply str (repeat hashes "#")))
@@ -75,43 +78,39 @@
         (read-single s hashes q)))))
 
 (defn unwrap
-  "Replace UFSS fences with standard CLJS strings. Code state only.
-
-  A ClojureScript regex ends at a quote without a trailing `#`, while a UFSS
-  fence ends at a quote followed by `#`; both source and data therefore use
-  the same minimum depth of one."
+  "Replace UFSS fences with standard CLJS strings."
   ([source] (unwrap source 1))
   ([source min-hashes]
-  (let [n (count source)]
-    (loop [i 0 out []]
-      (if (>= i n)
-        (apply str out)
-        (let [c (char-code source i)]
-          (cond
-            (= c semicolon-code)
-            (let [nl (str/index-of source newline-str i)
-                  end (if nl (inc nl) n)]
-              (recur end (conj out (subs source i end))))
+   (let [n (count source)]
+     (loop [i 0 out []]
+       (if (>= i n)
+         (apply str out)
+         (let [c (char-code source i)]
+           (cond
+             (= c semicolon-code)
+             (let [nl (str/index-of source newline-str i)
+                   end (if nl (inc nl) n)]
+               (recur end (conj out (subs source i end))))
 
-            (= c quote-code)
-            (if (str/starts-with? (subs source i) (str triple-quote newline-str))
-              (if-let [[body end] (read-multi source 0 i)]
-                (recur end (conj out (pr-str body)))
-                (recur (inc i) (conj out (subs source i (inc i)))))
-              (let [end (skip-string source i)]
-                (recur end (conj out (subs source i end)))))
+             (= c quote-code)
+             (if (str/starts-with? (subs source i) (str triple-quote newline-str))
+               (if-let [[body end] (read-multi source 0 i)]
+                 (recur end (conj out (pr-str body)))
+                 (recur (inc i) (conj out (subs source i (inc i)))))
+               (let [end (skip-string source i)]
+                 (recur end (conj out (subs source i end)))))
 
-            (= c backslash-code)
-            (let [end (min n (+ i 2))]
-              (recur end (conj out (subs source i end))))
+             (= c backslash-code)
+             (let [end (min n (+ i 2))]
+               (recur end (conj out (subs source i end))))
 
-            (= c 35)
-            (if-let [[body end] (read-fence source i min-hashes)]
-              (recur end (conj out (pr-str body)))
-              (recur (inc i) (conj out (subs source i (inc i)))))
+             (= c 35)
+             (if-let [[body end] (read-fence source i min-hashes)]
+               (recur end (conj out (pr-str body)))
+               (recur (inc i) (conj out (subs source i (inc i)))))
 
-            :else
-            (recur (inc i) (conj out (subs source i (inc i)))))))))))
+             :else
+             (recur (inc i) (conj out (subs source i (inc i)))))))))))
 
 (defn read
   "Read EDN data with UFSS fences."
@@ -119,10 +118,7 @@
   (edn/read-string (unwrap text 1)))
 
 (defn literals
-  "Return every string literal in `source`.
-
-  Parsing is delegated to the official reader (`edamame`), never to a byte
-  scanner. Fences are unwrapped first, so the reader sees standard CLJS."
+  "Return every string literal in the source."
   [source]
   (let [forms (edamame/parse-string-all (unwrap source) {:deref true :fn true :regex true})]
     (letfn [(walk [x]
@@ -186,23 +182,43 @@
                   (apply str (repeat (smallest-multi body) "#")))]
       (str fence triple-quote newline-str body newline-str triple-quote fence))))
 
-(deftype UfssString [body]
-  Object
-  (toString [_] (format-string body))
-  IPrintWithWriter
-  (-pr-writer [_ writer _opts]
-    (-write writer (format-string body))))
+(defn- format-text [text]
+  (let [result (.format formatter text)]
+    (when-not (= "success" (.-status result))
+      (throw (ex-info "UFSS formatter failed"
+                      {:code :INVALID_ARGUMENT
+                       :error (.-error result)})))
+    (.-out result)))
 
-(defn- to-ufss-value [value]
-  (cond
-    (string? value) (UfssString. value)
-    (map? value) (into {} (map (fn [[k v]] [(to-ufss-value k) (to-ufss-value v)]) value))
-    (vector? value) (mapv to-ufss-value value)
-    (set? value) (set (map to-ufss-value value))
-    (list? value) (apply list (map to-ufss-value value))
-    :else value))
+(defn wrap
+  "Render standard strings as canonical UFSS."
+  [text]
+  (let [n (count text)]
+    (loop [i 0 out []]
+      (if (>= i n)
+        (apply str out)
+        (let [ch (subs text i (inc i))]
+          (cond
+            (= ch quote-str)
+            (let [end (skip-string text i)
+                  body (edn/read-string (subs text i end))]
+              (recur end (conj out (format-string body))))
+
+            (= ch "#")
+            (if (and (< (inc i) n) (= (subs text (inc i) (+ i 2)) quote-str))
+              (let [end (skip-string text (inc i))]
+                (recur end (conj out (subs text i end))))
+              (recur (inc i) (conj out ch)))
+
+            :else
+            (recur (inc i) (conj out ch))))))))
 
 (defn print
   "Print a value as EDN + UFSS."
   [value]
-  (with-out-str (pp/pprint (to-ufss-value value))))
+  (wrap (format-text (pr-str value))))
+
+(defn canonical-source
+  "Canonicalize a CLJS source file: unwrap fences, format, re-wrap strings."
+  [source]
+  (wrap (format-text (unwrap source))))

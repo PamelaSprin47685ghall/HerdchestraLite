@@ -47,12 +47,14 @@ UFSS 是 **ClojureScript 字符串字面量的可逆方言**，不是独立语�
 标准格式化流水线：
 
 ```text
-ufssify(cljs) = pprint(ufss(cljs))
+ufssify(cljs) = wrap(format(cljs))
 ```
 
-- `ufss`：把每个字符串渲染为标准字符串 / 最小 fence / 顶格三引号块。
-- `pprint`：官方 `cljs.pprint` 负责集合布局、换行与缩进。
-- `*print-right-margin* = 80` 是标准要求；实现必须固定该宽度，不得受调用方默认值影响。
+- 数据层：`wrap(format(pr-str(value)))`。
+- 代码层：`wrap(format(unwrap(source)))`。
+- `format`：`@chrisoakman/standard-clojure-style` 的代码格式化器，负责布局、缩进与换行；它保注释、保 form 结构。
+- `wrap`：把标准字符串渲染为标准字符串 / 最小 fence / 顶格三引号块；`#"..."` 正则原样保留。
+- 不依赖 `cljs.pprint` 的 `*print-right-margin*`；布局由 formatter 默认规则决定。
 - 多行 body 顶格；闭合 `"""` 与后续 `,` 同行。
 - 字符串外的字节逐字保留。
 
@@ -64,7 +66,7 @@ ufssify(cljs) = pprint(ufss(cljs))
 
 | 编号 | 公理 |
 |---|---|
-| A1 | `ufssify(x) = pprint(ufss(x))` |
+| A1 | `ufssify(x) = wrap(format(x))` |
 | A2 | `parse(ufssify(x)) ~ x` |
 | A3 | `ufssify(parse(ufssify(x))) = ufssify(x)`（幂等） |
 | A4 | `parse(format(v)) = v`（数据层严格双射） |
@@ -100,7 +102,7 @@ ufssify(cljs) = pprint(ufss(cljs))
 | D1 | 自举内核只用标准字符串子集，官方 CLJS reader 可直接读 |
 | D2 | 业务 CLJS 可含 fence，由 pre-pass 展开后交给官方 reader |
 | D3 | UFSS 不改变求值语义 |
-| D4 | canonical 输出固定 `*print-right-margin* = 80` |
+| D4 | canonical 布局由 formatter 的默认规则决定，不受调用方 pprint 宽度影响 |
 
 ### E 实现纪律
 
@@ -114,11 +116,10 @@ ufssify(cljs) = pprint(ufss(cljs))
 
 - 业务 CLJS（`src/herd/prompts.cljs`、`sandbox.cljs`、`repl.cljs`、`main.cljs`）按本标准的字符串形式书写。
 - `src/herd/bootstrap.cljs` 先 `unwrap` 这些文件，再交给 `nbb` 官方 reader。
-- `src/herd/ufss.cljs` 与 `bootstrap.cljs` 是自举内核：其字符串字面量全部是标准字符串（无引号/反斜杠/换行），因此官方 reader 可直接读取，不需要 pre-pass。
+- `src/herd/ufss.cljs` 与 `bootstrap.cljs` 是自举内核：其字符串字面量全部是标准字符串（无引号/反斜杠/换行），docstring 只用单行短句；因此官方 reader 可直接读取，不需要 pre-pass。
 - 自举内核不使用 fence；这是 D1 的具体形式。
 
 ## 8 已知偏差
 
-- `nbb` 的 `cljs.pprint` 未暴露 `*print-right-margin*`（仅有 `*print-pprint-dispatch*` 等），D4 目前只能作为目标；实现需在 writer 层模拟宽度或在 `DEBT.md` 记录。
-- 源码规范化不再提供逐字节 `canonicalize`；`herd.ufss/literals` 使用官方 `edamame` reader（`:deref`、`:fn`、`:regex`）读取源码并收集字符串。源码文本的自动替换仍由生成器/人工保证，不在运行时做区间改写。
-- `edamame` 在 nbb 中的 `:location?`/`:postprocess` 不可用（`H.call` 错误），因此无法在解析回调中直接替换字符串；只能解析后遍历。
+- `canonical-source` 依赖 formatter 的成功返回；`format` 失败时抛 `:INVALID_ARGUMENT`，不静默保留旧源码。
+- `literals` 使用官方 `edamame` reader（`:deref`、`:fn`、`:regex`）读取源码并收集字符串；它只做值级验证，不做源码区间替换。

@@ -1,50 +1,58 @@
 (ns herd.repl
-  (:require [nbb.core :as nbb]
-            [herd.sandbox :as sandbox]
-            [herd.ufss :as ufss]))
+  (:require
+   [herd.sandbox :as sandbox]
+   [herd.ufss :as ufss]
+   [nbb.core :as nbb]))
 
 (defonce running (atom #{}))
 (defonce programs (atom {}))
 
 (def ^:private prelude
-  (str #"""
+  (str """
 (require '[herd.sandbox :refer [cat read stat ls write mkdir rm mv whereAll call]])
 (require '[herd.macros :refer-macros [park unpark abandon where]])
-"""#
-       "\n"))
+"""
+       """
+
+
+"""))
 
 (defn- timeout-error []
   (ex-info "program timed out" {:code :STALLED}))
 
 (defn- with-deadline [promise ms]
   (js/Promise.
-   (fn [resolve reject]
-     (let [timer (js/setTimeout #(reject (timeout-error)) ms)]
-       (.then promise
-              (fn [value]
-                (js/clearTimeout timer)
-                (resolve value))
-              (fn [error]
-                (js/clearTimeout timer)
-                (reject error)))))))
+    (fn [resolve reject]
+      (let [timer (js/setTimeout #(reject (timeout-error)) ms)]
+        (.then promise
+               (fn [value]
+                 (js/clearTimeout timer)
+                 (resolve value))
+               (fn [error]
+                 (js/clearTimeout timer)
+                 (reject error)))))))
 
 (defn- notifier []
   (js/Promise.
-   (fn [resolve]
-     (reset! sandbox/current-notifier resolve))))
+    (fn [resolve]
+      (reset! sandbox/current-notifier resolve))))
 
 (defn- source [code]
   (str prelude
-       #"""
-(defn ^:async __run []
-"""#
-       "\n"
+       "(defn ^:async __run []"
+       """
+
+
+"""
        (ufss/unwrap code)
-       #"""
+       """
 )
 (__run)
-"""#
-       "\n"))
+"""
+       """
+
+
+"""))
 
 (defn- evaluate [code]
   (nbb/load-string (source code)))

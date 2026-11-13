@@ -58,4 +58,14 @@ describe("CLJS UFSS", () => {
 			expect(roundtrip, name).toBe(true);
 		}
 	});
+
+	it("keeps every source canonical under the formatter pipeline", async () => {
+		for (const name of ["prompts.cljs", "sandbox.cljs", "repl.cljs", "main.cljs", "ufss.cljs", "bootstrap.cljs"]) {
+			const source = readFileSync(new URL(`../src/herd/${name}`, import.meta.url), "utf8");
+			const canonical = await nbb.loadString(
+				`(require '[herd.ufss :as u]) (u/canonical-source ${JSON.stringify(source)})`,
+			);
+			expect(canonical, name).toBe(source);
+		}
+	});
 });

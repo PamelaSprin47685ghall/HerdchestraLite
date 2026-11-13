@@ -1,8 +1,9 @@
 (ns herd.sandbox
-  (:require ["node:fs/promises" :as fs]
-            ["node:path" :as path]
-            ["node:child_process" :as cp]
-            [clojure.string :as str]))
+  (:require
+   ["node:child_process" :as cp]
+   ["node:fs/promises" :as fs]
+   ["node:path" :as path]
+   [clojure.string :as str]))
 
 (defn- resolve-path [p]
   (path/resolve (or p ".")))
@@ -58,9 +59,9 @@
 
 (defn park [payload]
   (js/Promise.
-   (fn [resolve]
-     (remember-park! @current-name resolve payload)
-     (notify-park! payload))))
+    (fn [resolve]
+      (remember-park! @current-name resolve payload)
+      (notify-park! payload))))
 
 (defn- park-where [request matches]
   (park (assoc request
@@ -92,22 +93,22 @@
 (defn call
   [{:keys [argv cwd] :or {cwd "."}} timeout-ms]
   (js/Promise.
-   (fn [resolve reject]
-     (let [argv (vec argv)
-           child (cp/spawn (first argv) (clj->js (rest argv))
-                           #js {:cwd cwd :stdio #js ["ignore" "pipe" "pipe"]})
-           out (atom "")
-           err (atom "")
-           timer (js/setTimeout
-                  (fn []
-                    (.kill child "SIGKILL")
-                    (reject (ex-info "call timed out" {:code :STALLED})))
-                  (or timeout-ms 30000))]
-       (.on (.-stdout child) "data" #(swap! out str %))
-       (.on (.-stderr child) "data" #(swap! err str %))
-       (.on child "error" (fn [e]
-                            (js/clearTimeout timer)
-                            (reject e)))
-       (.on child "close" (fn [code]
-                            (js/clearTimeout timer)
-                            (resolve {:exit code :stdout @out :stderr @err})))))))
+    (fn [resolve reject]
+      (let [argv (vec argv)
+            child (cp/spawn (first argv) (clj->js (rest argv))
+                            #js {:cwd cwd :stdio #js ["ignore" "pipe" "pipe"]})
+            out (atom "")
+            err (atom "")
+            timer (js/setTimeout
+                    (fn []
+                      (.kill child "SIGKILL")
+                      (reject (ex-info "call timed out" {:code :STALLED})))
+                    (or timeout-ms 30000))]
+        (.on (.-stdout child) "data" #(swap! out str %))
+        (.on (.-stderr child) "data" #(swap! err str %))
+        (.on child "error" (fn [e]
+                             (js/clearTimeout timer)
+                             (reject e)))
+        (.on child "close" (fn [code]
+                             (js/clearTimeout timer)
+                             (resolve {:exit code :stdout @out :stderr @err})))))))
