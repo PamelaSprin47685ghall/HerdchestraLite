@@ -51,8 +51,13 @@ describe("Time Leap++ + Ariadne's Thread + Read-Only Beacons", () => {
 		store.validateAndApplyFork(sk, { ariadne_budget: 2, ariadne_goal: "goal-2" }, "p2", "c2", "clj_plan");
 		store.settleTurn(sk); // currentTurn = 2, mean deadline = 5 (remaining 3)
 
-		// Missing beacon -> rejected
-		expect(() => store.timeLeap(sk, { target: "p2", experience: "go back" })).toThrow(/beacon/);
+				// Missing outstanding_subagents -> rejected
+		expect(() =>
+			store.timeLeap(sk, { target: "p2", experience: "go back", beacon: "left off at p2" }),
+		).toThrow(/outstanding_subagents/);
+
+// Missing beacon -> rejected
+		expect(() => store.timeLeap(sk, { target: "p2", experience: "go back", outstanding_subagents: "none" })).toThrow(/beacon/);
 
 		// Passing ariadne_budget or ariadne_goal -> rejected
 		expect(() =>
@@ -60,6 +65,7 @@ describe("Time Leap++ + Ariadne's Thread + Read-Only Beacons", () => {
 				target: "p2",
 				experience: "go back",
 				beacon: "left off at p2",
+				outstanding_subagents: "none",
 				ariadne_budget: 3,
 			}),
 		).toThrow(/ariadne_budget/);
@@ -68,6 +74,7 @@ describe("Time Leap++ + Ariadne's Thread + Read-Only Beacons", () => {
 				target: "p2",
 				experience: "go back",
 				beacon: "left off at p2",
+				outstanding_subagents: "none",
 				ariadne_goal: "new goal",
 			}),
 		).toThrow(/ariadne_goal/);
@@ -75,7 +82,7 @@ describe("Time Leap++ + Ariadne's Thread + Read-Only Beacons", () => {
 		// Valid time_leap back to p2: restores turn=1, pops p2 so p1 (remaining=5) is restored (updatedBudget=5)
 		const res = store.timeLeap(
 			sk,
-			{ target: "p2", experience: "approach A failed; try B", beacon: "Redis race details live here" },
+			{ target: "p2", experience: "approach A failed; try B", beacon: "Redis race details live here", outstanding_subagents: "none" },
 			{ jumpCallId: "tl-1", leafId: "leaf-alpha" },
 		);
 		expect(res.target).toBe("p2");
@@ -83,8 +90,12 @@ describe("Time Leap++ + Ariadne's Thread + Read-Only Beacons", () => {
 		expect(res.remaining).toBe(5);
 		expect(res.updatedBudget).toBe(5);
 
+		const sealed = store.listBeacons(sk).find((b) => b.name === ALPHA_VERSE);
+		expect(sealed.beacon).toContain("[OUTSTANDING SUBAGENTS AT LEAP]");
+		expect(sealed.beacon).toContain("none");
+
 		// Cannot jump to or resurrect the sealed beacon "alpha"
-		expect(() => store.timeLeap(sk, { target: "alpha", experience: "resurrect", beacon: "b2" })).toThrow(
+		expect(() => store.timeLeap(sk, { target: "alpha", experience: "resurrect", beacon: "b2", outstanding_subagents: "none" })).toThrow(
 			/Unknown target/,
 		);
 
@@ -121,12 +132,12 @@ describe("Time Leap++ + Ariadne's Thread + Read-Only Beacons", () => {
 		store.recoverHistory(sk, [preCall, compactEntry, postCall], [preCall, compactEntry, postCall]);
 
 		// Pre-compaction anchor is treated as NOT FOUND
-		expect(() => store.timeLeap(sk, { target: "pre-anchor", experience: "back", beacon: "b" })).toThrow(
+		expect(() => store.timeLeap(sk, { target: "pre-anchor", experience: "back", beacon: "b", outstanding_subagents: "none" })).toThrow(
 			/Unknown target/,
 		);
 
 		// Post-compaction anchor IS reachable
-		const res = store.timeLeap(sk, { target: "post-anchor", experience: "back", beacon: "b" });
+		const res = store.timeLeap(sk, { target: "post-anchor", experience: "back", beacon: "b", outstanding_subagents: "none" });
 		expect(res.target).toBe("post-anchor");
 	});
 
@@ -285,7 +296,7 @@ describe("Time Leap++ + Ariadne's Thread + Read-Only Beacons", () => {
 			.get("time_leap")
 			.execute(
 				"tl-1",
-				{ target: "p1", experience: "retry clean", beacon: "alpha knew line 42" },
+				{ target: "p1", experience: "retry clean", beacon: "alpha knew line 42", outstanding_subagents: "none" },
 				undefined,
 				undefined,
 				ctx,

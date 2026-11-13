@@ -856,6 +856,8 @@ wait({ otherwise_independent_work[, more_workers_without_hitting_mythical_man_mo
 - **恢复**：`recoverHistory` 从 `sessionManager.getEntries()`/`getBranch()` 重放历史锚点；不写 `.herd/`，也不跨 `agent_id` 传递。进程重启后内存态丢失，只能从宿主会话历史恢复锚点。
 - **出站注入**：`formatAriadneBlock` 生成 `<ARIADNE-THREAD>` 与 `<OTHER-VERSES>`，由 `appendOutboundContextTail` 每轮附加；`hackContext` 把增量通过 `branch(parentId)` + `appendMessage(...)` 追加到宿主 `.jsonl`，不重写全量历史。
 - **Time Leap**：`time_leap` 写入 `pendingJump` 并切换分支；下一次 `context` 消费该记录，调用 `applyTimeLeapToMessages`，随后由 `hackContext` 持久化新分支。
+- **Time Leap 必填字段**：每次 `time_leap` 必须提供 `outstanding_subagents`，逐项列出当前仍在运行、阻塞或尚未收集的 subagent 名称与状态；没有则写 `none`。该列表写入 Beacon，禁止在仍有在外 subagent 时假装 Leap 干净。
+
 - **边界**：Ariadne 是单会话上下文工具，不跨越上下文屏障；它只服务同一 `agent_id` 的连续回合。
 
 证据：`src/scope/ariadne.mjs`、`tests/ariadne.test.mjs`。

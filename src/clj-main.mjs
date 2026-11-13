@@ -67,7 +67,7 @@ const WORKERS_FIELD = "more_workers_without_hitting_mythical_man_month";
 const WORKERS_FIELD_DESCRIPTION =
 	"自检：按 Brooks《人月神话》推导此刻还能增派多少工人。只数与既有契约互不相交、跨切片通信成本 O(1) 且现在已就绪的切片；无法证明互不相交的一律计 0。";
 const FORK_ALLOWED_FIELDS = new Set(["name", "code", "i", WORKERS_FIELD, ARIADNE_BUDGET_FIELD, ARIADNE_GOAL_FIELD]);
-const TIME_LEAP_ALLOWED_FIELDS = new Set(["target", "experience", "beacon", "i"]);
+const TIME_LEAP_ALLOWED_FIELDS = new Set(["target", "experience", "beacon", "outstanding_subagents", "i"]);
 const ASK_BEACON_ALLOWED_FIELDS = new Set(["target", "question", "i"]);
 const WAIT_ALLOWED_FIELDS = new Set(["otherwise_independent_work", "i", WORKERS_FIELD]);
 
@@ -163,8 +163,15 @@ export const HOST_TOOL_BLACKLIST = Object.freeze([
 const TIME_LEAP_PARAMETERS = Object.freeze({
 	type: "object",
 	additionalProperties: false,
-	required: ["target", "experience", "beacon"],
+	required: ["target", "experience", "beacon", "outstanding_subagents"],
 	properties: {
+
+		outstanding_subagents: {
+			type: "string",
+			minLength: 1,
+			description:
+				"Required. List every subagent still running, blocked, or not yet collected at leap time, by name and current status. Write \"none\" when no subagent is outstanding. The list is persisted into the sealed Beacon so the next timeline cannot forget live workers.",
+		},
 		target: {
 			type: "string",
 			minLength: 1,

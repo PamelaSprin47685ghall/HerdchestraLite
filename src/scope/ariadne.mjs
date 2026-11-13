@@ -258,6 +258,7 @@ export function createAriadneStore() {
 	}
 
 	function timeLeap(sessionKey, params, { leafId = null, parkedNames = [] } = {}) {
+
 		if (params[ARIADNE_BUDGET_FIELD] !== undefined || params[ARIADNE_GOAL_FIELD] !== undefined) {
 			throw herdError(
 				"INVALID_ARGUMENT",
@@ -265,7 +266,12 @@ export function createAriadneStore() {
 				{ field: params[ARIADNE_BUDGET_FIELD] !== undefined ? ARIADNE_BUDGET_FIELD : ARIADNE_GOAL_FIELD },
 			);
 		}
-		const targetProgram = params.target;
+		const outstandingSubagents = params.outstanding_subagents;
+if (typeof outstandingSubagents !== "string" || outstandingSubagents.trim().length === 0) {
+throw herdError("INVALID_ARGUMENT", "time_leap requires a non-empty outstanding_subagents string listing every subagent still running, blocked, or uncollected at leap time; write \"none\" when none are outstanding", { field: "outstanding_subagents" });
+}
+
+const targetProgram = params.target;
 		const experience = params.experience;
 		const beacon = params.beacon;
 		if (typeof targetProgram !== "string" || targetProgram.trim().length === 0) {
@@ -321,7 +327,7 @@ export function createAriadneStore() {
 		s.beacons.set(beaconName, {
 			name: beaconName,
 			goal: leavingGoal,
-			beacon: beacon.trim(),
+			beacon: `${beacon.trim()}\n\n[OUTSTANDING SUBAGENTS AT LEAP]\n${outstandingSubagents.trim()}`,
 			leafId,
 			messagesSnapshot: null,
 		});
