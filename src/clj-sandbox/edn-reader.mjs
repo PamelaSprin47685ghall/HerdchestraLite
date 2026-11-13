@@ -5,8 +5,8 @@
  * forms. It defines no ClojureScript reader macros: `#(` and friends are
  * outside EDN and are rejected here. The single supported `#` extension is the
  * UFSS fence, delegated to `readUfssLiteral`, which returns a plain string and
- * the next cursor. A reader shim can replace that delegate for another dialect
- * without touching tokenization.
+ * the next cursor. The CLJS pre-pass reuses the same delegate; neither path
+ * duplicates fence grammar.
  */
 
 import { herdError } from "../util/errors.mjs";

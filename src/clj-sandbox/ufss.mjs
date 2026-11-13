@@ -1,14 +1,15 @@
 /**
  * UFSS public surface.
  *
- * UFSS owns exactly one extension to a reader: a raw string fence. Everything
- * else is EDN, and `readUfss` is the EDN shim over `readEdn`. `readCljs` is the
- * ClojureScript shim; until an official CLJS reader is wired in, it shares the
- * same EDN tokenizer and rejects official reader macros instead of imitating
- * them here.
+ * There is one implementation chain, not a dialect matrix:
  *
- * Adding a dialect means wrapping the same `readUfssLiteral` hook, never
- * copying tokenization or the fence grammar.
+ *   ufss-literal  reads one fence
+ *   edn-reader    consumes fences in EDN data
+ *   ufss-source   rewrites fences for ClojureScript source
+ *   edn-writer    prints deterministic EDN + UFSS
+ *
+ * This module exposes the stable public names and the model-facing note. It
+ * owns no tokenizer, no fence grammar, and no second reader.
  */
 
 import { readEdn } from "./edn-reader.mjs";
@@ -16,7 +17,6 @@ import { ufssToCljs } from "./ufss-source.mjs";
 
 export { EdnKeyword, EdnList, EdnSymbol } from "./edn-value.mjs";
 export { printUfss, renderReceipt } from "./edn-writer.mjs";
-export { readUfssLiteral } from "./ufss-literal.mjs";
 
 /** Read EDN + UFSS data. Official Clojure reader macros are rejected. */
 export function readUfss(text) {

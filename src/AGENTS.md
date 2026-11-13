@@ -51,6 +51,10 @@ host/native-runner（懒加载宿主 Runner；被 imports 重导出）
   └── clj-main
 
 util/atomic-write ── clj-sandbox/vfs
+clj-sandbox/ufss-literal ── clj-sandbox/edn-reader、clj-sandbox/ufss-source
+clj-sandbox/edn-value ── clj-sandbox/edn-reader、clj-sandbox/edn-writer
+clj-sandbox/edn-writer ── clj-sandbox/ufss-source
+clj-sandbox/ufss（shim）── clj-sandbox/edn-reader、clj-sandbox/edn-writer、clj-sandbox/ufss-source
 clj-sandbox/ufss ── clj-sandbox/evaluator
 clj-sandbox/where ── clj-sandbox/evaluator
 clj-sandbox/evaluator ── clj-sandbox/tools
@@ -93,7 +97,12 @@ bootstrap-main ── host/health + main
 | `util/atomic-write.mjs` | 同目录 `.tmp` + `fsync` + `rename` | `errors` |
 | `util/file-lock.mjs` | `wx` 锁、判活、陈旧锁、锁序 | `errors` |
 | `util/errors.mjs` | 错误码、EDN 诊断、渲染 | — |
-| `clj-sandbox/ufss.mjs` | EDN + UFSS 读取与确定性打印 | `errors` |
+| `clj-sandbox/edn-value.mjs` | `EdnKeyword`/`EdnSymbol`/`EdnList` 与结构身份 `ednIdentity` | — |
+| `clj-sandbox/edn-reader.mjs` | EDN 词法、集合、discard；只把 `#` fence 委托给 `ufss-literal` | `errors`、`edn-value`、`ufss-literal` |
+| `clj-sandbox/edn-writer.mjs` | 确定性 EDN+UFSS 打印、围栏深度、标准字符串转义 | `errors`、`edn-value` |
+| `clj-sandbox/ufss-literal.mjs` | 唯一 UFSS fence 读取器：单行/多行、缩进、错误位置 | — |
+| `clj-sandbox/ufss-source.mjs` | CLJS pre-pass：fence → 标准字符串，官方 `#` 逐字直通，偏移映射 | `edn-writer`、`ufss-literal` |
+| `clj-sandbox/ufss.mjs` | 公共 shim：`readUfss`、`readCljs`、`printUfss`、`UFSS_PROMPT_NOTE` | `edn-reader`、`edn-writer`、`ufss-source` |
 | `clj-sandbox/where.mjs` | UTF-16 精确切片、候选、最近行 | `errors` |
 | `clj-sandbox/evaluator.mjs` | Promise-CPS 解释器、符号表、续体、期限 | `imports`、`errors`、`ufss`、`where` |
 | `clj-sandbox/vfs.mjs` | 批内 VFS、stamp、结构冲突、W 提交 | `atomic-write`、`errors` |
@@ -111,7 +120,6 @@ bootstrap-main ── host/health + main
 | `swarm/runner.mjs` | Reviewer ⇄ Swarm、槽位、接力屏障、Nudge、Oracle、恢复 | `errors`、`board` |
 | `swarm/auditors.mjs` | K 路审计隔离、单 CASE 注入、单提交校验、汇总与返工派生 | `errors` |
 | `prompts/common.mjs` | COMMON 规范文本（无 S2–S5 剧透） | — |
-| `clj-sandbox/ufss.mjs` | EDN + UFSS 读写实现，并导出模型面向的 `UFSS_PROMPT_NOTE` | — |
 | `prompts/roles.mjs` | 固定角色提示词、`buildCaseAuditorPrompt`、CASE 记录 EDN+UFSS 呈现 | `ufss` |
 | `prompts/runtime-wires.mjs` | 语言后缀、gate 字段、Nudge | — |
 | `tui/dashboard-model.mjs` | 纯数据双态/审计矩阵 | — |
