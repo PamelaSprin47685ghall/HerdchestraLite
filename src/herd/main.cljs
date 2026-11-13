@@ -163,6 +163,10 @@
 (def ^:private herd-tools
   ["clj_devops" "wait" "time_leap" "ask_beacon"])
 
+(defn- ignore-rejection [value]
+  (when (and value (fn? (.-catch value)))
+    (.catch value (fn [_] nil))))
+
 (defn- apply-tool-surface! []
   (try
     (let [pi js/globalThis.__pi
@@ -172,7 +176,7 @@
                     (concat herd-tools)
                     distinct
                     vec)]
-      (.setActiveTools pi (clj->js kept)))
+      (ignore-rejection (.setActiveTools pi (clj->js kept))))
     (catch :default _ nil)))
 
 (defn- prompt-with-rules [prompt]

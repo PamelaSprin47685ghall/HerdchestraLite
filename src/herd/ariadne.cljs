@@ -17,7 +17,10 @@
   (when-not (contains? @anchors target)
     (throw (ex-info "unknown ariadne target"
                     {:code :STALE_CONTROL :target target})))
-  (when (and beacon_name (not (contains? @beacons beacon_name)))
+  (when (contains? @beacons beacon_name)
+    (throw (ex-info "beacon name is already taken"
+                    {:code :NAME_TAKEN :name beacon_name})))
+  (when beacon_name
     (beacon! beacon_name beacon_description))
   (reset! pending-jump {:target target :experience experience})
   {:state :leaped
