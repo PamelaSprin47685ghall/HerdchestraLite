@@ -16,7 +16,7 @@
     (fs/writeFileSync target (ufss/unwrap source))))
 
 (def ^:private modules
-  ["prompts" "ariadne" "sandbox" "repl" "stages/parsers" "stages/tenure" "stages/disclosures" "stages/paths" "stages/mission" "util/atomic_write" "stages/store" "stages/attach" "stages/review"])
+  ["prompts" "ariadne" "sandbox" "repl" "stages/parsers" "stages/tenure" "stages/disclosures" "stages/paths" "stages/mission" "util/atomic_write" "stages/store" "stages/attach" "stages/review" "stages/approval"])
 
 (defn ^:async main []
   (let [root (path/join (js/process.cwd) ".herd" "eval" "herd-src")]
