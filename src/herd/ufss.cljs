@@ -149,7 +149,7 @@
        (not (str/includes? s "\\"))
        (not-any? #(str/starts-with? % "\"\"\"") (str/split s #"\n" -1))))
 
-(defn- format-string [body indent]
+(defn- format-string [body]
   (cond
     (invisible-control? body) (pr-str body)
 
@@ -162,11 +162,8 @@
     :else
     (let [fence (if (bare-multiline? body)
                   ""
-                  (apply str (repeat (smallest-multi body) "#")))
-          prefix (apply str (repeat indent " "))
-          lines (str/split body #"\n" -1)
-          rendered (str/join "\n" (map #(if (empty? %) "" (str prefix %)) lines))]
-      (str fence "\"\"\"\n" rendered "\n" prefix "\"\"\"" fence))))
+                  (apply str (repeat (smallest-multi body) "#")))]
+      (str fence "\"\"\"\n" body "\n\"\"\"" fence))))
 
 (defn- read-standard-string [s start]
   (let [n (count s)]
@@ -191,11 +188,6 @@
                 (recur (+ i 2) (conj body next))))
             :else (recur (inc i) (conj body ch))))))))
 
-(defn- string-column [out]
-  (let [text (apply str out)
-        line-start (inc (or (str/last-index-of text "\n") -1))]
-    (- (count text) line-start)))
-
 (defn wrap
   "Upgrade standard strings to the shortest UFSS fence."
   [text]
@@ -206,16 +198,7 @@
         (let [ch (subs text i (inc i))]
           (if (= ch "\"")
             (if-let [[body end] (read-standard-string text i)]
-              (let [indent (string-column out)
-                    rendered (format-string body indent)
-                    multiline? (str/includes? rendered "\"\"\"\n")
-                    next-char (when (< end n) (subs text end (inc end)))
-                    comma? (and multiline? (= next-char ","))
-                    suffix (if multiline?
-                             (str (if comma? "," "") "\n" (apply str (repeat indent " ")))
-                             "")]
-                (recur (if comma? (inc end) end)
-                       (conj out (str rendered suffix))))
+              (recur end (conj out (format-string body)))
               (recur (inc i) (conj out ch)))
             (recur (inc i) (conj out ch))))))))
 
