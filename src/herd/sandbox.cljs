@@ -357,36 +357,45 @@
       {:name name :state :abandoned :cleared true}
       {:name name :state :unknown :cleared false})))
 
-(def ^:private max-inline-bytes (* 1024 1024))
+(def ^:private default-max-inline-bytes (* 1024 1024))
+(def ^:private default-max-log-bytes (* 64 1024 1024))
+(defonce log-bytes (atom 0))
 
 (defn- call-log-path []
   (let [dir (path/join (js/process.cwd) ".herd" "artifacts" "call")]
     (.mkdirSync fs-native dir #js {:recursive true})
-    (path/join dir (str "call-" (js/Date.now) ".log"))))
+    (path/join dir (str "call-" (js/Date.now) "-" (.-pid js/process) "-" (js/Math.floor (* 1000000 (js/Math.random))) ".log"))))
 
-(defn- append-capped [state key chunk log-path]
-  (.appendFileSync fs-native log-path chunk)
+(defn- append-capped [state key chunk log-path max-inline max-log]
+  (let [size (count chunk)]
+    (if (<= (+ @log-bytes size) max-log)
+      (do
+        (.appendFileSync fs-native log-path chunk)
+        (swap! log-bytes + size))
+      (swap! state assoc :log-truncated true)))
   (let [current (get @state key)
-        remaining (- max-inline-bytes (count current))]
+        remaining (- max-inline (count current))]
     (when (pos? remaining)
       (swap! state assoc key (str current (subs chunk 0 (min (count chunk) remaining)))))
     (when (> (count chunk) remaining)
       (swap! state assoc :truncated true))))
 
 (defn call
-  [{:keys [argv cwd name] :or {cwd "."}} timeout-ms]
+  [{:keys [argv cwd name max-inline-bytes max-log-bytes] :or {cwd "."}} timeout-ms]
   (let [program-name (or name @current-name)]
     (with-lock
       (fn []
         (js/Promise.
           (fn [resolve reject]
             (let [argv (vec argv)
+                  inline-limit (or max-inline-bytes default-max-inline-bytes)
+                  log-limit (or max-log-bytes default-max-log-bytes)
                   _ (when (zero? (count argv))
                       (throw (ex-info "argv must not be empty" {:code :INVALID_ARGUMENT})))
                   log-path (call-log-path)
                   child (cp/spawn (first argv) (clj->js (rest argv))
                                   #js {:cwd cwd :stdio #js ["ignore" "pipe" "pipe"]})
-                  state (atom {:out "" :err "" :truncated false})
+                  state (atom {:out "" :err "" :truncated false :log-truncated false})
                   timer (js/setTimeout
                           (fn []
                             (.kill child "SIGKILL")
@@ -394,8 +403,8 @@
                             (reject (ex-info "call timed out" {:code :STALLED})))
                           (or timeout-ms 30000))]
               (register-call! program-name {:child child :reject reject :timer timer})
-              (.on (.-stdout child) "data" #(append-capped state :out (str %) log-path))
-              (.on (.-stderr child) "data" #(append-capped state :err (str %) log-path))
+              (.on (.-stdout child) "data" #(append-capped state :out (str %) log-path inline-limit log-limit))
+              (.on (.-stderr child) "data" #(append-capped state :err (str %) log-path inline-limit log-limit))
               (.on child "error"
                    (fn [e]
                      (js/clearTimeout timer)
@@ -409,6 +418,7 @@
                                :stdout (:out @state)
                                :stderr (:err @state)
                                :output-truncated (:truncated @state)
+                               :log-truncated (:log-truncated @state)
                                :log log-path}))))))))))
 
 (defn call-with-name [name request timeout-ms]
