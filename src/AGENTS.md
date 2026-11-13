@@ -72,7 +72,6 @@ tui/dashboard-widget ── tui/dashboard-model
 clj-main ── clj-sandbox/tools、host/native-runner、host/hack-context、host/hack-system-prompt、prompts/common、clj-sandbox/ufss、scope/ariadne、util/errors
 main ── 以上全部（按需注入）
 bootstrap-main ── host/health + main
-scope/gate ───── scope/ledger、scope/schema
 ```
 
 规则：
@@ -103,14 +102,14 @@ scope/gate ───── scope/ledger、scope/schema
 | `scope/beacon-query.mjs` | 只读 Beacon 查询 | `ariadne` |
 | `scope/projection.mjs` | 出站裁剪、简报钉住、双块锚点、缓存断点 | `errors` |
 | `stages/disclosures.mjs` | S1–S5 简报文本 | — |
-| `stages/parsers.mjs` | S1/S2 方法论与 S3/S4 文档结构校验；CASE 严格 Schema、modules/slices 覆盖校验；不解析 Markdown CASE | — |
-| `stages/contract.mjs` | `mission.edn`、七项 `:frozen`、S1 summary、`cases.edn`/`:s3-modules`/`:s4-slices`、冻结/重对齐、批准 | `atomic-write`、`errors`、`file-lock` |
-| `stages/gate-tools.mjs` | `advance_s1..s4` 事务、S1 摘要/S2 `cases.edn`/S3 modules/S4 slices 落盘、S1 手工批准面板、`realign_frozen`、`ask_user`、`devops`、`submit_review` | `errors`、`disclosures`、`parsers` |
+| `stages/parsers.mjs` | S1-S4 attach 的 markdown 与 CASE 严格 Schema 校验；不解析 Markdown CASE | — |
+| `stages/contract.mjs` | `mission.edn` 当前态、board 归档与 barrier、CASE 持久化、阶段文档路径推导；无 frozen 哈希 | `atomic-write`、`errors`、`file-lock` |
+| `stages/gate-tools.mjs` | `review`、`attach_brainstorm`/`attach_manual_tests`/`attach_dev_guide`/`attach_coordination`、S1 手工批准面板、`ask_user`、`devops` | `errors`、`disclosures`、`parsers` |
 | `stages/scores.mjs` | K 路审计汇总、`s5-report.md`、批准请求 | `atomic-write`、`errors` |
 | `swarm/board.mjs` | 看板短事务、任务/动作/个体/令牌、同事务 wake、`dependency_paths` 相对路径与 `wait_for`/`condition:` 语义 | `ufss`、`atomic-write`、`errors`、`file-lock` |
 | `swarm/worktree.mjs` | `worktrees.edn` 当前态、worktree 生命周期、FIFO、rebase/ff-only、GC | `ufss`、`atomic-write`、`errors`、`file-lock`、`board` |
 | `swarm/runner.mjs` | Reviewer ⇄ Swarm、槽位、接力屏障、Nudge、Oracle、恢复 | `errors`、`board` |
-| `swarm/auditors.mjs` | K 路审计隔离、冻结 `cases.edn`/`s1-summary` 字节与活哈希绑定、单 CASE 注入、单提交校验、返工派生 | `errors` |
+| `swarm/auditors.mjs` | K 路审计隔离、单 CASE 注入、单提交校验、汇总与返工派生 | `errors` |
 | `prompts/common.mjs` | COMMON 规范文本（无 S2–S5 剧透） | — |
 | `clj-sandbox/ufss.mjs` | EDN + UFSS 读写实现，并导出模型面向的 `UFSS_PROMPT_NOTE` | — |
 | `prompts/roles.mjs` | 固定角色提示词、`buildCaseAuditorPrompt`、CASE 记录 EDN+UFSS 呈现 | `ufss` |
@@ -121,30 +120,20 @@ scope/gate ───── scope/ledger、scope/schema
 
 ## 4 当前装配状态
 
-- **当前激活面是 clj-only（见 §1）**；本节其余内容是完整装配的保留状态，不代表清单会加载它们。`/herd`、门禁、看板、worktree、审计与 TUI 当前不可用；`DEBT.md` D0 记录该缺口与扩张顺序。
-- 两个清单入口、`main.mjs` 的工具/命令注册、阶段门禁、看板、worktree、沙箱、Ariadne、TUI 与 runner 端口在当前源码中有注册/装配代码；这不等于行为验收完成。
-- S1 是唯一手工批准门禁：`advance_s1` 展示磁盘上的真实 `plans/<slug>/s1-brainstorm.md` 并等待明确批准或修改；真实产品运行只能由人类操作员批准。获用户授权的隔离测试中，AI 操作员可以操作真实确认界面模拟批准或修改，但必须在实测记录中注明该次操作是测试模拟，不冒充人类批准或生产授权。产品不识别操作者身份，不新增测试模式或身份字段；无法证明隔离时不得使用该例外。
-- `advance_s4` 通过 `runner.forkSlices` 创建 Slice 并启动 runner；`join_slice` 在 FIFO 队列耗尽时调用 `runMissionAudit`，另有 `session_start`/`agent_end` 的 `auditReady` 触发、`scheduleAuditRetry` 退避与冻结文件编辑导致的批次作废。`tests/s5-wiring.test.mjs` 是自动化集成，不是手工验收；真实宿主、重启和全 Slice 触发尚未验收。
-- `prompts/runtime-wires.mjs#rewriteVibeModeContext` 已接入 `context` 出站副本的 `vibe-mode-context` 消息；`buildCaseAuditorPrompt` 已由 `runMissionAudit` 的 `buildPrompt` 使用，`startAgent` 使用调用方 `systemPrompt` 并透传请求选项。
-- 角色收窄不再依赖独立 `role-auth` 模块：G1 用宿主报告的子会话身份 `ctx.agent` 判断是否咨询角色声明，M0 发布 role surfaces；首行 `[HERD_ROLE: ...]` token 仍作为声明被解析和核对。`ctx.agent` 缺失时，带首行角色 token 的会话按 fail-closed 拒绝并 health degraded，不再退回主会话工具面；无 token 的主会话仍按主会话处理。H1 spawn 前也要求 `hasCtxAgent`。真实 17.x/16.x 未验证。
+- **当前激活面是 clj-only**（见 §1）；本节其余内容是完整装配的保留状态，不代表清单会加载它们。`/herd`、门禁、看板、worktree、审计与 TUI 当前不可用；`DEBT.md` D0 记录该缺口与扩张顺序。
+- `main.mjs` 已把 `STAGE_SURFACES` 切到 `review` + `attach_*`，`fork_slices` 调用已移除；但 `verifyContract()` 仍是返回 `{ ok: true, contract: { hashes: {} } }` 的 stub，`recheckMission` 与两处 `ports.verifyContract` 仍消费它。接回完整装配前必须删除 stub，否则阶段门禁永远通过。
+- 两个清单入口、`main.mjs` 的工具/命令注册、阶段门禁、看板、沙箱、Ariadne、TUI 与 runner 端口在当前源码中有注册/装配代码；这不等于行为验收完成。
+- S1 是唯一手工批准门禁：确认面板使用公开 `ctx.ui.custom(... overlay/fullscreen ...)` 组件，正文从磁盘 `plans/<slug>/s1-brainstorm.md` 读取完整字节并支持滚动；默认选中拒绝，左右/Tab 显式选择批准/修改/拒绝，Enter 确认，Esc 取消。不截断、不用内存提交副本、resume 也重读；文件不可读或无自定义 UI 即 pending/拒绝批准。新 `attach_brainstorm` 的 approve/revise/pending/resume 语义尚未在真实宿主验证（D4）。
+- 角色收窄依赖宿主报告的 `ctx.agent` 与首行 `[HERD_ROLE: ...]` token；`ctx.agent` 缺失时 fail-closed 并 health degraded，不退回主会话工具面。真实 17.x/16.x 未验证（D5）。
 - Esc 层级取消已接到 `onTerminalInput`；真实按键与宿主 API 缺失时的降级仍需 tmux 验证。
-- `clj_*` 的顶层程序回执若为 `:state :failed`，工具结果现在显式带 `isError: true` 与错误码；回执文本本身不改。覆盖测试在 `tests/sandbox-tools.test.mjs`，不替代真实宿主取消验证。
-- 同一 agent 在同一回合并发提交多个 `clj_*` 调用时，按 tool bundle 串行排队执行，不再把后到者拒绝为 `concurrent sandbox tool execution`；每个程序仍有独立 VFS/上下文，未建立同身并行写通道。
-- H1 `spawnAgent` 的持久目录实际位于 `outcome.artifacts.{dir,persisted}`（不是顶层 `artifactsDir`）；`main` 两者都接受，只持久化 `persisted:true` 的目录，并用同一目录作为本次报告与后续 `continueAgent` 的 artifactsDir。
-- 子会话的 `sessionManager.getArtifactsDir()` 可能是 `<parent-artifacts>/<agent-id>/`，但父端只持有 `<parent-artifacts>`；`submit_devops_report` 因此以 `getSessionFile()` 的父目录（`<parent-artifacts>`）为回执根，父端读同一路径。没有子会话文件路径时显式 `:HOST_API_MISMATCH`，不回退到 per-agent 目录写一个父端看不到的回执。同一 call-id 重复提交返回结构化 `:INVALID_ARGUMENT`；缺字段由 gate/service 拒绝且不写回执。包装器直接返回 `toolFail`，不得调用未定义的 `toolResult`。call-id 仍只来自父注入 prompt，经 `before_agent_start` 绑定；同任期 follow-up 重新注入，若宿主未触发该 hook，则只接受当前末条 parent prompt 中尚未消费的 call-id。成功提交后该 call-id 即为合法出口，`agent_end` 不再发 idle nudge；新的 call-id 才会重新武装。若子代理在写完回执后因后续 `yield`/退出错误失败，父端仍消费该次已落盘回执并记录 childError，不丢弃；没有回执才报错。
-- `devops` 工具执行参数里的 `AbortSignal` 已传到 `Plan DevOps` 的首次 spawn 和后续 `continueAgent`；不再依赖可能缺失的 `state.lastContext.signal`。预取消窄测试在 `tests/main-bootstrap.test.mjs`，真实 Esc 仍需 tmux 验证。
-- `writeLock.held` 只要锁文件仍存在就按持有处理；stale 只表示 owner 已死且超过 30 秒，必须由 recovery/用户确认清理后才可视为无 $W$；`board_finish` 建 runner port 前先从当前 board 刷新 actor 生死。`board_release`/`board_reopen` 提交成功后会调用 runner 的 `wake()`。`/herd-recovery repair` 现在把 `repair` 放在顶层传给 `recover`，并先把 `Error` 渲染成可序列化错误再输出。
-- S1 手批确认面板使用公开 `ctx.ui.custom(... overlay/fullscreen ...)` 组件，正文从磁盘 `plans/<slug>/s1-brainstorm.md` 读取完整字节并支持 ↑/↓、PgUp/PgDn、Home/End 滚动；默认选中“拒绝”，←/→/Tab 显式选择批准/修改/拒绝，Enter 确认，Esc 取消。不截断、不用内存提交副本、resume 也重读；文件不可读或无自定义 UI 即 pending/拒绝批准。操作员确认后 gate 仍重读磁盘冻结，关闭/无批准不晋级。
-- `contract.mjs` 的权威控制态是 `:frozen` 七项（`s1`、`s1-summary`、`s2`、`s2-cases`、`s3`、`s3-modules`、`s4`）；`contract-line` 只从七项纯派生。S1 摘要与 CASE 分别走 `saveS1Summary`/`saveS2Cases` 与 `readS1Summary`/`readS2Cases`（返回同一份 UTF-8 bytes + sha256）；S4 slices 是 `mission["s4-slices"]` inline，不进七项。`verifyFrozenPrefix` 支持阶段前缀校验，`realign` 支持 summary/cases/modules/slices 目标并返回 frozen/contractLine/caseIds；映射失效时必须同次传完整 modules/slices，否则 `:MAPPING_REALIGN_REQUIRED`，不等待人工。`structure.cases` 只接受 `case_id`（工具）或 `case-id`（EDN），旧 `{id}` 不再兼容；slices/modules 同理使用 `slice_id`/`slice-id`、`path`。S2 的权威提交入口是 `commitS2(root, slug, {manual_tests_markdown, cases}, {callId,structure})`：同一 mission lock 内写/复用 cases.edn 与文档、回读校验、再提交 mission；外部改动/旧回执均 fail closed，不能拆成 save+save+freeze 三段。
-- D13 阶段控制态已按新根规范落源码并有各组件窄测报告：`advance_s1` 写/冻结 `s1-summary.md`；`advance_s2` 接收结构化 `cases` 并由 `commitS2` 原子写 `cases.edn` 与冻结 `s2-cases`；`advance_s3` 持久化完整 `:s3-modules`（inline 哈希）；`advance_s4` 从冻结 `cases.edn` 校验覆盖并写 `:s4-slices`；`main.caseSpecsFor` 从 `cases.edn`/`s1-summary.md` 单次读取并重读 mission 核对哈希，`startAuditBatch` 再与活哈希绑定；`board_finish` 校验工作区相对 `dependency_paths`，`wait_for` 支持 `condition:`；`clj_plan`/`clj_auditor` 的 `cases.edn` 读取边界已接入。这些是源码与窄测状态，不是验收；真实审计 end-to-end、统一全量复测与真实宿主版本仍未完成。详见 `DEBT.md` D13。
-- S1 未冻结时，`advance_s1` 的新 call-id 可以原子替换 summary（`saveS1Summary` allowReplace）；同一 call-id 不同载荷仍 `:CALL_REPLAY_MISMATCH`，S1 已冻结后 `:FILE_CONFLICT`。文档与 summary 的提交顺序是先文档、后 summary；中间崩溃无 pending、不构成批准，重试同/新 call-id 重新对齐后再开面板。
-- 多工人修复已有源码与窄自动化测试：`worktrees.edn` 当前态、看板同事务 wake、主装配 durable board + `$W$` + Holder `call` 窄场景（`tests/main-consumer.test.mjs`）、`call` 取消/日志、冻结文件 human-edit realign、Ariadne 锚点与出站投影。它们都没有真实宿主复测，不能写成已验收。
-- Evaluator lazy-fix 当前交付：pull/lazyPull、LazyStream HOF、seq/rest/next、run!/sort/sort-by/update、hash/=/str/pr-str、some/every? 短路、tree-seq root/children、reductions/partition-by/split-with 输入、map/set 深物化、for/case/condp/letfn/when-* 宏、map :or、defn metadata 已有源码/测试覆盖；`memoize`（含 `cljs.core/memoize`）、`doto`、`try` 多重 catch（有序匹配、未命中回落外层、`Error`/类名与 `:code` 匹配、finally 必须最后、class 后缺绑定显式拒绝）与 transducer 族（`map`/`filter`/`remove`/`keep`/`mapcat`/`map-indexed`/`keep-indexed`/`take-while`/`drop-while`/`partition-by` 的一元 transducer arity，`take`/`drop`/`dedupe`/`distinct`/`interpose`/`partition-all`/`cat`/`halt-when`，`transduce`/`sequence`/`eduction`、三参数 `into`、`comp`/`completing`/`reduced` 族）已接入。解释器 fn 与异步 capability 走 LazyStream `call` 描述符，可参与 transducer 回调与 reducer；`sequence` 返回惰性 LazyStream，`eduction` 返回可重复消费的惰性描述，`into`/`transduce`/`vec`/`count`/`first`/`reduce` 等消费者按需展开。限制：`halt-when` 的最终值已贯通 `into`/`transduce` 的同步与异步路径（`sequence`/`eduction` 只停止输出）；`sequence`/`eduction` 在需要物化的消费者上仍受 200000 上限；deadline checkpoint 内存引用/忽略 unpark 值、pendingCall/regexCall 帧等待仍受限。D8 的 commit/discard 端口已与 control 竞争，端口 Promise reject 现在归入 rejected 而非穿出，rejected discard 标 `:uncertain`/`pending false`；被 abort 放弃的 capability 外部副作用归属仍需 C4。上述只有窄自动化，不是手工验收。
-- Auditor per-auditor sandbox：`src/sandbox/` 已提供 bwrap + 两阶段 Landlock + 私有 tmux session，`ensureIsolationPaths` 在 §8.4 模板后追加实际路径；设计上宿主 TCP/Unix socket 不可达，框架 fixed provider relay socket 按设计可达且只转发 pinned provider。网络层只有窄测试；凭据/平台（`~/.omp/agent`/profiles、平台路径）只有提示/静态检查，credentials host-side 仅 proxy mode，env-only provider 由 `selectAuditTransport` 拒绝；真实 tmux/omp 隔离与资源回收未验证。
-- 用户允许每批已知实操 bug 修完后进行一轮 tmux；发现新一批 bug 就停修。主真实 tmux 轮次正在开始，本文更新时尚未产生结果；不得把组件窄测当成验收。
-
-剩余风险集中在真实宿主/E2E、全量测试矩阵、`sessionFile` 父链偏差、真实出站零剧透测试，以及 evaluator 的上述纯 core 高阶/惰性/宏/取消限制（`DEBT.md` D7/D8）；条款位置、影响与建议处理方式见 `DEBT.md`。
-
+- `clj_*` 的顶层程序回执若为 `:state :failed`，工具结果显式带 `isError: true` 与错误码；覆盖测试在 `tests/sandbox-tools.test.mjs`。
+- 同一 agent 在同一回合并发提交多个 `clj_*` 调用时，按 tool bundle 串行排队执行；每个程序仍有独立上下文，未建立同身并行写通道。
+- `submit_devops_report` 以 `getSessionFile()` 的父目录（`<parent-artifacts>`）为回执根；没有子会话文件路径时显式 `:HOST_API_MISMATCH`，不回退到 per-agent 目录。同一 call-id 重复提交返回 `:INVALID_ARGUMENT`。
+- `devops` 工具执行参数里的 `AbortSignal` 已传到 `Plan DevOps` 的首次 spawn 和后续 `continueAgent`；预取消窄测试在 `tests/main-bootstrap.test.mjs`，真实 Esc 仍需 tmux 验证。
+- `board_finish` 校验工作区相对 `dependency_paths`；`wait_for` 支持任务 ID 与 `condition:` 键。`/herd-recovery repair` 把 `repair` 放在顶层传给 `recover`，并先把 `Error` 渲染成可序列化错误再输出。
+- Auditor per-auditor sandbox：`src/sandbox/` 提供 bwrap 与两阶段 Landlock 与私有 tmux session；设计上宿主 TCP/Unix socket 不可达，框架 fixed provider relay socket 按设计可达且只转发 pinned provider。真实 tmux/omp 隔离与资源回收未验证（D8）。
+- Evaluator lazy 支持 pull/lazyPull、LazyStream HOF、seq/rest/next、run!/sort/sort-by/update、hash/=/str/pr-str、some/every? 短路、tree-seq、reductions/partition-by/split-with、map/set 深物化、for/case/condp/letfn/when-* 宏、map :or、defn metadata、memoize、doto、try 多重 catch 与 transducer 族。限制：`sequence`/`eduction` 物化受 200000 上限；deadline checkpoint 内存引用；被 abort 放弃的 capability 外部副作用归属仍需核对。只有窄自动化，不是手工验收。
+- 真实宿主、重启与全量交错矩阵尚未验收；不得把组件窄测当成验收。
 ## 5 迁移完成状态
 
 旧运行时路径 `src/pi-goal/`、`src/pi-context/`、`src/editor-theme/`、`src/context/`、`src/manual-acceptance/`、旧提示词模块、`src/util/objects.mjs`、旧入口与旧 manual-acceptance 测试均已删除；当前 `src/` 只保留新模块。独立开发验收包只位于 `tools/dev-acceptance/`。
