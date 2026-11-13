@@ -19,7 +19,7 @@
  *
  * Outside world through injected ports:
  *   contract.readMission(root, slug, options)
- *   contract.saveStageDocument(root, slug, stage, markdown, options)
+ *   contract.saveDocument(root, slug, stage, markdown, options)
  *   contract.readPendingGate(root, slug, options)
  *   contract.writePendingGate(root, slug, pending, options)
  *   contract.readBoard(root, slug, options)
@@ -380,7 +380,7 @@ function requireContract(deps) {
 	if (contract === null || (typeof contract !== "object" && typeof contract !== "function")) {
 		throw new TypeError("gate-tools: contract port is required");
 	}
-	for (const method of ["readMission", "saveStageDocument", "freezeStage", "readPendingGate", "writePendingGate"]) {
+	for (const method of ["readMission", "saveDocument", "freezeStage", "readPendingGate", "writePendingGate"]) {
 		if (typeof contract[method] !== "function") {
 			throw new TypeError(`gate-tools: contract.${method}() is required`);
 		}
@@ -436,14 +436,14 @@ async function writePending(deps, root, slug, pending) {
 async function saveDocument(deps, root, slug, stage, markdown, options) {
 	let saved;
 	try {
-		saved = await deps.contract.saveStageDocument(root, slug, stage, markdown, {
+		saved = await deps.contract.saveDocument(root, slug, stage, markdown, {
 			...contractOptions(deps),
 			...options,
 		});
 	} catch (error) {
 		return { ok: false, error: herdLikeError(error, ":INVALID_ARGUMENT") };
 	}
-	return normalizePortResult(saved, ":INVALID_ARGUMENT", "saveStageDocument returned no result");
+	return normalizePortResult(saved, ":INVALID_ARGUMENT", "saveDocument returned no result");
 }
 
 
@@ -452,7 +452,10 @@ async function saveDocument(deps, root, slug, stage, markdown, options) {
 // ---------------------------------------------------------------------------
 
 function attachStageOf(tool) {
-	return Object.hasOwn(STAGE_ATTACH_TOOLS, tool) ? STAGE_ATTACH_TOOLS[tool] : null;
+	for (const [stage, name] of Object.entries(STAGE_ATTACH_TOOLS)) {
+		if (name === tool) return stage;
+	}
+	return null;
 }
 
 function tenureStore(deps) {
@@ -596,7 +599,7 @@ async function review(deps, params = {}, options = {}) {
 	if (denied) return denied;
 	const slug = options.slug;
 	if (!validSlug(slug)) return missingSessionSlug("review");
-	const summary = params.summary_markdown;
+	const summary = params.summary_markdown ?? null;
 	if (summary !== undefined && summary !== null && !isSpecificText(summary)) {
 		return failure(":INVALID_ARGUMENT", "summary_markdown must be a non-empty, specific string", {
 			field: "summary_markdown",
@@ -1215,7 +1218,7 @@ function requireAttachContract(deps) {
 	if (contract === null || (typeof contract !== "object" && typeof contract !== "function")) {
 		throw new TypeError("gate-tools: contract port is required");
 	}
-	for (const method of ["readMission", "saveStageDocument", "readPendingGate", "writePendingGate"]) {
+	for (const method of ["readMission", "saveDocument", "readPendingGate", "writePendingGate"]) {
 		if (typeof contract[method] !== "function") {
 			throw new TypeError("gate-tools: contract." + method + "() is required");
 		}
@@ -1308,7 +1311,7 @@ function schemaFor(pi) {
 	const finding = Type.Object(
 		{
 			key: Type.String({ minLength: 1 }),
-			value: Type.Union([Type.String({ minLength: 1 }), Type.Null()]),
+			value: Type.Union([Type.String({ minLength: 1 }), { type: "null" }]),
 		},
 		{ additionalProperties: false },
 	);
@@ -1329,20 +1332,16 @@ function schemaFor(pi) {
 			{ additionalProperties: false },
 		),
 		attachBrainstorm: gated({
-			slug: Type.Optional(slug),
 			markdown: Type.String({ minLength: 1, description: "Complete s1-brainstorm.md." }),
 		}),
 		attachManualTests: gated({
-			slug: Type.Optional(slug),
 			markdown: Type.String({ minLength: 1, description: "Complete s2-manual-tests.md." }),
 			cases: Type.Array(caseShape, { minItems: 1 }),
 		}),
 		attachDevGuide: gated({
-			slug: Type.Optional(slug),
 			markdown: Type.String({ minLength: 1, description: "Complete s3-dev-guide.md." }),
 		}),
 		attachCoordination: gated({
-			slug: Type.Optional(slug),
 			markdown: Type.String({ minLength: 1, description: "Complete s4-coordination.md." }),
 			promela: Type.String({
 				minLength: 1,
