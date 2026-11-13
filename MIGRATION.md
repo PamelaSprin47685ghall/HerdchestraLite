@@ -103,7 +103,7 @@
 - `wait` 期限已按 `1000ms + bytes × 50ms` 计算并触发 `park-all`；runtime-parked 没有 `:resolve`，`unpark` 不能恢复，见 `DEBT.md` D22。
 - `/clj-status` 已取消；`time_leap`、`ask_beacon` 与提示词注入已迁移；`ask_beacon` 已接只读模型查询。
 - 错误回执已统一为 EDN `:code`；错误路径的 call-id 重放会返回成功形状，见 D23。
-- `call` 已有 1 MiB 内联上限、完整日志与跨进程写锁；日志命名、64 MiB 会话上限、`read` 宿主代理、`ls` entry schema、`glob` worker pool 与批量写上限仍未迁移，见 D24–D31。
+- `call` 已有 1 MiB 内联上限、完整日志与跨进程写锁；日志命名、64 MiB 会话上限、`read` 宿主代理、`ls` entry schema、`glob` worker pool 与批量写上限仍未迁移，见 D24–D31（D26 与 D28 已关闭）。
 - 多程序并发共享 SCI 全局 ctx、`__run` 与单例 notifier，见 D20。
 - 旧 `src/*.mjs` 模块仍存在但不再由默认入口加载；最终删除。
 
