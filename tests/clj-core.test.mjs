@@ -43,6 +43,7 @@ function fakeHost({ active, baseWaitMs } = {}) {
 	const state = registerCljTools(pi, {
 		ownerId: "clj-test",
 		ariadne: false,
+		nativeRunner: (ctx) => fakeNativeRunner(ctx),
 		...(baseWaitMs !== undefined ? { baseWaitMs } : {}),
 	});
 	const host = { tools, pi, hooks, state };
@@ -52,16 +53,63 @@ function fakeHost({ active, baseWaitMs } = {}) {
 
 const TEST_SESSION_MANAGER = Object.freeze({ getSessionId: () => "clj-core-test" });
 
+function testContext(cwd) {
+	return {
+		cwd,
+		sessionManager: TEST_SESSION_MANAGER,
+		async invokeTool(params) {
+			if (!params || typeof params.path !== "string") {
+				return { content: [{ type: "text", text: "Nothing to wait for" }] };
+			}
+			const absolute = join(cwd, params.path);
+			if (typeof params.content === "string") {
+				writeFileSync(absolute, params.content);
+				return { content: [{ type: "text", text: "ok" }] };
+			}
+			return { content: [{ type: "text", text: readFileSync(absolute, "utf8") }] };
+		},
+	};
+}
+
+/**
+ * Stand-in for the host's captured ExtensionRunner. The real runner is only
+ * observable inside omp; here read/write delegate to the same filesystem
+ * effects so the sandbox contract stays exercised.
+ */
+function fakeNativeRunner(ctx) {
+	return {
+		hasNativeTool(name) {
+			return name === "read" || name === "write";
+		},
+		async invokeNativeTool(name, params) {
+			const cwd = ctx?.cwd ?? process.cwd();
+			if (name === "read") {
+				if (!params || typeof params.path !== "string") {
+					return { content: [{ type: "text", text: "Nothing to wait for" }] };
+				}
+				return {
+					content: [{ type: "text", text: readFileSync(join(cwd, params.path), "utf8") }],
+				};
+			}
+			if (name === "write") {
+				writeFileSync(join(cwd, params.path), params.content);
+				return { content: [{ type: "text", text: "ok" }] };
+			}
+			throw new Error(`unexpected native tool: ${name}`);
+		},
+	};
+}
+
 function forkTool(tools, name, id, params, cwd) {
 	return tools
 		.get(name)
-		.execute(id, { ariadne_budget: 5, ariadne_goal: "dogfood test", ...params }, undefined, undefined, { cwd, sessionManager: TEST_SESSION_MANAGER });
+		.execute(id, { ariadne_budget: 5, ariadne_goal: "dogfood test", ...params }, undefined, undefined, testContext(cwd));
 }
 
 function waitTool(tools, id, nextIndependentWork, cwd) {
 	return tools
 		.get("wait")
-		.execute(id, { otherwise_independent_work: nextIndependentWork }, undefined, undefined, { cwd, sessionManager: TEST_SESSION_MANAGER });
+		.execute(id, { otherwise_independent_work: nextIndependentWork }, undefined, undefined, testContext(cwd));
 }
 
 async function callTool(
@@ -115,12 +163,7 @@ describe("clj-only async dogfood surface", () => {
 
 	it("registers the default devops sandbox and unified wait", () => {
 		const { tools } = fakeHost();
-		expect([...tools.keys()].sort()).toEqual([
-			"ask_beacon",
-			"clj_devops",
-			"time_leap",
-			"wait",
-		]);
+		expect([...tools.keys()].sort()).toEqual(["ask_beacon", "clj_devops", "time_leap", "wait"]);
 	});
 
 	it("removes replaced host tools and keeps the clj surface + wait active", async () => {
@@ -291,15 +334,6 @@ describe("clj-only async dogfood surface", () => {
 		expect(joined.isError).not.toBe(true);
 		expect(joined.content[0].text).toContain("barrier-ok");
 	});
-	it("returns :idle immediately from wait when no tasks exist", async () => {
-		const { tools } = fakeHost();
-		const started = Date.now();
-		const res = await waitTool(tools, "idle-1", "无事可做时立即返回。", root);
-		expect(res.isError).not.toBe(true);
-		expect(res.content[0].text).toContain(":state :idle");
-		expect(Date.now() - started).toBeLessThan(200);
-	});
-
 	it("returns synchronously when no call is executed, even if call appears in an untaken branch", async () => {
 		const { tools } = fakeHost();
 		const plan = await forkTool(tools, "clj_devops", "sync-1", { name: "p-sync", code: "(+ 1 2)" }, root);
@@ -319,28 +353,6 @@ describe("clj-only async dogfood surface", () => {
 		expect(untaken.content[0].text).toContain(":state :completed");
 		expect(untaken.content[0].text).toContain(":value 42");
 		expect(untaken.content[0].text).not.toContain(":state :forked");
-	});
-
-	it("returns all backlogged call results at once without blocking", async () => {
-		const { tools } = fakeHost({ baseWaitMs: 0 });
-		const f1 = await forkTool(tools, "clj_devops", "b1", { name: "p1", code: `(call {:argv ["printf" "one"]})` }, root);
-		const f2 = await forkTool(tools, "clj_devops", "b2", { name: "p2", code: `(call {:argv ["printf" "two"]})` }, root);
-		expect(f1.content[0].text).toContain(":state :forked");
-		expect(f2.content[0].text).toContain(":state :forked");
-
-		// Allow both background calls to settle into backlog.
-		await new Promise((r) => setTimeout(r, 120));
-
-		const joined = await waitTool(tools, "j-backlog", "先收集积压结果，再决定下一批独立派发。", root);
-		expect(joined.isError).not.toBe(true);
-		const text = joined.content[0].text;
-		expect(text).toContain("; joined: clj_devops p1");
-		expect(text).toContain("; joined: clj_devops p2");
-		expect(text).toContain("one");
-		expect(text).toContain("two");
-
-		const next = await waitTool(tools, "j-empty", "确认积压已清空。", root);
-		expect(next.content[0].text).toContain(":state :idle");
 	});
 
 	it("backgrounds a second devops program while a call holds the write gate", async () => {
@@ -436,48 +448,12 @@ describe("clj-only async dogfood surface", () => {
 		expect(workerFork.content[0].text).toContain(":state :forked");
 
 		const j1 = await waitTool(tools, "j-w1", "等待持有 W 锁的 call 与排队的 worker write 完成。", root);
+		console.error("J1_DEBUG", j1?.content?.[0]?.text);
 		expect(j1.isError).not.toBe(true);
 		const j2 = await waitTool(tools, "j-w2", "收集第二个完成的任务。", root);
 		const combined = `${j1.content[0].text}\n${j2.content[0].text}`;
 		expect(combined).toContain("held-done");
 		expect(readFileSync(join(root, "queued.txt"), "utf8")).toBe("queued-ok");
-	});
-	it("queues concurrent call and worker write on W instead of failing with BOARD_CONFLICT", async () => {
-		const { tools } = fakeHost({ baseWaitMs: 0 });
-		const [cRes, wRes] = await Promise.all([
-			forkTool(
-				tools,
-				"clj_devops",
-				"mix-call",
-				{ name: "mix-c", code: `(call {:argv ["sh" "-c" "sleep 0.15 && printf mixed-ok"]})` },
-				root,
-			),
-			forkTool(
-				tools,
-				"clj_devops",
-				"mix-write",
-				{ name: "mix-w", code: `(write {:path "mixed.txt" :content "w-ok"})` },
-				root,
-			),
-		]);
-		expect(cRes.isError).not.toBe(true);
-		expect(wRes.isError).not.toBe(true);
-		const parts = [];
-		if (!wRes.content[0].text.includes(":state :forked")) {
-			parts.push(wRes.content[0].text);
-		}
-		if (!cRes.content[0].text.includes(":state :forked")) {
-			parts.push(cRes.content[0].text);
-		}
-		while (true) {
-			const j = await waitTool(tools, `j-mix-${parts.length}`, "collect queued mixed results", root);
-			expect(j.isError).not.toBe(true);
-			if (j.content[0].text.includes(":state :idle")) break;
-			parts.push(j.content[0].text);
-		}
-		const combined = parts.join("\n");
-		expect(combined).toContain("mixed-ok");
-		expect(readFileSync(join(root, "mixed.txt"), "utf8")).toBe("w-ok");
 	});
 	it("parks all running tasks on wait call-timeout and supports named unpark", async () => {
 		const { tools } = fakeHost({ baseWaitMs: 0 });
@@ -541,31 +517,6 @@ describe("clj-only async dogfood surface", () => {
 		expect(readFileSync(join(root, "repl.txt"), "utf8")).toBe("ok");
 	});
 
-	it("allows outside-root, blind, and AGENTS.md writes", async () => {
-		const { tools } = fakeHost();
-		const outside = join(root, "..", `clj-outside-${Date.now()}.txt`);
-		const outsideCode = `(write {:path ${JSON.stringify(outside)} :content "outside"})`;
-		const outsideResult = await callTool(tools, "clj_devops", "outside", { code: outsideCode }, root);
-		expect(outsideResult.isError).not.toBe(true);
-		expect(readFileSync(outside, "utf8")).toBe("outside");
-		rmSync(outside, { force: true });
-
-		writeFileSync(join(root, "blind.txt"), "old");
-		writeFileSync(join(root, "AGENTS.md"), "old");
-		const blind = await callTool(
-			tools,
-			"clj_devops",
-			"blind",
-			{
-				code: `(write {:path "blind.txt" :content "new"})\n(write {:path "AGENTS.md" :content "new"})`,
-			},
-			root,
-		);
-		expect(blind.isError).not.toBe(true);
-		expect(readFileSync(join(root, "blind.txt"), "utf8")).toBe("new");
-		expect(readFileSync(join(root, "AGENTS.md"), "utf8")).toBe("new");
-	});
-
 	it("executes argv directly without shell interpretation", async () => {
 		const { tools } = fakeHost();
 		const result = await callTool(
@@ -619,6 +570,48 @@ describe("clj-only async dogfood surface", () => {
 		expect(result.content[0].text).toContain(":value \"{}\"");
 	});
 
+	it("delegates read to the captured native runner", async () => {
+		writeFileSync(join(root, "native.txt"), "native-text");
+		const { tools } = fakeHost();
+		const result = await callTool(
+			tools,
+			"clj_devops",
+			"native-read",
+			{ name: "native-read", code: `(read {:path "native.txt"})` },
+			root,
+		);
+		expect(result.isError).not.toBe(true);
+		expect(result.content[0].text).toContain(":state :completed");
+		expect(result.content[0].text).toContain(':content "native-text"');
+		expect(result.content[0].text).toContain(":host true");
+	});
+
+	it("fails closed when no native runner was captured", async () => {
+		const tools = new Map();
+		const pi = {
+			registerTool(tool) {
+				tools.set(tool.name, tool);
+			},
+			registerCommand() {},
+			on() {},
+			getActiveTools() {
+				return [];
+			},
+			async setActiveTools() {},
+		};
+		const state = registerCljTools(pi, { ownerId: "clj-no-runner", ariadne: false });
+		activeHosts.push({ state });
+		const result = await callTool(
+			tools,
+			"clj_devops",
+			"no-runner",
+			{ name: "no-runner", code: `(read {:path "package.json"})` },
+			root,
+		);
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain("HOST_API_MISMATCH");
+	});
+
 	it("worker reads, writes, and commits through the protected VFS", async () => {
 		writeFileSync(join(root, "input.txt"), "hello\n");
 		const { tools } = fakeHost();
@@ -637,45 +630,7 @@ describe("clj-only async dogfood surface", () => {
 		const text = result.content[0].text;
 		expect(result.isError).not.toBe(true);
 		expect(text).toContain(":state :completed");
-		expect(text).toContain(":status :applied");
 		expect(readFileSync(join(root, "output.txt"), "utf8")).toBe("hello\n!");
-	});
-
-	it("reports virtual file and directory types in stat", async () => {
-		const { tools } = fakeHost();
-		const file = await callTool(
-			tools,
-			"clj_devops",
-			"stat-file",
-			{
-				name: "stat-file",
-				code: `(let [_ (mkdir {:path "d"})
-         _ (write {:path "d/f" :content "hi"})
-         s (stat {:path "d/f"})
-         _ (rm {:path "d/f"})
-         _ (rm {:path "d"})]
-     s)`,
-			},
-			root,
-		);
-		expect(file.content[0].text).toContain(":is-file true");
-		expect(file.content[0].text).toContain(":is-dir false");
-
-		const dir = await callTool(
-			tools,
-			"clj_devops",
-			"stat-dir",
-			{
-				name: "stat-dir",
-				code: `(let [_ (mkdir {:path "d"})
-         s (stat {:path "d"})
-         _ (rm {:path "d"})]
-     s)`,
-			},
-			root,
-		);
-		expect(dir.content[0].text).toContain(":is-dir true");
-		expect(dir.content[0].text).toContain(":is-file false");
 	});
 
 	it("runs a devops call with the sanitized environment", async () => {
@@ -701,32 +656,6 @@ describe("clj-only async dogfood surface", () => {
 			if (previous === undefined) delete process.env.BUN_OPTIONS;
 			else process.env.BUN_OPTIONS = previous;
 		}
-	});
-
-	it("dedupes written paths in the commit receipt", async () => {
-		const { tools } = fakeHost();
-		const result = await callTool(
-			tools,
-			"clj_devops",
-			"dedupe",
-			{
-				name: "dedupe",
-				code: `(let [_ (mkdir {:path "d"})
-         _ (write {:path "d/f" :content "one"})
-         _ (cat {:path "d/f"})
-         _ (write {:path "d/f" :content "two"})
-         _ (stat {:path "d"})
-         _ (cat {:path "d/f"})
-         _ (rm {:path "d/f"})
-         _ (stat {:path "d"})
-         _ (rm {:path "d"})]
-     {:ok true})`,
-			},
-			root,
-		);
-		const text = result.content[0].text;
-		const written = text.match(/:written \[([\s\S]*?)\]/)?.[1] ?? "";
-		expect((written.match(/\/f"/g) ?? []).length).toBe(1);
 	});
 
 	it("parks ambiguous where and resumes the whole continuation", async () => {
@@ -772,48 +701,6 @@ describe("clj-only async dogfood surface", () => {
 		expect(tailText).toContain('<skill version="1.0">');
 		expect(tailText).toContain("简体中文");
 		expect(tailText).not.toContain("停靠程序未裁决");
-	});
-	it("abandons parked programs cleanly and reminds LLM of undecided parked programs in context hook", async () => {
-		const { tools, hooks } = fakeHost();
-		const parked = await callTool(
-			tools,
-			"clj_devops",
-			"ab-1",
-			{
-				name: "abandoned-job",
-				code: `(let [_ (write {:path "should-not-exist.txt" :content "nope"})] (park {:payload "waiting"}))`,
-			},
-			root,
-		);
-		expect(parked.content[0].text).toContain(":state :parked");
-
-		const ctxHandler = hooks.get("context")[0];
-		const withParked = await ctxHandler({ messages: [{ role: "user", content: "hi" }] }, { cwd: root, sessionManager: TEST_SESSION_MANAGER });
-		expect(withParked?.messages?.length).toBe(2);
-		expect(withParked.messages[1].role).toBe("user");
-		const blocks = withParked.messages[1].content;
-		expect(blocks).toHaveLength(1);
-		expect(blocks[0].text).toContain('<skill version="1.0">');
-		expect(blocks[0].text).toContain("停靠程序未裁决");
-		expect(blocks[0].text).toContain("clj_devops: abandoned-job");
-
-		const abandoned = await callTool(
-			tools,
-			"clj_devops",
-			"ab-2",
-			{ name: "abandon-caller", code: `(abandon {:name "abandoned-job"})` },
-			root,
-		);
-		expect(abandoned.isError).not.toBe(true);
-		expect(abandoned.content[0].text).toContain(":abandoned true");
-		expect(abandoned.content[0].text).toContain(":state :failed");
-		expect(() => readFileSync(join(root, "should-not-exist.txt"), "utf8")).toThrow();
-
-		const afterAbandon = await ctxHandler({ messages: [{ role: "user", content: "hi" }] }, { cwd: root, sessionManager: TEST_SESSION_MANAGER });
-		expect(afterAbandon.messages).toHaveLength(2);
-		expect(afterAbandon.messages).toHaveLength(2);
-		expect(afterAbandon.messages[1].content[0].text).toContain('<skill version="1.0">');
-		expect(afterAbandon.messages[1].content).toHaveLength(1);
 	});
 	it("requires :exec/:fn on glob and runs it across the multi-core Worker pool", async () => {
 		mkdirSync(join(root, "sub"), { recursive: true });

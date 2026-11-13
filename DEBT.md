@@ -50,3 +50,24 @@
 
 - **缺口**：`startAuditBatch`、`aggregate`、`writeS5Report` 已接线，但真实 `clj_auditor`、bwrap/tmux 隔离、`submit_case_audit`、全 PASS 报告与批准尚未跑通；旧设计中的 frozen 哈希复核已删除，需改为审计员自行观察工作区与 CASE 数据。
 - **下一步**：在真实宿主用 `s2-cases.edn` 跑 K=1，再扩到 K>1；验证审计前后主工作区只读、证据路径、FAIL 返工与批准。
+
+## D10 写入锁已改为令牌模型，代码仍用单一 $W$
+
+- **已实现**：`src/util/broker.mjs`（模块级单例、`path`/`global` 队列、`realpath` 归一、字典序双令牌、`releaseOwner` 断线回收、`assertInvariant`）；`sandbox-worker.mjs` 的 `tokenAcquire`/`tokenRelease` 消息、`pathGate`、`globalGate`；`tools.mjs` 的 `write`/`mkdir`/`rm`/`mv` 走 `pathGate`，`call` 走 `globalGate`；`clj-main.mjs` 的 actor 消息处理、shadow `write` 在 `clj-core.cross-process.lock` 内落盘、worker 退出时 `releaseOwner`。
+- **剩余**：`vfs.mjs` 的 `createWriteGate` 仍被 `runCall` 的 drain 使用；D12 清理后一并删除。
+- **影响**：同一进程内不同路径的写入不能并行；同一路径的并发写没有进程内互斥；`call` 与 `mkdir`/`rm`/`mv` 之间只有跨进程粗锁可依赖。
+- **下一步**：实现 `src/util/broker.mjs`（模块级单例、`path`/`global` 队列、`realpath` 归一、字典序双令牌、断线回收）；`sandbox-worker.mjs` 增加 `acquireToken`/`releaseToken` 消息；`tools.mjs` 的 `write`/`mkdir`/`rm`/`mv` 改为先申请令牌，落盘前取进程间粗锁；`call` 改持 `global` 令牌 + 粗锁；删除 `createWriteGate`。完成后删除本条。
+
+## D11 read 与 cat/stat 的 stamp 表尚未统一
+
+- **已实现**：沙箱 `context.stamps`；`cat`/`stat`/`read` 都写入该表；`read` 读前后各采一次 `lstat`，变化返回 `:changed-during-read`；`write` 把目标路径的期望 stamp 随 `hostWrite` 的 `__expectedStamp` 上传，`clj-main.mjs` 的 shadow `write` 在粗锁内比对，不匹配返回 `:FILE_CONFLICT`。
+- **剩余**：`vfs.mjs` 的旧 `batch.readSet` 仍存在，D12 清理时删除。
+- **影响**：写前无法发现目标文件在读取后已被他人修改；`read` 与 `cat` 的观察不一致。
+- **下一步**：在沙箱会话内存建 `stamps: Map<absPath, {mtime-sec, mtime-nsec, size}>`；`cat`/`stat`/`read` 都写入 `stamps`；`write` 把目标路径的期望 stamp 随 `hostWrite` 上传，`clj-main.mjs` 的 shadow `write` 在令牌内比对，不匹配返回 `:FILE_CONFLICT`；`read` 读前后各采一次 stamp，变化返回 `:changed-during-read`。完成后删除本条。
+
+## D12 VFS 旧实现仍在代码中
+
+- **已完成**：`cat` 直接 `lstatSync + readFileSync + TextDecoder(fatal)` 并登记 observed fact；`stat`/`ls`/`glob` 已改纯 `fs`（`Bun.Glob`）；`classifyRead`/`classifyWrite`/`classifyMove` 已删除；未使用的 `vfsList`/`vfsStat`/`vfsRead`/`vfsWrite`/`vfsMkdir`/`vfsMove`/`vfsRemove` import 已清理；`tests/clj-core.test.mjs` 的旧 `:status :applied` 断言已删除。`bun test tests/sandbox-tools.test.mjs` 40 pass，`bun test tests/clj-core.test.mjs` 30 pass（classify 删除前的最近一次）。
+- **剩余缺口**：`tools.mjs` 仍 import `createBatch`、`runCall`、`commit as vfsCommit`；`createContext` 仍构造 batch，`call` 路径仍把 `context.primary` 交给 `runCall` 并可能 drain overlay；`vfs.mjs` 中 `createBatch`/`commit`/`runCall` 与旧 `batch.readSet` 尚未删除。
+- **影响**：旧 batch 壳仍在写入路径旁边，但 write/mkdir/rm/mv 已不经过 overlay，`hasOverlay` 实际为假。
+- **下一步**：读 `runCall` 对 batch 的最小字段依赖，构造不含 overlay 的最小上下文；删除 `createBatch`/`vfsCommit` 与 `vfs.mjs` 对应实现；每步后跑 `tests/sandbox-tools.test.mjs` 与 `tests/clj-core.test.mjs`。

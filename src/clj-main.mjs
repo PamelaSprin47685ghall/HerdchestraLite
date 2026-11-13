@@ -11,24 +11,23 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { lstatSync, mkdirSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { withLock } from "./util/file-lock.mjs";
+import { getWriteActor } from "./util/broker.mjs";
 import { Worker } from "node:worker_threads";
 import { cherryStatus } from "./clj-sandbox/cherry.mjs";
 import { describeSandboxTool } from "./clj-sandbox/tools.mjs";
 import { hackContext } from "./host/hack-context.mjs";
 import { hackSystemPrompt } from "./host/hack-system-prompt.mjs";
 import { recordHealth } from "./host/health.mjs";
+import { getNativeRunner, installRunnerCapture, runnerCaptureStatus, runnerForContext } from "./host/native-runner.mjs";
 import { hostSessionKey } from "./host/session-key.mjs";
 import { COMMON_RULES_TEXT } from "./prompts/common.mjs";
 
 import { appendOutboundContextTail } from "./prompts/runtime-wires.mjs";
 import { printUfss } from "./clj-sandbox/ufss.mjs";
-import {
-	ARIADNE_BUDGET_FIELD,
-	ARIADNE_GOAL_FIELD,
-	applyTimeLeapToMessages,
-	createAriadneStore,
-} from "./scope/ariadne.mjs";
+import { ARIADNE_BUDGET_FIELD, ARIADNE_GOAL_FIELD, createAriadneStore } from "./scope/ariadne.mjs";
 import { queryBeacon } from "./scope/beacon-query.mjs";
 import { herdError } from "./util/errors.mjs";
 
@@ -177,7 +176,7 @@ const TIME_LEAP_PARAMETERS = Object.freeze({
 			type: "string",
 			minLength: 1,
 			description:
-				"Your full subjective lived experience to pour into the rewritten timeline: proven facts, falsified paths, exact files/symbols, remaining plan, and the single next move — especially facts that were unknown at the target anchor's time. Do not replace this normal experience with the requirement list. In addition to it, the experience MUST enumerate, in exhaustive detail, every user requirement that is already completed (with exact files/symbols and verification), which are partially done, and which are not started, so the future self never redoes finished work. This string may carry a long, structured prose report; do not compress it into a one-liner. It MUST explicitly list every subagent still running, blocked, or not yet collected at leap time, by name and current status; write \"none\" when no subagent is outstanding.",
+				"Your full subjective lived experience to pour into the rewritten timeline: proven facts, falsified paths, exact files/symbols, remaining plan, and the single next move — especially facts that were unknown at the target anchor's time. Do not replace this normal experience with the requirement list. In addition to it, the experience MUST enumerate, in exhaustive detail, every user requirement that is already completed (with exact files/symbols and verification), which are partially done, and which are not started, so the future self never redoes finished work. This string may carry a long, structured prose report; do not compress it into a one-liner. It MUST explicitly list every subagent still running, blocked, or not yet collected at leap time, by name and current status; write \"none\" when no subagent is outstanding. Treat the requirement list as a handoff of actual current state, not as a reopening of old debt: first verify the latest on-disk and test state, keep only what is genuinely still open, then immediately continue with the next new unit of work instead of replaying or re-closing finished items.",
 		},
 		beacon_name: {
 			type: "string",
@@ -538,25 +537,66 @@ export function registerCljTools(pi, deps = {}) {
 			resolvePark({ ok: false, code: "HOST_API_MISMATCH" });
 		}
 	};
-	const hostToolOf = (ctx, name) => {
-		for (const holder of [ctx, ctx?.session, ctx?.sessionManager]) {
-			if (holder && typeof holder.getToolByName === "function") {
-				const tool = holder.getToolByName(name);
-				if (tool && typeof tool.execute === "function") return tool;
-			}
-		}
-		return null;
+	const nativeRunnerProvider = typeof deps.nativeRunner === "function" ? deps.nativeRunner : null;
+	const nativeRunnerFor = (ctx) => nativeRunnerProvider?.(ctx) ?? runnerForContext(ctx) ?? getNativeRunner();
+	const detectHostTools = (ctx) => {
+		const runner = nativeRunnerFor(ctx);
+		const has = (name) => typeof runner?.hasNativeTool === "function" && runner.hasNativeTool(name);
+		return { read: has("read"), write: has("write") };
 	};
-	const detectHostTools = (ctx) => ({
-		read: hostToolOf(ctx, "read") !== null,
-		write: hostToolOf(ctx, "write") !== null,
-	});
 	const invokeHostTool = async (ctx, name, params) => {
-		const tool = hostToolOf(ctx, name);
-		if (tool === null) {
-			throw herdError("HOST_API_MISMATCH", `host tool is unavailable: ${name}`, { tool: name });
+		const runner = nativeRunnerFor(ctx);
+		if (!runner || typeof runner.invokeNativeTool !== "function") {
+			throw herdError("HOST_API_MISMATCH", `native ${name} delegation is unavailable`, { tool: name });
 		}
-		return await tool.execute(`host-${name}-${randomUUID()}`, params, undefined, undefined, ctx);
+		if (name !== "write") {
+			return await runner.invokeNativeTool(name, params, {});
+		}
+		const lockDir = join(rootFor(ctx), ".herd", "locks");
+		mkdirSync(lockDir, { recursive: true });
+		const acquired = await withLock(
+			join(lockDir, "clj-core.cross-process.lock"),
+			{
+				lock_id: "clj-core",
+				purpose: "clj-core cross-process write",
+				slice_id: "clj-core",
+				owner_agent_id: ownerId,
+				pid: process.pid,
+			},
+			async () => {
+				if (params.__expectedStamp !== undefined) {
+					const absolute = resolve(ctx.cwd ?? process.cwd(), params.path);
+					let stats = null;
+					try {
+						stats = lstatSync(absolute, { bigint: true });
+					} catch (error) {
+						if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") throw error;
+					}
+					const expected = params.__expectedStamp;
+					const actual = stats === null
+						? null
+						: {
+								mtimeSec: Number(stats.mtimeNs / 1000000000n),
+								mtimeNsec: Number(stats.mtimeNs % 1000000000n),
+								size: Number(stats.size),
+							};
+					if (
+						actual === null ||
+						actual.mtimeSec !== expected.mtimeSec ||
+						actual.mtimeNsec !== expected.mtimeNsec ||
+						actual.size !== expected.size
+					) {
+						throw herdError(":FILE_CONFLICT", `file changed since read: ${params.path}`, { path: params.path });
+					}
+					delete params.__expectedStamp;
+				}
+				return await runner.invokeNativeTool("write", params, {});
+			},
+		);
+		if (acquired?.ok) return acquired.value;
+		throw herdError(acquired?.code ?? ":BOARD_CONFLICT", acquired?.message ?? "cross-process write lock is held", {
+			lock: ".herd/locks/clj-core.cross-process.lock",
+		});
 	};
 
 	const handleWorkerMessage = (msg) => {
@@ -583,6 +623,19 @@ export function registerCljTools(pi, deps = {}) {
 			}
 			return;
 		}
+		if (msg.type === "tokenAcquire") {
+			const worker = shared.worker;
+			const owner = `${ownerId}:${msg.sessionKey}`;
+			void getWriteActor()
+				.acquire(owner, msg.kind, msg.paths)
+				.then((token) => worker?.postMessage({ type: "tokenGranted", id: msg.id, owner, ids: token.ids, targets: token.targets }))
+				.catch((error) => worker?.postMessage({ type: "tokenFailed", id: msg.id, error: errorText(error) }));
+			return;
+		}
+		if (msg.type === "tokenRelease") {
+			getWriteActor().release({ ownerId: msg.ownerId ?? `${ownerId}:${msg.sessionKey}`, ids: msg.ids });
+			return;
+		}
 		const pool = getPool(state, msg.sessionKey);
 		if (msg.type === "hostTool") {
 			const pool = getPool(state, msg.sessionKey);
@@ -594,7 +647,14 @@ export function registerCljTools(pi, deps = {}) {
 			}
 			void invokeHostTool(ctx, msg.name, msg.params)
 				.then((result) => worker.postMessage({ type: "hostToolDone", id: msg.id, result }))
-				.catch((error) => worker.postMessage({ type: "hostToolDone", id: msg.id, error: errorText(error) }));
+				.catch((error) =>
+					worker.postMessage({
+						type: "hostToolDone",
+						id: msg.id,
+						error: errorText(error),
+						code: error?.code ?? ":HOST_API_MISMATCH",
+					}),
+				);
 			return;
 		}
 		if (msg.type === "callActivity") {
@@ -678,6 +738,9 @@ export function registerCljTools(pi, deps = {}) {
 			shared.cherry = null;
 			for (const owner of shared.owners) {
 				if (owner.worker === worker) owner.worker = null;
+				for (const sessionKey of owner.pools.keys()) {
+					getWriteActor().releaseOwner(`${ownerId}:${sessionKey}`);
+				}
 			}
 			for (const onFail of shared.failListeners) {
 				onFail(reason);
@@ -1145,7 +1208,7 @@ export function registerCljTools(pi, deps = {}) {
 			name: "time_leap",
 			label: "Time Leap++",
 			description:
-				"Time Leap++: cut the CURRENT post-compaction timeline back to a past clj_* anchor, carrying your full `experience` and leaving a read-only `beacon_name` + `beacon_description` on the departed branch. Resolve parked clj_* programs first with unpark or abandon, because a leap that predates them is refused. Never accepts `ariadne_budget`/`ariadne_goal` (re-anchor on your next `clj_*` call) and never resurrects old universes.",
+				"Time Leap++: cut the CURRENT post-compaction timeline back to a past clj_* anchor, carrying your full `experience` and leaving a read-only `beacon_name` + `beacon_description` on the departed branch. Resolve parked clj_* programs first with unpark or abandon, because a leap that predates them is refused. Never accepts `ariadne_budget`/`ariadne_goal` (re-anchor on your next `clj_*` call) and never resurrects old universes. After the leap, resume from the actual latest state recorded in `experience` (files, tests, commits) and continue with the next new unit of work; never treat already-completed items as an open backlog to re-close.",
 			parameters: TIME_LEAP_PARAMETERS,
 			async execute(toolCallId, params = {}, _signal, _onUpdate, ctx) {
 				if (!isPlainObject(params)) {
@@ -1165,20 +1228,8 @@ export function registerCljTools(pi, deps = {}) {
 					await Promise.all([...pool.startingPromises]);
 				}
 				try {
-					const jumpCallId =
-						typeof toolCallId === "string" && toolCallId.length > 0 ? toolCallId : `tl-${randomUUID().slice(0, 12)}`;
-					const leafId = ctx?.sessionManager?.getLeafId?.() ?? null;
-					const parkedNames = (pool.parkedList ?? []).map((item) => item.name);
-					recoverAriadneHistory(ariadne, sessionKey, ctx);
-					const res = ariadne.timeLeap(sessionKey, params, { jumpCallId, leafId, parkedNames });
-					const beacons = Array.isArray(res.beacons) ? res.beacons : [];
-					const beaconsEdn = beacons
-						.map(
-							(b) =>
-								`{:name ${printUfss(String(b.name))} :description ${b.description == null ? "nil" : printUfss(String(b.description))}}`,
-						)
-						.join(" ");
-					const text = `{:time-leaped-from ${printUfss(String(res.beaconName))} :updated-budget ${res.updatedBudget === null ? "nil" : res.updatedBudget} :available-beacons [${beaconsEdn}]}`;
+					const res = ariadne.timeLeap(sessionKey, params);
+					const text = `{:time-leap-pending true :target ${printUfss(String(res.target))} :beacon-name ${printUfss(String(res.beaconName))} :resume-note ${printUfss("time_leap 已登记；下一次 LLM 请求发出前会用实际上下文解析并剪裁。旧任务按 experience 记录的磁盘与测试最新状态继续。")}}`;
 					return { content: [{ type: "text", text }], details: res };
 				} catch (error) {
 					return toolFailure(error);
@@ -1326,20 +1377,31 @@ export function registerCljTools(pi, deps = {}) {
 			const sessionKey = hostSessionKey(ctx);
 			const pool = state.pools.get(sessionKey);
 			const parkedPrograms = pool?.parkedList ?? [];
-			const leap = ariadne ? ariadne.consumePendingLeap(sessionKey) : null;
+			const leap = ariadne
+				? ariadne.resolvePendingLeap(sessionKey, event?.messages, { leafId: ctx?.sessionManager?.getLeafId?.() ?? null })
+				: null;
 			let baseMessages = event?.messages;
-			if (leap) {
+			let leapError = null;
+			if (leap?.found === true) {
 				ariadne.attachBeaconSnapshot(
 					sessionKey,
-					leap.leavingBeaconName,
+					leap.beaconName,
 					event?.messages,
-					ctx?.sessionManager?.getLeafId?.(),
+					ctx?.sessionManager?.getLeafId?.() ?? null,
 				);
-				const applied = applyTimeLeapToMessages(event?.messages, leap);
-				baseMessages = applied.messages;
+				baseMessages = leap.messages;
+			} else if (leap) {
+				leapError = leap.target;
 			}
+
 			const ariadneBlock = ariadne ? ariadne.formatAriadneBlock(sessionKey) : null;
-			const messages = appendOutboundContextTail(baseMessages, { parkedPrograms, ariadneBlock });
+			const leapBlock = leapError
+				? `<skill version="1.0">time_leap 目标 ${leapError} 不在实际上下文中；请重新选择一个存在且未封存的 clj_* 程序名。</skill>`
+				: null;
+			const messages = appendOutboundContextTail(baseMessages, {
+				parkedPrograms,
+				ariadneBlock: [ariadneBlock, leapBlock].filter(Boolean).join(String.fromCharCode(10)) || null,
+			});
 			return { messages };
 		});
 	}
@@ -1356,6 +1418,7 @@ export function registerCljTools(pi, deps = {}) {
 			capabilities: {
 				tools: [...CLJ_TOOL_NAMES],
 				hostToolBlacklist: HOST_TOOL_BLACKLIST.length,
+				nativeRunnerCapture: runnerCaptureStatus().status,
 				cherry: cherry === null ? "warming" : cherry.loaded,
 				hooksReady,
 				failedTools: failures,
@@ -1403,6 +1466,10 @@ export function registerCljTools(pi, deps = {}) {
 }
 
 export default async function activate(pi) {
+	// Capture the host's live ExtensionRunner before the first createContext,
+	// so the sandbox's read/write can delegate to the native built-ins.
+	// Outside the host this import is unavailable and the sandbox fails closed.
+	await installRunnerCapture().catch(() => {});
 	// Register tools immediately without blocking the host main thread on
 	// cherry-cljs loading; pre-warm the sandbox Worker in the background.
 	const state = registerCljTools(pi);

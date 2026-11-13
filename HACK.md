@@ -23,6 +23,63 @@
 | uid | `1000`（非 root，权限拒绝分支可真实执行） |
 | 当前 HEAD | `e25075d8703938289959cf8ebf3c6ac2916bb8fe` |
 
+## 1.1 受控宿主补丁：ExtensionRunner capture（2026-11-13）
+
+**目的**：默认模式 `clj_devops` 的 `(read ...)` / `(write ...)` 必须执行宿主官方
+`read` / `write` 工具，禁止用 `node:fs` 绕过，也不接受“不可用就降级”的行为。宿主
+`ExtensionAPI` / `ExtensionContext` 都没有公开 Runner 或 native 工具执行入口，唯一
+可观察到的公开方法是 `ExtensionRunner.invokeNativeTool`。
+
+**实现**：`src/host/native-runner.mjs`（由 `src/host/imports.mjs` 重新导出）
+
+- 懒加载 `@oh-my-pi/pi-coding-agent/extensibility/extensions/runner`，包装
+  `ExtensionRunner.prototype.createContext`；原方法先执行，返回的 ctx 记入
+  `WeakMap<ctx, runner>`，同时保存最近一次 runner。
+- `src/clj-main.mjs#activate` 在注册任何工具前 `await installRunnerCapture()`；
+  捕获失败只记录 `unavailable`，沙箱返回 `HOST_API_MISMATCH`，绝不回退 fs。
+- `detectHostTools` 用 `runner.hasNativeTool("read"/"write")`；`write` 仍在
+  `.herd/locks/clj-core.cross-process.lock` 内执行 `__expectedStamp` 复核后调用
+  `invokeNativeTool("write", params, {})`。
+- 深路径导入只在 `native-runner.mjs`；`imports.mjs` 不因此 eager 导入宿主内部的
+  runner 依赖图，sandbox-only 测试不加载宿主包。
+
+**实测宿主**（2026-11-13）：
+
+- `command -v omp` → `/home/kunweiz/.local/bin/omp`（287 MB 编译 ELF），
+  `omp --version` → `omp/18.20.0`；仓库 `node_modules/@oh-my-pi/pi-coding-agent`
+  是 18.15.0 源码副本，仅 `cherry-cljs` 为声明依赖。
+- 编译宿主把扩展里的字面量动态 import 重写为
+  `omp-legacy-pi-bundled:@oh-my-pi/pi-coding-agent/extensibility/extensions/runner`
+  （单一模块注册表），因此补丁命中的正是宿主自己使用的 `ExtensionRunner` 类。
+- 探针扩展在 `session_start` 中观察到 `captured=true`、`hasRead=true`、
+  `hasWrite=true`；`invokeNativeTool("read", ...)` 读回 `package.json` 855 字节，
+  `invokeNativeTool("write", ...)` 返回 `Successfully wrote 15 bytes ...`。
+- 真实 `clj_devops`（`omp -p -e ./src/clj-main.mjs`）：
+  `(read {:path "package.json"})` 回执含 `:host true` 与完整文件内容；
+  `(write {:path ".herd/tmp-probe" :content "ok"})` 回执含 `:host true` 与宿主
+  native write 成功文案，探针文件内容为 `ok`，完成后 `.herd/locks/` 为空。
+  探针文件已删除。
+- 本机不再全局导出 `BUN_OPTIONS`（`~/.zshrc` 注入已移除）；`omp` 的 zstd preload
+  仅保留在 `~/.bashrc` 的 `alias omp=...` 中。测试需 `env -u BUN_OPTIONS`。
+
+**测试**：`env -u BUN_OPTIONS bun test tests/clj-core.test.mjs
+tests/sandbox-tools.test.mjs tests/clj-workers.test.mjs tests/ariadne.test.mjs`
+→ 82 pass / 0 fail / 405 expect。新增 `delegates read to the captured native
+runner` 与 `fails closed when no native runner was captured`。
+
+**已知限制**：
+
+- `callerContext` 不可得，native `write` 的 `toolCall` 元数据（LSP 批量刷新）不完整；
+  需要宿主导出的 toolCall 才能补齐。
+- worker 的 host-tool 桥没有把 `AbortSignal` 传进 `invokeNativeTool`；取消只终止
+  沙箱程序，不会中止已进入 native 工具的那一步。
+- `--no-tools` / 用户禁用 read/write 时 `hasNativeTool` 为 false，沙箱 fail-closed。
+- 全局“最近 runner”只作为 ctx 未命中时的最后兜底；正常路径按 ctx 精确命中，避免
+  多会话串用。
+
+**回滚**：删除 `activate` 中的 `installRunnerCapture()` 调用与 `native-runner.mjs`，
+`detectHostTools` 自然回到 false；禁止用 fs 作为回退路径。
+
 ## 2. 真实宿主
 
 ### 2.1 版本与加载路径
@@ -759,6 +816,11 @@ done
 
 ## 9. 变更记录
 
+- 2026-11-13：记录受控 `ExtensionRunner` 捕获（非验收）：新增
+  `src/host/native-runner.mjs`，包装 `createContext` 取得 live runner，`clj_devops`
+  的 read/write 改走 `invokeNativeTool`；删除 read/write shadow 工具与
+  `hostToolOf`。真实 omp 18.20.0 已验证 `(read ...)`、`(write ...)` 回执
+  `:host true` 且探针落盘；窄测 82 pass/0 fail。详见 §1.1。
 - 2026-11-12：记录 call argv-only（非验收）：`(call {:argv ["<program>" "<arg>" ...] :cwd ...})` 直接 spawn，不经系统 shell；`argc = (count argv)`，回执含 `:argv`/`:argc`，旧 `:command` 与非数组 argv 被拒。`vfs.defaultRunCommand` 删除 shell 分支，`runCall` 改收 argv；bwrap 适配器按 argv 构造目标，setup 仍保留内部 shell 启动。测试 `tests/clj-core.test.mjs` 增加 argv 直执行（`a|b` 不被解释）与旧 command 拒绝，17 pass/0 fail；sandbox-tools/vfs 164 pass/0 fail。未跑真实宿主审计路径；不是验收。
 - 2026-11-12：记录 final clj dogfood（非验收）：用户授权删除 VFS 路径权限、盲写限制与 AGENTS.md 特殊保护；工具改为裸 REPL（`code` 任意顶层表达式，`program_name` 可选，内部自动生成 `repl-<id>`）；期限固定 `1000ms + intent 字节数 × 50ms`，不再按角色加码。`src/clj-sandbox/vfs.mjs` 删除 readRoots/allowWritePaths/控制路径/plans/AGENTS 保护/根包含检查，`tools.mjs` 删除 auditor 白名单与 call cwd/log 预检，`clj-main.mjs` 同步 REPL 与期限。`bun test tests/clj-core.test.mjs` 15 pass/0 fail；`tests/vfs*.test.mjs`、`tests/sandbox-tools.test.mjs`、`tests/main-consumer.test.mjs` 219 pass/0 fail；`tests/util-errors.test.mjs` 与 dev-acceptance smoke 通过。嵌套 omp 加载最终源码执行裸 REPL：无 program_name、写 `/tmp` 根外文件并覆盖 `AGENTS.md`，返回 `:state :completed`，`:written` 为 `/tmp/clj-nested-outside.txt` 与 `/tmp/clj-repl-nested/AGENTS.md`；程序名内部生成为 `repl-b7c3eb6c-9c6`。当前会话仍加载改动前模块，需要重启后生效；这不是验收。
 - 2026-11-12：记录 clj-only 自 dogfood 修复（非验收）：真实会话先暴露 `clj_devops` 短 intent 在 `bun test` 启动阶段被 `:deadline` 挂起；继续用 `env -u BUN_OPTIONS` 复跑又暴露 `BUN_OPTIONS=--preload /home/kunweiz/.config/omp/zstd-preload.js` 被继承，导致 `bun test` 重复命令行并最终 E2BIG。源码已修：`vfs.defaultRunCommand` 用 `callEnvironment()` 过滤 `BUN_OPTIONS`/`NODE_OPTIONS`/`BASH_ENV`/`ENV`/`PROMPT_COMMAND`；`clj-main.deadlineFor` 给 plan/review/worker 5 秒、devops 60 秒下限；虚拟 `stat` 补齐 `is-file`/`is-dir`/`is-symlink`，`written` 去重；health 汇总不再覆盖工具注册失败/Cherry 缺失；只读角色不再创建 `.herd` 目录。`bun test tests/clj-core.test.mjs` 13 pass/0 fail、Biome clean。随后在独立 /tmp 工作区启动嵌套 omp 加载最终源码，短 intent 的 clj_devops 返回 :state :completed 与 :stdout "nested-ok"，证明期限下限与环境清洗在最终代码生效。当前宿主会话仍加载修复前模块，需要重启后新代码才生效；这不是验收。

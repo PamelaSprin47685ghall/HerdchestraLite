@@ -2,6 +2,23 @@
 
 本文件记录本包的用户可见变化。
 
+## [Dogfood] — 2026-11-13 — native read/write 委托
+
+### Changed
+
+- `clj_devops` 的 `(read ...)` / `(write ...)` 不再注册同名 shadow 工具，也不再通过 `ctx.invokeTool` 或反射查找宿主工具；改为捕获 live `ExtensionRunner` 并调用其公开 `invokeNativeTool`。`write` 仍在跨进程锁内复核 `__expectedStamp` 后执行宿主官方 `write`。
+- 新增 `src/host/native-runner.mjs`：懒加载宿主 Runner 模块，包装 `ExtensionRunner.prototype.createContext` 保存 runner；`host/imports.mjs` 重新导出。该文件是本项目唯一的宿主原型补丁，已记入 `HACK.md` 与根 `AGENTS.md` §1.1。
+
+### Fixed
+
+- 宿主不暴露 Runner 时，`read`/`write` 以 `HOST_API_MISMATCH` fail-closed，不再存在 `node:fs` 回退或“看起来可用”的 shadow 工具。
+- 同时修复 `createAriadneStore()` 未返回 `resolvePendingLeap`、回放历史时 goal-only 锚点被拒、以及 time_leap 目标/预算恢复的窄测试覆盖。
+
+### Verified（不是验收）
+
+- 真实 `omp 18.20.0`：`(read {:path "package.json"})` 与 `(write {:path ".herd/tmp-probe" :content "ok"})` 回执均含 `:host true`，探针落盘且锁目录在完成后为空。
+- `env -u BUN_OPTIONS bun test tests/clj-core.test.mjs tests/sandbox-tools.test.mjs tests/clj-workers.test.mjs tests/ariadne.test.mjs`：82 pass / 0 fail。
+
 ## [Dogfood] — 2026-11-12 — clj 执行器最小面
 
 > 当前清单只启用 ClojureScript 沙箱执行器。本节记录这一刀的真实变化；下方 `[Unreleased]` 的完整编排实现仍在源码中，但未装配，不能当作可用功能。

@@ -18,16 +18,16 @@ Orchestration for agents that don't like being orchestrated.
 
 一个智能体可以写程序。一百个智能体可以同时写程序。一万个智能体一起写程序时，问题不再是“谁最聪明”，而是：谁在读旧接口，谁在覆盖别人的修改，谁在等一个永远不会到来的批准，谁在把已经完成的工作重新做一遍，谁在模型断流时把账单烧穿，谁在验收时只跑了一遍单元测试就宣布通过。
 
-**Herdchestra Lite** 是万象术面向 `omp`（oh-my-pi）终端编程宿主打造的**零 JVM、零宿主源码修改、零原型猴子补丁**的插件版。它不启动外部常驻服务，不引入重型运行时，不把宿主改造成另一个产品；它只使用 `omp` 公开的扩展钩子、子代理执行器、TUI 组件与本地原子文件系统原语，在单机 CLI 内兑现万象术的五阶段打磨、中心化换任、多 Worktree 切片并行、受保护文件提交、`take_or_die` 唯一持令生命周期、并发实操验收与出站上下文裁剪。
+**Herdchestra Lite** 是万象术面向 `omp`（oh-my-pi）终端编程宿主打造的**零 JVM、零宿主源码修改、仅一处受控原型捕获补丁**的插件版。该例外只包装 `ExtensionRunner.prototype.createContext` 以取得 live Runner，让沙箱 `read` / `write` 调用宿主官方 native 工具（见 §1.1、`HACK.md`）；除它之外不猴补丁任何宿主对象。它不启动外部常驻服务，不引入重型运行时，不把宿主改造成另一个产品；它只使用 `omp` 公开的扩展钩子、子代理执行器、TUI 组件与本地原子文件系统原语，在单机 CLI 内兑现万象术的五阶段打磨、中心化换任、多 Worktree 切片并行、受保护文件提交、`take_or_die` 唯一持令生命周期、并发实操验收与出站上下文裁剪。
 
 它与独立标准版共享同一套协作灵魂，但在宿主约束下做出不同的物理选择：
 
 - 标准版拥有 Clojure/JVM 单机单例、Datalevin 当前态库、内存 STM、Fulcro Web 工作台与完整 Clojure 沙箱；Lite 版只有 `omp` 进程内的 `.mjs`、一个无 JVM 的 ClojureScript 核心库 `cherry-cljs`、文件锁、原子写、EDN + UFSS 与 `@oh-my-pi/pi-tui`。
 - 标准版是“自己拥有一台机器”；Lite 版是“寄生在一个已经很好的终端宿主里，只补上它没有的那层协作秩序”。
-- 两者在**智能体语言与协作语义**上同构：同样的五阶段、同样的 EDN + UFSS、同样的 REPL 沙箱、同样的批内 VFS 干跑、同样的 `where` / `park` / `unpark` 续体、同样的看板与令牌、同样的双视角支付意愿验收。
+- 两者在**智能体语言与协作语义**上同构：同样的五阶段、同样的 EDN + UFSS、同样的 REPL 沙箱、同样的逐步落盘与 `stamp` 复核、同样的 `where` / `park` / `unpark` 续体、同样的看板与令牌、同样的双视角支付意愿验收。
 - 差异只应出现在宿主底座、存储、界面与部署形态；**不应出现在“什么叫完成”“谁能写”“何时换人”“什么算验收证据”这些语义上**。
 
-Lite 版不把模型当傻子。它不把每个动作都拆成一条“爷爷辈安全规则”，也不靠堆叠提示词来制造勤奋。它只把真正会致命的事情变成物理门禁：结构化数据必须走工具参数，阶段文档必须由门禁工具落盘，源码写入必须经过批内预演与写入口，持令者必须无责即死，验收必须由互不共享偏见的审计员在真实界面上动手。其余空间留给模型自己判断、自己拆分、自己推进。
+Lite 版不把模型当傻子。它不把每个动作都拆成一条“爷爷辈安全规则”，也不靠堆叠提示词来制造勤奋。它只把真正会致命的事情变成物理门禁：结构化数据必须走工具参数，阶段文档必须由门禁工具落盘，源码写入必须经过写入口与 `stamp` 复核，持令者必须无责即死，验收必须由互不共享偏见的审计员在真实界面上动手。其余空间留给模型自己判断、自己拆分、自己推进。
 
 如果一段话假设系统一直如此仍然成立、仍然有用，它属于本文件。若它只有和过去对比才成立，它属于 `HISTORY.md`（若创建）或第 10.4 节的裁决索引。当前规格不以“不再是 XXX”定义新行为。
 
@@ -45,7 +45,7 @@ Lite 版不把模型当傻子。它不把每个动作都拆成一条“爷爷辈
 | 多个 Worktree 怎么并行、怎么合入 | §2.5 |
 | 多个审计员怎么同时跑、分数怎么汇总 | §2.6 |
 | 看板、拆分、父项、令牌、休眠 | §3 |
-| REPL、VFS、`stamp`、`where`/`park` | §4 |
+| REPL、`where`/`park` | §4 |
 | 缓存前缀、EDN + UFSS | §5 |
 | 终端面板、斜杠命令、Esc、重启恢复 | §6 |
 | `.herd/` 里到底存了什么、锁怎么排 | §7 |
@@ -71,10 +71,9 @@ Lite 版不把模型当傻子。它不把每个动作都拆成一条“爷爷辈
 | **个体（Actor）** | 一个运行中的子代理身份。`agent_id` 永不复用；`slot_id` 可复用。 |
 | **持令者（Holder）** | 通过 `board_take_or_die` 获胜的唯一 `:needs-token` 责任承担者；同一 worktree 至多一名。 |
 | **写入口（$W$）** | 一个 Slice 的排他写锁。普通受保护提交与黑盒 Shell 共用它；读取不取它。 |
-| **受保护提交** | 在批内内存 VFS 中预演、在 $W$ 内复核 `stamp` 与结构条件、再原子落盘的写入路径。 |
+| **受保护提交** | 在 $W$ 互斥下逐步直接落盘的写入路径；不预演、不复核内容凭据、失败不回滚。 |
 | **凭据（`stamp`）** | 文件读取时采集的 `{mtime-sec, mtime-nsec, size}`。只比较这三个值，不比较 `atime`，不使用内容哈希。 |
-| **批内 VFS** | REPL 运行期私有的内存文件视图；`write`/`mkdir`/`rm`/`mv` 先作用于它，程序异常或 `park` 时真实磁盘零修改。 |
-| **续体（Continuation）** | 程序在 `park` / 歧义 `where` / `ask` / 期限到期时悬停在内存中的未决 Promise 及其全部词法局部变量与未提交 VFS 视图。 |
+| **续体（Continuation）** | 程序在 `park` / 歧义 `where` / `ask` / 期限到期时悬停在内存中的未决 Promise 及其全部词法局部变量。 |
 | **Ariadne's Thread（阿里阿德涅之线）** | 每次 `clj_*` 调用携带的 `ariadne_budget` 与 `ariadne_goal` 续体注解；以零成本锚点、回合预算软提醒与 `time_leap` 剪枝治理上下文。 |
 | **Time Leap（时间跃迁）** | 把当前时间线剪回一个干净的 `clj_*` 锚点，携带完整经验并留下只读 Beacon。 |
 | **Beacon（灯塔）** | 被剪枝桠的只读记忆摘要；只能通过 `ask_beacon` 查询，绝不复活。 |
@@ -97,10 +96,10 @@ Lite 版不把模型当傻子。它不把每个动作都拆成一条“爷爷辈
 
 | 维度 | Herdchestra Lite **包含** | Herdchestra Lite **不包含**（属独立标准版或其他产品） |
 |---|---|---|
-| **宿主与依赖** | 挂载于 `omp` 进程的纯 `.mjs` 插件；无构建步骤；运行时第三方依赖只有 `cherry-cljs`；零宿主源码修改、零 `AgentSession` / `TUI` 原型猴子补丁；多入口故障隔离。 | Clojure/JVM 守护进程、跨终端单机单例 Server、Pixi/MSYS2 环境托管器、外部数据库进程。关闭 `omp` 即停止。 |
+| **宿主与依赖** | 挂载于 `omp` 进程的纯 `.mjs` 插件；无构建步骤；运行时第三方依赖只有 `cherry-cljs`；零宿主源码修改、零 `AgentSession` / `TUI` 猴子补丁；唯一例外是 `ExtensionRunner.prototype.createContext` 的受控捕获（§1.1）；多入口故障隔离。 | Clojure/JVM 守护进程、跨终端单机单例 Server、Pixi/MSYS2 环境托管器、外部数据库进程。关闭 `omp` 即停止。 |
 | **阶段协议** | S1 头脑风暴 → S2 手工测试方法论 → S3 目标开发指南 → S4 开发者协调手册 → S5 蜂群自治开发与并发实操验收；`plans/<slug>/s1..s5-*.md`、`.herd/missions/<slug>/s2-cases.edn` 与 `plans/<slug>/s4-coordination.pml`；各交付物按提示词约定 frozen，不计算 SHA-256；只有 S1 门禁手工批准（真实产品运行由人类操作员明确批准；隔离测试见 §2.3），S5 初任空账可一次性询问人类，其余自动。 | 7×24 小时后台冥想的 `Standing Sphinx`（`Meditator`）、跨仓库长期值守的 `Steward` Docket、常驻仓库守望。 |
 | **协作与并发** | 单工作区栈：`.herd/` 文件锁看板（拆分优先、父项保留实质）、`stamp` + $W$、`board_take_or_die` 唯一持令者、无责即死与无记忆转世；多 Worktree `fork_slices`/`join_slice` 保留为后续完整装配，暂不进入 dogfood 面。 | Clojure 内存 STM、Datalevin（LMDB）数据库、跨机器分布式执行。Lite 用 `.herd/` 下的 EDN 当前态 + 追加式 `events.jsonl` + 字节偏移检查点。 |
-| **工具与续体** | 角色裁剪的 `clj_plan` / `clj_devops` / `clj_review` / `clj_worker` / `clj_auditor` 异步沙箱；EDN + UFSS 读写；批内内存 VFS 干跑；`where` / `park` / `unpark` 表达式级续体；`call` 黑盒 Shell。 | JVM 字节码编译、Java FFM 原生 C ABI 调用、Clojure/JVM REPL 求值器。 |
+| **工具与续体** | 角色裁剪的 `clj_plan` / `clj_devops` / `clj_review` / `clj_worker` / `clj_auditor` 异步沙箱；EDN + UFSS 读写；逐步落盘；`where` / `park` / `unpark` 表达式级续体；`call` 黑盒 Shell。 | JVM 字节码编译、Java FFM 原生 C ABI 调用、Clojure/JVM REPL 求值器。 |
 | **上下文与界面** | Ariadne 线程/Beacon 注入与出站副本裁剪；双块锚点缓存保留与显式断点前移；Nudge 空转退避；上游断流恢复；`@oh-my-pi/pi-tui` 编辑器上方双态看板；Agent Hub 实名可见子会话。 | Fulcro + Framework7 Web 工作台、Sente/AG-UI 多端同控、受管图形浏览器、Mini-Apps、语音、定时任务、WebDAV/S3 备份中心。 |
 | **终局验收** | K 个 CASE 同时启动 K 名独立可见 `Manual Auditor`；每名只做一个 CASE；框架确定性汇总双视角分数并写出 `s5-report.md`。 | 单一审计员串行跑完全部 CASE；自动化测试、CI、构建或覆盖率作为放行证据。 |
 
@@ -116,7 +115,7 @@ Lite 版不把模型当傻子。它不把每个动作都拆成一条“爷爷辈
 
 默认模式用黑名单减法移除宿主 `read`/`write`/`edit`/`apply_patch`/`ast_edit`/`ast_grep`/`bash`/`exec`/`eval`/`glob`/`grep`/`find`，保留其他工具的原有激活状态；它不是 §1.2 要求的白名单收窄。完整版语义（§2-§6 与 §8 的其余部分）仍然有效，但只有接回对应模块后才生效，并且不得把 `clj_plan` 等角色工具重新暴露进默认模式。
 
-系统提示词由 `src/host/hack-system-prompt.mjs` 托管注入：`before_agent_start` 在宿主提示词之后维护一个受管区，重复触发原位替换、不堆叠；支持 string 与 content-block 数组；handler 抛错时 fail-open 返回宿主原提示词并记 health。注入内容是 `COMMON_RULES_TEXT`（`# Repo-aware Rules` 标题 + `src/prompts/common.mjs` 的 `COMMON_CORE_RULES` 11 段 + `UFSS_PROMPT_NOTE`）。默认模式自身就是 dogfood 面，不另设独立提示词层；工具与 VFS 的语义由工具 description 与出站尾注承载。语言纪律仍只由出站 `context` 尾注注入一次；S1-S5 简报、旧 Scope 字段与角色提示词不注入。
+系统提示词由 `src/host/hack-system-prompt.mjs` 托管注入：`before_agent_start` 在宿主提示词之后维护一个受管区，重复触发原位替换、不堆叠；支持 string 与 content-block 数组；handler 抛错时 fail-open 返回宿主原提示词并记 health。注入内容是 `COMMON_RULES_TEXT`（`# Repo-aware Rules` 标题 + `src/prompts/common.mjs` 的 `COMMON_CORE_RULES` 11 段 + `UFSS_PROMPT_NOTE`）。默认模式自身就是 dogfood 面，不另设独立提示词层；工具语义由工具 description 与出站尾注承载。语言纪律仍只由出站 `context` 尾注注入一次；S1-S5 简报、旧 Scope 字段与角色提示词不注入。
 
 此前冒烟记录过四个角色沙箱工具与旧跳转工具名。那不是默认模式的契约。默认模式的可见面以本节为准。
 
@@ -134,8 +133,8 @@ Lite 版把“复杂任务”拆成三个时间尺度来处理：
 
 四条顶层边界：
 
-1. **宿主寄生，不改宿主**：Lite 只使用 `omp` 公开的扩展点。它不修改宿主源码，不猴补丁 `AgentSession` / `TUI` / `getContextUsage`，不劫持宿主的 `context_compact` 历史，不注入主题兼容垫片。宿主版本漂移集中在一个 `host/imports.mjs` 里处理。
-2. **工具即协议，聊天不是数据通道**：任何结构化数据与长文档都通过专用工具参数提交；任何工作区写入都通过沙箱 VFS 与受保护提交。禁止从模型自由正文中用正则抠取业务数据、状态标记或审批信号。
+1. **宿主寄生，不改宿主**：Lite 只使用 `omp` 公开的扩展点。它不修改宿主源码，不猴补丁 `AgentSession` / `TUI` / `getContextUsage`，不劫持宿主的 `context_compact` 历史，不注入主题兼容垫片。**唯一受控例外**：`src/host/native-runner.mjs` 懒加载 `@oh-my-pi/pi-coding-agent/extensibility/extensions/runner`，包装 `ExtensionRunner.prototype.createContext` 以保存 live Runner，使 `clj_devops` 的 `read` / `write` 能调用公开的 `invokeNativeTool`；捕获失败即 `HOST_API_MISMATCH`，禁止回退 `node:fs`。该补丁在 `activate` 注册工具前安装，实测、限制与回滚记入 `HACK.md`。宿主版本漂移集中在 `host/imports.mjs` 与 `host/native-runner.mjs` 两处边界模块。
+2. **工具即协议，聊天不是数据通道**：任何结构化数据与长文档都通过专用工具参数提交；任何工作区写入都通过沙箱写入口。禁止从模型自由正文中用正则抠取业务数据、状态标记或审批信号。
 3. **宏观中心化、微观去中心化**：S5 每个 Slice 的评估窗口由单一主模型 `Reviewer` 开启；一旦立下非空台账，立即退场，交给 `@task` 蜂群围绕看板自治施工；只有看板归零且无在途动作时，才原子换任。
 4. **当前态优先，不重放历史**：`.herd/` 只保存当前权威控制状态、内容引用与未结责任；`events.jsonl` 是审计与恢复辅助，不是事件溯源的主路径。恢复只读最后一次已提交状态，不做全量重放，不扫描所有历史来推断现在。
 
@@ -149,6 +148,7 @@ Lite 的实现只能依赖以下宿主语义。具体类型签名以 `omp` 当�
 | 扩展工厂与钩子 | `pi.on("before_agent_start" \| "context" \| "before_provider_request" \| "tool_call" \| "tool_execution_end" \| "agent_end" \| "session_start", ...)`；`pi.registerTool`、`pi.registerCommand`、`pi.setActiveTools`、`pi.typebox`。`before_agent_start` 返回 `{systemPrompt}`；`context` 返回 `{messages}`；`before_provider_request` 返回替换后的 payload；`tool_call` 返回 `{block, reason}`，18.x 另支持 `{input}` 改写。 | 钩子缺失时禁用对应功能，不抛到宿主主循环；16.x 若不支持 `{input}`，不得依赖入参改写，工具执行器必须忽略未知字段。 |
 | 子代理执行器 | `runSubprocess({ cwd, agent, task, index, id, signal, sessionFile, artifactsDir, eventBus, outputSchema, modelOverride, modelRegistry, settings, ... })`。`agent` 必须是完整 `AgentDefinition` 对象，不是名字；`artifactsDir` 是子会话 transcript 落盘的唯一开关；`sessionFile` 是父会话链接；`eventBus`/`subagentEventBus` 提供 Agent Hub 实时 progress；`persistArtifacts` 当前不要依赖。 | 子代理启动失败必须留下槽位与责任，不得把任务悄悄丢失；没有 `artifactsDir` 时回执必须明示“仅内存可见”；重启补位。 |
 | 工具面收敛 | 使命激活时只保留当前角色工具与 Ariadne/Beacon 辅助；封禁宿主裸 `read` / `write` / `edit` / `bash` 的绕过路径。 | 无法收敛时必须在系统提示词与门禁层双重拒绝，不能只靠模型自觉。 |
+| Native 工具委托 | 通过受控捕获的 live `ExtensionRunner` 调用 `hasNativeTool(name)` 与 `invokeNativeTool(name, params, options)`；`read` / `write` 必须命中宿主官方工具，`write` 在 `.herd/locks/clj-core.cross-process.lock` 内完成 `__expectedStamp` 复核。Runner 模块用字面量动态 import 懒加载，编译宿主会把它重写到 `omp-legacy-pi-bundled:` 单例注册表。 | 捕获或 native 工具不可用时返回 `HOST_API_MISMATCH` 并 fail-closed；不得以 `node:fs` 或同名 shadow 工具降级。 |
 | TUI | `ctx.ui.setWidget(key, content, { placement: "aboveEditor" })` 挂载组件；字符串数组形式最多 10 行，组件工厂形式由 `render(width)` 返回的行数决定高度；全局键盘用 `pi.registerShortcut` 或 `ctx.ui.onTerminalInput`（widget 不自动获得焦点）。 | 宿主不提供组件挂载时，`/herd-status` 仍输出同源文本状态；核心协议不依赖 TUI。 |
 | 模型选择 | 主模型用于 `Plan` / `Reviewer` / `Manual Auditor` / `Blocker Oracle` / `Coordinator`；用户配置的 `@task` 模型用于 `Plan DevOps` / `Swarm Worker` / `Swarm Holder`。 | 模型不可用时明确报错，不静默换模型；`/herd-settings` 可改。 |
 | 子代理加载扩展 | 子代理会话同样加载插件扩展列表（`omp` 的既有行为）；因此主从会话都能看见沙箱与门禁工具。 | 若宿主改变该行为，子代理启动时必须显式注入工具面；不得假设子代理天然拥有插件工具。 |
@@ -173,7 +173,7 @@ Lite 的实现只能依赖以下宿主语义。具体类型签名以 `omp` 当�
 4. **全 CASE 并发独立实操审计，框架确定性汇总（L04）。** S5 收尾时，若 `.herd/missions/<slug>/s2-cases.edn` 定义了 $K$ 个 CASE，框架同时启动 $K$ 名独立的可见 `Manual Auditor`（每名只负责 1 个 CASE，各自拥有独立的 `tmux` 会话名、`/tmp` 破坏副本与 `plans/<slug>/evidence/<case_id>/` 目录，对主工作区严格只读）。CASE 数据集是 CASE 成员、阈值、路径与评分细则的唯一定义来源；每名审计员通过 `submit_case_audit` 提交双视角得分与报告；框架收集全部 $K$ 份结果，计算 `min(user_score, developer_score)`，汇总写出 `plans/<slug>/s5-report.md`，裁决结案或打回返工。任何自动化测试、CI、构建或覆盖率都不构成验收证据。见 §2.6。
 5. **宏观中心化换任与微观去中心化蜂群严格咬合（L05）。** S5 在单工作区内以中心化评估窗口开启：单一主模型 `Reviewer` 用只读 `clj_review` 核验现场并调用 `review`；若 `findings` 非空，`Reviewer` 退场，系统把每条台账实例化为看板根任务并 `wake-all` 唤醒 `@task` 蜂群；仅当全部根任务 `:done`、未结任务集合为空、无在途动作且 `Holder` 已无责退休时，原子触发接力屏障：退休本任、写入上下文屏障、启动无前任对话包袱的新任 `Reviewer`。没有 Slice 队列、worktree 或 join 循环。见 §2.5。
 6. **父项始终保留实质，严禁子项完成自动关闭父项（L06）。** 看板中拆分优先于原子认领；父任务 `board_split` 出子项后进入 `:waiting`，子项全部 `:done` 仅解除父项等待使其恢复 `:ready`，绝不自动折算为父项 `:done`，且严禁在同一回合内顺手关闭刚恢复的父项。父项必须凭独立的合龙与集成结果显式 `board_finish`。见 §3.4。
-7. **工作区写入一律经 ClojureScript 沙箱 VFS 干跑 + 纳秒 `stamp` + 写入口 $W$（L07）。** `cat` / `stat` 不加锁，自动采集精确凭据 `stamp = {mtime-sec, mtime-nsec, size}`（忽略 `atime`）。REPL 内的 `write` / `mkdir` / `rm` / `mv` 先按执行顺序作用于批内内存 VFS；程序正常返回（或 `call` 前排空）时申请该 tenure 的写锁 $W$，在锁内复核全部 `read-set`（含只读依赖文件）与结构条件，固定 `:applying` 资格后一次性原子落盘。任何可拒绝冲突必须在触碰真实磁盘前拒绝；正常路径零回滚。默认 Worker 的 `read`/`write` 直接代理宿主工具，不进入 VFS/`read-set`/$W$；`cat`/`stat` 与无 host 端口时的 VFS 回退仍遵守本节。见 §4.3。
+7. **工作区写入一律经写入口 $W$ 直通落盘（L07）。** `cat` / `stat` 只返回内容与观察值，不加锁、不记录 `read-set`。REPL 内的 `write` / `mkdir` / `rm` / `mv` 按执行顺序逐步直接作用于真实磁盘；需要互斥时在该步前申请 $W$。失败保留此前已写部分，这就是正确现场：不做预演、不复核内容凭据、不回滚。`read` / `write` 必须代理宿主内建；宿主入口不可用即 fail-closed。见 §4.3。
 8. **抢令牌（`board_take_or_die`）不可逆，持令者独占 `call` 且无责即死，新生无记忆（L08）。** 普通个体在 `clj_worker` 中调用 `(call ...)` 一律拒收 `:TOKEN_REQUIRED`。个体仅在耗尽有价值的受保护工作且存在未结 `:needs-token` 任务时调用 `board_take_or_die`：赢者成为唯一 `Holder`，动态承担全看板 `:needs-token` 责任（仅在单次 `call` 运行期或文件提交期占 $W$，等待期释放 $W$）；输者在同一看板锁事务内公开移交剩余责任与认领并逻辑死亡；`Holder` 在完整责任集合 $R(a) = \emptyset$ 时同事务释放令牌并逻辑死亡。死亡槽位拉起全新 `agent_id`，绝不继承前世上下文。见 §3.5。
 9. **规划期源码只读锁与模型归属铁律（L09）。** S1–S4 的 `Plan` 除通过 `review` 空账 + `attach_*` 交出阶段交付物外，无任何仓库文件写入能力；调查仓库事实只能调用同步工具 `devops`，复用本任期专属 `Plan DevOps`；它是带 `call` 特权的 Worker，不是只读探针。`Plan`、`Reviewer`、`Manual Auditor`、`Blocker Oracle`、`Coordinator` 使用主模型；`Plan DevOps`、`Swarm Worker`、`Swarm Holder` 使用用户配置的 `@task` 模型。一切子代理经 `runSubprocess` 持久化产物并在 Agent Hub 实名可见。见 §2.1、§4.2。
 10. **投影不改写：Time Leap++ 枝桠剪裁、Ariadne 预算治理与系统输出一律 EDN + UFSS（L10）。** 彻底废弃旧式 Scope/intent/retention 复杂注解。会话通过零成本的 Ariadne's Thread（`ariadne_budget` + `ariadne_goal`）约束每一次关键执行；当假设被证伪、回合预算告急或阶段完成时，必须通过 `time_leap` 主动剪切当前枝桠回退到过去的干净锚点，携带完整经验（`experience`，其中必须逐项列出当前仍在运行、阻塞或尚未收集的 subagent 名称与状态；没有则写 `none`）与只读记忆灯塔（`beacon_name` + `beacon_description`）重新起步，彻底解决长上下文污染问题。每次出站请求末尾注入简体中文思考与输出要求（附带未决 `:parked` 提醒）；框架向模型返回的一切工具回执、看板快照、挂起诊断与错误详情，一律渲染为支持 UFSS 的 EDN，严禁投喂带 `\"`、`\\`、`\n` 转义噪音的裸 JSON。见 §4.7 与 §5。
@@ -353,7 +353,7 @@ Lite 默认是常授权无人值守模式。整个 Mission 只有以下合法停
 
 ### 3.1 核心条款（A02-01 至 A02-24）
 
-编号沿用标准版的 Swarm 协议家族，便于两版共享验收语料；Lite 的实现载体是 `.herd/` 下的 EDN 看板、`wx` 文件锁与批内 VFS，不是 Clojure STM。
+编号沿用标准版的 Swarm 协议家族，便于两版共享验收语料；Lite 的实现载体是 `.herd/` 下的 EDN 看板、`wx` 文件锁与逐步落盘，不是 Clojure STM。
 
 1. **swarm 内真实工作区唯一（A02-01）**：每个 Slice 在自己的 worktree 上运行；该 Slice 内所有受保护文件工具与 `call` 会话操作同一个物理工作区。跨 Slice 通过主分支集成：主分支只 `--ff-only` 前进，各 Slice 在结果被 `join` 前反复 rebase 到最新 `base`；不采用个体私有分支合并作为主路径。
 2. **没有全局任务选择者（A02-02）**：控制内核不替个体挑选任务、不预分配令牌、不按“谁更强”分配工作。个体自己看板、自己判断拆分、自己认领。
@@ -368,11 +368,11 @@ Lite 默认是常授权无人值守模式。整个 Mission 只有以下合法停
 11. **抢令牌前先耗尽受保护工作（A02-11）**：普通个体确认当前已无有价值的读取、拆分、普通编辑或自身可推进责任，且令牌空闲、存在未结令牌任务时，才调用 `board_take_or_die`。不得为了“试试看”发起必败竞争，也不得在还有可做的普通工作时抢令牌。
 12. **抢令牌不可逆（A02-12）**：合法竞争只有两种结果——赢则成为 `Holder`；输则在同一看板锁事务内移交剩余普通责任与认领并逻辑死亡。绝无“抢失败退回继续当普通个体”的第三条路。活个体基于已观察状态发出的合法竞争一经受理，只有 `:attempt-won` 或 `:attempt-lost`，二者不可互转；条件变化、响应超时、新输入都不撤销其不可逆性。
 13. **持令者无责即死（A02-13）**：`Holder` 的完整未结责任集合 $R(a)$ 为空时，释放令牌、撤销身份与逻辑死亡在同一看板锁事务内发生。等待期不占 $W$；`Holder` 只在单次 `call` 运行期或文件提交期持有 $W$。
-14. **新生不继承前世上下文（A02-14）**：死亡后，运行时销毁旧会话并在该 `slot_id` 创建全新 `agent_id` 与空私有上下文；旧 `agent_id` 永不复用。新个体只从看板与磁盘现场接续，不继承前任对话、思考或未提交 VFS。
+14. **新生不继承前世上下文（A02-14）**：死亡后，运行时销毁旧会话并在该 `slot_id` 创建全新 `agent_id` 与空私有上下文；旧 `agent_id` 永不复用。新个体只从看板与磁盘现场接续，不继承前任对话或思考。
 15. **文件判据只采用 `mtime` 与 `size`（A02-15）**：受保护提交依据读取时记录的 `{mtime-sec, mtime-nsec, size}` 复核文件状态；`atime` 不参与冲突判断；不使用人为维护的文件版本表、内容哈希或全局文件代数增强该判据。结构条件检查仍存在，但不得包装成另一套内容历史。
 16. **读取不申请写锁（A02-16）**：`call` 与普通应用期间其他个体仍可读当前现场，可能观察到中间结果；只有后续提交依赖这些读取的修改或事实时才进入校验。读取能返回不等于它代表全工作区一致快照。
-17. **所有协议内实际写入共用 $W$（A02-17）**：普通受保护提交与 `call` 会话从同一写入口进入；不能以临时文件、格式化器、后台保存或日志更新等名义绕过。控制面自身的 `.herd/` 状态写入属于独立控制资源，避免把看板也锁死。
-18. **受保护提交先完成整批 dry-run（A02-18）**：最终核对、预演、应用资格固定与实际应用在同一次持有 $W$ 期间完成；实际应用直接实现预演结果，不重新做可拒绝判断，正常路径不设回滚分支。
+17. **进程内令牌 + 进程间粗锁（A02-17）**：`write`/`mkdir`/`rm`/`mv` 按目标路径向进程内单例 actor 申请 `path` 令牌，同路径排队、不同路径并行；`call` 申请 `global` 令牌，持有期间 `path` 令牌排队。实际落盘前短暂持有一把进程间粗锁；`call` 运行期持有该粗锁。不能以临时文件、格式化器、后台保存或日志更新等名义绕过。控制面自身的 `.herd/` 状态写入属于独立控制资源。
+18. **令牌下直通写入（A02-18）**：写入在进程内 `path` 令牌下逐步直接作用于真实磁盘，落盘前短暂持进程间粗锁；没有整批 dry-run、没有内容凭据复核、没有回滚。失败保留此前已写部分。
 19. **`call` 保持黑盒语义（A02-19）**：`call` 不承担受保护编辑的无错应用合同，可以阻塞、报错、留下部分成果或产生意外副作用；$W$ 只协调协议内写入时序，不证明命令正确；令牌持有期与 $W$ 持有期分开。
 20. **用户输入立即成为公共事件（A02-20）**：用户原始输入先进入看板并触发 `wake-all`，后续解释由个体完成；解释者不得用自己的摘要替换原文，也不能假装刚到的修正已撤销进行中的不可撤销动作。
 21. **全局有非阻塞工作时禁止主动休眠（A02-21）**：只要全看板仍存在任何非阻塞可推进工作（哪怕只能由 `Holder` 执行或已被他人认领准备中），任何个体调用 `board_park_slot` 一律拒收，并返回可观察工作摘要。
@@ -382,12 +382,12 @@ Lite 默认是常授权无人值守模式。整个 Mission 只有以下合法停
 
 **规范语言**：“必须”指维持协议身份的要求（例如有效抢令牌失败后必须死亡、父项不能因子项全部完成而自动完成）；“应当”指当前实现方案的默认做法；“可以”指不改变核心语义的实现选择。
 
-**一次典型协作**：用户提出“把新的配置加载方式接入服务，并兼容旧格式”。输入作为原始事件入板并唤醒全部个体。一个个体把解析实现与旧格式转换拆成子项，父项保留接入启动路径与统一错误行为，然后等待；另一个体可以继续细化转换问题，只做这次有效拆分也算贡献。个体认领已原子化的工作，读取内容与 `stamp`，准备修改后提交工具取得 $W$、核对依据、完成整批 dry-run，再直接应用。需要测试时把责任标为需要令牌，只在无有价值受保护工作可做时才考虑抢令牌。最后一个子项完成只让父项恢复可推进，父项随后仍要完成接入与集成验证。
+**一次典型协作**：用户提出“把新的配置加载方式接入服务，并兼容旧格式”。输入作为原始事件入板并唤醒全部个体。一个个体把解析实现与旧格式转换拆成子项，父项保留接入启动路径与统一错误行为，然后等待；另一个体可以继续细化转换问题，只做这次有效拆分也算贡献。个体认领已原子化的工作，读取内容与 `stamp`，准备修改后提交工具取得 $W$、核对依据、逐步复核并应用。需要测试时把责任标为需要令牌，只在无有价值受保护工作可做时才考虑抢令牌。最后一个子项完成只让父项恢复可推进，父项随后仍要完成接入与集成验证。
 
 **三种最基本的动作**：
 
 1. **改变共同理解**：澄清任务、拆出依赖、记录阻塞、补充接续材料、纠正判断。直接作用于看板，不需令牌，也不制造“管理另一个任务的管理任务”；价值来自减少真实不确定性，不是增加卡片数量。
-2. **受保护的文件修改**：只提出受支持的明确编辑请求；工具完成准备、合法性预演与原子提交。
+2. **受保护的文件修改**：只提出受支持的明确编辑请求；工具逐步复核并原子写入。
 3. **`call`**：可以运行未知程序，作为持写锁的黑盒会话管理；不要求可验证读写集合，也不要求 dry-run。
 
 **设计重点**：控制状态、文件现场与个体上下文是三种不同对象。控制状态需要精确的事务转换；文件现场使用轻量的系统元数据判据；个体上下文可以随死亡完全丢弃。强行合并三者会引入不必要的历史管理，或把个体记忆误当成公共事实。长时间推理与短时间状态提交分开：个体可以花很久理解模块、比较方案，进入共享状态时只提交已明确的内容和依据；依据改变则当前提交被拒、个体重新判断。不同判断在细粒度公共任务和具体结果上汇合，而不是靠不断增加中央规则消除。
@@ -460,7 +460,7 @@ $$
    - 核验调用者 `:alive`、任务 `:ready`、无冲突认领、普通归属匹配、令牌资格相符（`:needs-token` 任务仅当前 `Holder` 可认领执行）。
    - 返回唯一 `claim_id`；同一任务已有他人认领时，返回当前归属与状态，不自动指派“差不多”的任务。
 3. **完成 `board_finish`**：
-   - `dependency_paths` 是 `string[]` 工作区相对路径；它不是任务 ID 列表。若 `dependency_paths` 非空，或本次结论依赖本会话 `read-set` 中的文件事实（包括“空文件写集但在看板声明入口已存在”），先获取 $W$，复核这些路径及全部相关文件的 `stamp` 与结构条件；复核通过后进入 board lock 提交。`board_finish` **不自动 drain** 未提交的 VFS 修改；写入与完成严格服从程序书写顺序。
+   - `dependency_paths` 是 `string[]` 工作区相对路径；它不是任务 ID 列表。写入与完成严格服从程序书写顺序；`board_finish` 不重放已执行写入。
    - 将任务置 `:done`；检查所有直接等待它的父项：`wait_for` 中的任务 ID 对应任务已 `:done`，条件键对应显式条件已成立；若全部满足，**仅将父项从 `:waiting` 切回 `:ready`**，保留原 `owner_id`、`remaining_work` 与既有进展。
    - **防顺手关父项**：若父项在本事务中刚由子项完成而解除等待，下一次针对该父项的 `board_finish` 必须来自新的独立核验回合，并附带合龙/集成证据；同一回合内连带关闭刚恢复的父项一律拒收 `:PARENT_NOT_READY`。
    - 事务末尾按最终状态重算 $R(\text{holder})$ 与全局可推进集：若 $R(\text{holder}) = \emptyset$，同事务执行持令者退休；若全部根任务 `:done` 且无在途动作，且满足 §2.5.2 的全部 Quiescence 条件（无在途动作、无未结令牌责任、不持有 $W$、ff dry-run 通过），同事务触发接力屏障；任一条件不满足则保持当前任期，等待下一次提交或唤醒。
@@ -511,7 +511,7 @@ $$
 
 本规范严格区分两类“挂起”：
 
-1. **程序续体挂起**：`(park ...)`、歧义 `(where ...)`、S1 `ask_user` 或工具期限到期。它只暂停一个 REPL 程序的求值（内部命名程序承载续体），保留其内存局部变量与未提交 VFS；不占看板锁，不影响其他个体。
+1. **程序续体挂起**：`(park ...)`、歧义 `(where ...)`、S1 `ask_user` 或工具期限到期。它只暂停一个 REPL 程序的求值（内部命名程序承载续体），保留其内存局部变量；不占看板锁，不影响其他个体。
 2. **槽位休眠**：`board_park_slot`。它让一个蜂群个体在全局确实没有可推进工作时停止空转；必须与看板的可推进集合核对在同一事务内完成。
 
 **可推进集合**：全看板中所有未被阻塞的任务/动作，包括：
@@ -541,7 +541,7 @@ $$
    - 死亡身份不能提交新结果；
    - 父项解除等待不被误写成父项完成；
    - 普通写与 `call` 不同时越过 $W$；
-   - 最终预演与实际应用之间不释放 $W$；
+   - 写入期间不释放 $W$；
    - “检查为空”与“登记休眠”不分成两个无关动作而漏唤醒。
 
    这些来自看板锁、$W$ 与入口检查，不依赖模型记住并发细节。
@@ -572,8 +572,8 @@ $$
 
 1. 输入作为原始事件入板，形成父项 P（启动接入、新旧格式兼容、默认值行为），`wake-all`。
 2. A 看板后把 P 拆成三个子项：解析器、旧格式转换、启动接线；父项保留“统一错误行为与端到端集成验证”的 `remaining_work`，进入 `:waiting`。
-3. B 认领解析器子项；C 认领旧格式转换子项；A 认领启动接线子项。三者都先 `cat`/`stat` 读取相关文件，`read-set` 记录 `stamp`。
-4. B 准备修改两个文件；提交时取 $W$，复核 `read-set` 与结构条件，通过后原子落盘。C 同时读取，不取 $W$，看到的是 B 提交前或提交后的完整文件，不是半截内容；C 若依赖 B 刚改的文件，提交时 `stamp` 不匹配则收到 `:FILE_CONFLICT`，重读后再改。
+3. B 认领解析器子项；C 认领旧格式转换子项；A 认领启动接线子项。三者都先 `cat`/`stat` 读取相关文件。
+4. B 准备修改两个文件；写入时取 $W$，按顺序直接落盘。C 同时读取，不取 $W$，可能看到 B 写入前或写入后的内容。
 5. B 需要运行测试；该子项标 `:needs-token`。B 先完成所有可做的受保护修改与调查，确认无有价值普通工作后，调用 `board_take_or_die`，获胜成为 `Holder`。
 6. B 以 `Holder` 身份 `(call {:argv ["..."]})`；调用前 drain 自己的未提交修改；运行期持 $W$；测试失败，B 把输出写入 `.herd/artifacts/`，在 board 上把失败转为新的修复子项。
 7. A、C 继续普通工作；B 在等待测试/构建时释放 $W$，但不释放令牌；新增的 `:needs-token` 修复任务自动归 B。
@@ -613,9 +613,9 @@ fingerprint = sha256(normalize(goal) + "\n" + normalize(done_when) + "\n" + norm
 
 ---
 
-## 4 ClojureScript 沙箱、批内 VFS 与表达式级续体
+## 4 ClojureScript 沙箱与表达式级续体
 
-Lite 保留标准版的 REPL 程序化工具面（内部仍用命名程序承载续体）、EDN + UFSS 字面量、批内内存 VFS 干跑视图与 `where` / `park` / `unpark` 续体，但把求值器从 JVM Clojure 换成 **`cherry-cljs` + 异步 Promise-CPS**。这不是“降级成 JS 脚本”，而是把同一套不可变数据结构与纯函数库放进一个物理隔离的符号表里。
+Lite 保留标准版的 REPL 程序化工具面（内部仍用命名程序承载续体）、EDN + UFSS 字面量与 `where` / `park` / `unpark` 续体，但把求值器从 JVM Clojure 换成 **`cherry-cljs` + 异步 Promise-CPS**。这不是“降级成 JS 脚本”，而是把同一套不可变数据结构与纯函数库放进一个物理隔离的符号表里。
 
 ### 4.1 运行时与物理隔离
 
@@ -628,7 +628,7 @@ Lite 保留标准版的 REPL 程序化工具面（内部仍用命名程序承载
    - 当前角色的只读常量（如 `*program-name*`）。
 
    **不绑定**：`js/*`、`globalThis`、`process`、`Bun`、`require`、`import`、`eval`、`read-string`、`load-string`、`resolve`、`ns-*`、`set!`、`aget`/`aset`、`goog/*`、任何可以逃逸到宿主 I/O 或动态求值的符号。访问未绑定符号返回 `:CAPABILITY_DENIED`，不得回退到 JS 全局。
-4. **异步求值**：每个表达式节点按顺序 `await`；高阶序列函数内部也支持异步能力调用（`map` 对 Promise 逐个顺序求值，不并发写文件）。不允许 `future`/`promise` 并发写同一批 VFS；并行来自多个 worker，不来自同身并行通道。
+4. **异步求值**：每个表达式节点按顺序 `await`；高阶序列函数内部也支持异步能力调用（`map` 对 Promise 逐个顺序求值，不并发写文件）。不允许 `future`/`promise` 并发写同一工作区；并行来自多个 worker，不来自同身并行通道。
 5. **纯函数优先**：数据变换、字符串处理、集合操作使用 `cherry-cljs` 的不可变结构；不要用 JS 对象/数组绕过。`(re-pattern #"..."#)` 生成正则；`#"..."#` 是 UFSS 原始字符串，不是正则字面量。
 6. **无副作用逃逸**：沙箱只能通过能力函数触碰文件系统与 `call`；不能直接 `fetch`、不能读环境变量、不能访问 `Deno`/`Bun` 全局。能力函数的参数与返回值都是 EDN 可表示的数据。
 
@@ -647,15 +647,15 @@ wait({ otherwise_independent_work[, more_workers_without_hitting_mythical_man_mo
 
 | 沙箱函数 | 语义 | `clj_plan` | `clj_devops` | `clj_review` | `clj_worker`（Worker） | `clj_worker`（Holder） | `clj_auditor` |
 |---|---|:---:|:---:|:---:|:---:|:---:|:---:|
-| `(cat {:path ...})` | 读取 UTF-8 文本；采 `stamp` 入 `read-set`；逐字一致 | 有（任意可读文件） | 有 | 有 | 有 | 有 | 有（主工作区只读） |
-| `(read {:path ...})` | 代理宿主 `read`；只保证可读，不保证逐字一致；无 hostRead 端口时退回 VFS 读取 | 有 | 有 | 有 | 有 | 有 | 有 |
-| `(stat {:path ...})` | 返回 `{:exists :size :mtime-sec :mtime-nsec :is-dir}`；入 `read-set` 与结构检查 | - | 有 | 有 | 有 | 有 | 有 |
-| `(ls {:path ...})` | 非递归列目录；纯探查，不取 $W$、不进 `read-set`、不做结构检查 | - | 有 | 有 | 有 | 有 | 有 |
-| `(glob {...})` | 纯异步探查；需要可调用的 `:exec`/`:fn`；不取 $W$、不进 `read-set` | - | 有 | 有 | 有 | 有 | 有 |
-| `(write {:path ... :content ...})` | 默认 Worker 直接代理宿主 `write`；无 hostWrite 端口时退回批内 VFS 受保护提交 | -（文档走 `attach_*`） | 有 | - | 有 | 有 | 有（bwrap 隔离） |
-| `(mkdir {:path ...})` | 向批内 VFS 登记建目录 | - | 有 | - | 有 | 有 | 有（bwrap 隔离） |
-| `(rm {:path ...})` | 向批内 VFS 登记删除文件或空目录 | - | 有 | - | 有 | 有 | 有（bwrap 隔离） |
-| `(mv {:source ... :target ...})` | 向批内 VFS 登记移动路径 | - | 有 | - | 有 | 有 | 有（bwrap 隔离） |
+| `(cat {:path ...})` | 读取 UTF-8 文本；逐字一致 | 有（任意可读文件） | 有 | 有 | 有 | 有 | 有（主工作区只读） |
+| `(read {:path ...})` | 代理宿主 `read`；只保证可读，不保证逐字一致；宿主入口不可用即 fail-closed | 有 | 有 | 有 | 有 | 有 | 有 |
+| `(stat {:path ...})` | 返回 `{:exists :size :mtime-sec :mtime-nsec :is-dir}` | - | 有 | 有 | 有 | 有 | 有 |
+| `(ls {:path ...})` | 非递归列目录；纯探查，不取 $W$ | - | 有 | 有 | 有 | 有 | 有 |
+| `(glob {...})` | 纯异步探查；需要可调用的 `:exec`/`:fn`；不取 $W$ | - | 有 | 有 | 有 | 有 | 有 |
+| `(write {:path ... :content ...})` | 直接代理宿主 `write`；宿主入口不可用即 fail-closed | -（文档走 `attach_*`） | 有 | - | 有 | 有 | 有（bwrap 隔离） |
+| `(mkdir {:path ...})` | 直接作用于真实磁盘 | - | 有 | - | 有 | 有 | 有（bwrap 隔离） |
+| `(rm {:path ...})` | 直接作用于真实磁盘 | - | 有 | - | 有 | 有 | 有（bwrap 隔离） |
+| `(mv {:source ... :target ...})` | 直接作用于真实磁盘 | - | 有 | - | 有 | 有 | 有（bwrap 隔离） |
 | `(where {:content ... :needle ...})` | UTF-16 精确唯一切片 `[b e]`；0/多匹配自动 `park` | 有 | 有 | 有 | 有 | 有 | 有 |
 | `(whereAll {:content ... :needle ...})` | 返回全部匹配区间；0 匹配 `[]`，不挂起 | 有 | 有 | 有 | 有 | 有 | 有 |
 | `(park {:payload ...})` | 显式挂起当前程序续体 | 有 | 有 | - | 有 | 有 | 有 |
@@ -669,78 +669,49 @@ wait({ otherwise_independent_work[, more_workers_without_hitting_mythical_man_mo
 - `clj_plan` 没有 `write` 或 `call`；它可以读取宿主进程可读的任意文件（包括 `plans/` 与 `.herd/missions/<slug>/s2-cases.edn`）。阶段文档与 CASE 数据集仍只由对应 `attach_*` 写入；调查仍通过 `devops` 工具。
 - `clj_devops` 是 `clj_worker` 的超集，也就是带特权的 Worker：具备 Worker 的全部文件与续体能力，并额外拥有 `call`。写走 §4.3，`call` 走 §4.5，不设只读豁免，也不经 `board_take_or_die`。默认模式只暴露这一面。
 - `clj_review` 严格只读；没有 `write`、没有 `call`、没有 `park`。`Reviewer` 不能修改它正在评审的东西。
-- `clj_worker` 的路径不受 VFS 根目录限制：`..`、绝对路径与越界符号链接都按进程权限执行。写入仍经批内 VFS、写锁 $W$ 与（若读过）`stamp` 复核。`Holder` 额外拥有 `call`。
-- `clj_auditor` 的 VFS 路径不再设白名单；隔离由 bwrap 会话与专属 `/tmp` 负责，不再由 VFS 拒绝路径。它可以用 `call` 做 tmux 抓屏与破坏实验。
+- `clj_worker` 的路径不受沙箱根限制：`..`、绝对路径与越界符号链接都按进程权限执行。写入直接落盘，需要互斥时取 $W$。`Holder` 额外拥有 `call`。
+- `clj_auditor` 的路径不再设白名单；隔离由 bwrap 会话与专属 `/tmp` 负责。它可以用 `call` 做 tmux 抓屏与破坏实验。
 - 所有角色都受出站尾注语言要求与 Ariadne 续体注解（`ariadne_budget` / `ariadne_goal`）约束；旧 Scope/intent 门禁与 `ask_previous_scope` / `assume` 已按 §5.2 废弃。
 
-### 4.3 受保护文件提交合同
+### 4.3 写锁与直通写入
 
-受保护提交解决两个常见事故：一是“边跑命令边改磁盘，跑到第三步报错，留下半截脏文件”；二是“读了旧接口，却覆盖了别人刚改的新代码”。Lite 把 `clj_worker` 的程序执行与看板的写入口合二为一。
+写入不做预演、不做回滚、不做内容凭据复核。`write`/`mkdir`/`rm`/`mv` 按程序执行顺序逐步直接作用于真实文件系统；失败保留此前已写部分，这就是正确现场。
 
-#### 4.3.1 无锁读取与凭据采集
+#### 4.3.1 读取
 
-1. `cat` / `stat` 读取真实文件时不申请 $W$。每次读取采集：
+1. `cat` 读取 UTF-8 文本，逐字一致，用于精确补丁。
+2. `read` 代理宿主内建；只保证可读，可能经过宿主解码或格式化。宿主入口不可用即 fail-closed。
+3. `stat` 返回 `{:exists :size :mtime-sec :mtime-nsec :is-dir}`，供模型自行判断，不进入任何门禁。
+4. `ls` 与 `glob` 是纯探查，不加锁。
 
-   ```text
-   stamp = {:mtime-sec <int> :mtime-nsec <int> :size <bytes>}
-   ```
+读取不申请 $W$，也不记录 `read-set`。
 
-   使用 `fs.lstatSync(path, { bigint: true })` 取得纳秒精度；内部用 BigInt 比较，呈现为十进制字符串或 EDN 大整数，**严禁先转毫秒浮点再比较**。`atime` 完全不参与。
-2. `cat` 与 `stat` 把路径、读取时的 `stamp`、读取范围（整文件）记入本次程序的 `read-set`。只读依赖文件也进入 `read-set`；提交时必须一并复核。
-3. `ls` 是纯探查：不进 `read-set`、不做结构检查、不产生提交依赖。目录列表的时间值不得解释为整个子树内容的版本。
-4. 若单次读取前后 `stamp` 变化，立即返回 `:changed-during-read`，拒绝把这次读取作为稳定提交依据；不得在原位“悄悄刷新”后继续。
-5. 重复读取同一路径时，不能只更新 `stamp` 却继续提交基于旧内容的补丁；工具不提供“忽略依据继续写”的普通入口。
-6. 符号链接：按目标路径解析；不再因目标在会话根之外而拒绝。
-7. 非 UTF-8 或无法无损解码的文件：明确拒绝文本编辑或返回二进制表示；不得用替代字符重写。编码判断属于准备阶段。
+#### 4.3.2 写入
 
-#### 4.3.2 批内内存 VFS 与完整预演
+1. `write`/`mkdir`/`rm`/`mv` 按顺序直接执行；没有内存叠加层，没有整批预演，没有批内顺序语义。
+2. 需要互斥时，在该步前申请 $W$，执行后释放。
+3. 失败语义：此前已完成的步骤保持已写入状态。不回滚、不恢复旧内容、不宣称“磁盘零修改”。
+4. 不做原子替换：直接写目标文件，不保证崩溃时不截断。
+5. 上限默认：单文件 **2 MiB**、单次调用总计 **16 MiB**、单次调用 **256** 个路径操作；超出返回 `:LIMIT_EXCEEDED`，已执行部分保留。
+6. 程序异常、`where` 挂起、`park`、期限到期：已执行步骤留在磁盘，未执行步骤不再执行。
 
-1. 程序中的 `write`、`mkdir`、`rm`、`mv` **不直接修改真实文件系统**，而是按执行顺序作用于当前程序私有的内存 VFS 叠加层。
-2. 顺序语义：同一程序里先把 `a.mjs` `mv` 到 `b.mjs`，随后 `cat`/`write` `b.mjs`，后一步直接读到移动后的内容；后一次写入覆盖前一次同路径写入的最终字节。
-3. 批内可拒绝条件（在内存中返回，不触盘）：
-   - 两个创建指向同一路径；
-   - `mv` 形成未说明的环；
-   - 先删除后读取/写入未重建的路径；
-   - 新建一个已经存在的文件而未声明替换；
-   - 目录/文件类型冲突；
+#### 4.3.3 进程内令牌与进程间粗锁
 
-   覆盖既有文件不再要求先读；若该路径已在 `read-set` 中，仍按 `stamp` 拒绝并发变化。
+- **进程内单例 actor**：`src/util/write-actor.mjs` 暴露模块级单例（`globalThis`），持有令牌队列；worker 通过现有 `hostTool` 消息通道请求 `path`/`global` 令牌与释放，不直接碰锁文件。
+- **令牌类型**：`path` 令牌由 `write`/`mkdir`/`rm`/`mv` 按目标绝对路径申请，同路径排队、不同路径并行；`global` 令牌由 `call` 运行期申请，持有期间所有 `path` 令牌排队，有活跃 `path` 令牌时 `global` 排队。
+- **路径归一**：申请令牌前必须 `realpath` 解析目标（不存在时解析父目录再拼回），否则 `..` 与符号链接会绕过互斥。`mv` 同时申请 source 与 target 两个 `path` 令牌，按字典序获取。
+- **进程间协调**：只有一把粗粒度文件锁 `.herd/locks/clj-core.cross-process.lock`。每次实际落盘前短暂持有并立即释放；`call` 运行期持有它。跨进程不细分路径，接受串行。
+- 令牌与粗锁只保证互斥，不保证内容最新、不提供回滚、不提供原子替换。
+- 记账冲突只重试控制状态更新，绝不重放文件写入。
+- **取消与打断**：锁与令牌的释放必须在 `finally` 或等价的 catch 路径完成；用户取消、AbortSignal、宿主中断只终止操作本身，不跳过释放。持锁期间禁止等待用户输入、模型推理或网络。释放失败必须作为显式错误上报，不得静默继续。进程崩溃留下的锁文件由恢复流程按 PID 存活检测清理。
 
-      统一返回 `:PREPARE_REJECTED` 或 `:STRUCTURE_CONFLICT`，并给出具体路径、操作序号与原因。
-4. 上限默认：单文件 **2 MiB**、单批总计 **16 MiB**、单批 **256** 个路径操作。超限返回 `:LIMIT_EXCEEDED`；由个体拆分或走令牌路径，不得用不受保护的临时脚本绕过。上限可配置。
-5. 程序抛异常、`where` 0/多匹配自动挂起、显式 `park`、期限到期：**真实磁盘零修改**；未提交 VFS 随续体悬停（`park`）或丢弃（异常）。
-6. 可选只读预览不占跨调用写锁；预览结果与锁内最终 `prepared` 状态必须使用不同类型，不得接受旧预览标识作为实际写入许可。
-
-#### 4.3.3 写入口 $W$ 内的复核与原子落盘
-
-当且仅当 REPL 最后一个表达式正常返回，且存在非空文件变更集，或声明依赖 `read-set` 事实发布看板完成结果时，进入提交流程：
-
-1. **申请该 Slice 的写锁 $W$**（`.herd/locks/<slice_id>.write-w.lock`）。普通受保护提交与 `call` 会话严格互斥；$W$ 不设“超时自动转交”。
-2. **复核身份与 `read-set`**：
-   - 调用者仍 `:alive`；
-   - 若本次是任务完成，`claim_id` 仍有效；
-   - 逐一比对 `read-set` 中所有文件（含只读依赖）的当前 `{mtime-sec, mtime-nsec, size}` 与读取时完全相等；
-   - 复核 `stat` 产生的结构条件与写操作自身的存在性/类型条件。
-
-   任一不符：立即释放 $W$，返回 `:FILE_CONFLICT` 或 `:STRUCTURE_CONFLICT`，真实磁盘零修改。冲突回执用 EDN + UFSS 列出路径、原 `stamp`、当前 `stamp` 与结构变化；**不得**自动建议“把 expected-stamp 改成当前值即可”。
-3. **固定 `:applying` 资格**：在 board lock 短事务中把动作登记为 `:applying`。此后即使收到任务取消请求，当前最小批次仍继续落盘并记账；取消在本次应用之后生效。
-4. **原子落盘**：在目标同目录创建排他临时文件（`.tmp-<uuid>`），写入预演确定的完整字节，`fsync` 后 `rename` 原子替换。任何读者在任何时刻只会看到完整旧内容或完整新内容；若进程在 `rename` 前崩溃，目标文件完好，最多留下一个 `.tmp`。
-5. **记账与释放**：在 board lock 中发布动作结果；若记账冲突，只重试纯控制状态更新，**绝不重放文件写入**。随后释放 $W$。
-6. **异常路径**：若落盘过程中发生硬失败（磁盘满、权限、I/O 错误），不要把整批标记完成；记录已应用/未应用/不确定的文件，动作进入 `:uncertain`，由后继者核对。正常路径不设回滚分支。
-
-#### 4.3.4 空写集与 `finish` 的文件事实
-
-- 个体在看板声明“入口函数已存在”“依赖接口仍是这个形状”等依赖文件事实的结论时，即使本次没有文件写入，也必须经 $W$ 复核 `read-set`。不能靠“只写看板”绕开文件冲突协议。
-- 不依赖现场文件事实的纯任务结构拆分，只走 board lock，不需 $W$。
-- `board_finish` 不自动 drain；若程序还有未提交 VFS 修改，先按书写顺序提交，或显式放弃。完成结论与文件写入的先后关系必须与程序一致。
-
-#### 4.3.5 路径与目录细则
+#### 4.3.4 路径与目录细则
 
 - 空路径 `""` 解析为当前会话根。
-- 相对路径按会话根解析；绝对路径、`..` 与越界符号链接不再受 VFS 路径限制，直接按进程权限执行。`AGENTS.md` 不再受 VFS 特别保护。
+- 相对路径按会话根解析；绝对路径、`..` 与越界符号链接不再受路径限制，直接按进程权限执行。`AGENTS.md` 不再受特别保护。
 - `stat` 遇到缺失文件不报错，返回 `{:exists false ...}`；存在性与类型检查决定操作是否有定义，`stamp` 决定内容是否仍可沿用，二者不能互替。
 - 普通文件变成目录，即使某些数值相同也通不过结构检查；目录列表的时间值不能替代子树内容版本。
-- 覆盖既有文件不要求先读；若该路径已在 `read-set` 中，仍按 `stamp` 拒绝并发变化。删除与移动保留存在性、类型与非空目录检查。
+- 覆盖既有文件不要求先读。删除与移动保留存在性、类型与非空目录检查。
 - 递归复杂扫描不能用一个根目录 `stamp` 代替全部条件；需要逐文件检查时，逐文件 `stat`。
 
 ### 4.4 `where` / `whereAll` 与 `park` / `unpark`
@@ -769,7 +740,7 @@ wait({ otherwise_independent_work[, more_workers_without_hitting_mythical_man_mo
 #### 4.4.2 挂起与恢复
 
 1. **挂起原因**：`:explicit`（显式 `park`）、`:where-ambiguous`（0/多匹配）、`:ask`（S1 提问）、`:deadline`（期限到期）。
-2. **保存内容**：当前 REPL 程序的整个 JS 异步调用帧，包括所有外层 `let` 局部变量、`loop` 状态、尚未提交的批内 VFS 叠加层与未决能力 Promise。保存在本 `agent_id` 的内存 `ParkedPrograms` 表，以内部 `name`（缺省自动生成）为键。
+2. **保存内容**：当前 REPL 程序的整个 JS 异步调用帧，包括所有外层 `let` 局部变量、`loop` 状态与未决能力 Promise。保存在本 `agent_id` 的内存 `ParkedPrograms` 表，以内部 `name`（缺省自动生成）为键。
 3. **不落盘、不进看板**：挂起是 agent 私有状态，不是公共任务；进程重启自动清空，未恢复的续体丢失，但真实磁盘未被修改。
 4. **挂起回执**（EDN + UFSS）：
 
@@ -789,12 +760,12 @@ wait({ otherwise_independent_work[, more_workers_without_hitting_mythical_man_mo
    - **存在性核验**：`name` 不存在返回 `:PROGRAM_UNKNOWN`。
    - **能力集核验**：当前角色没有恢复该程序所需能力集，返回 `:CAPABILITY_DENIED`。
 
-   通过后，`value` 原样成为原挂起表达式的返回值（内核不做二次校验；切片有效性由程序自己保证）；原程序继续执行，恢复时按新请求的 `code` 字节数重新计时。恢复后的提交仍会复核 `read-set` 的 `stamp`，确保挂起期间底层文件未被他人篡改。
+   通过后，`value` 原样成为原挂起表达式的返回值（内核不做二次校验；切片有效性由程序自己保证）；原程序继续执行，恢复时按新请求的 `code` 字节数重新计时。
 6. **按 `call` 自动后台化与 `wait` 期限**：`clj_*` 工具在 fork 时提前赠送共计 `1000ms` 的免费 `call` 等待额度（同一调用内多次 `call` 累计共用这 `1000ms`）：若在 `1000ms` 内完成则同步返回，一旦累计超过 `1000ms` 立即后台化并返回 `:state :forked`。LLM 通过统一的 `wait({ otherwise_independent_work })` 工具收集结果：`otherwise_independent_work` 必须反事实地说明本可以立即派发什么无依赖工作而不是调用 `wait` 死等结果；每次 `wait` 同样继续赠送 `1000ms`，等待期限为 `1000ms + UTF-8 字节数 × 50ms`，且**只对 `call` 计时，沙盒引擎自身耗时不计**。无任务时 `wait` 立刻返回 `:idle`；有积压结果时 `wait` 一次性全部返回且不阻塞；否则 `wait` 阻塞等待最先返回的一个结果（不可指定）并返回，其余任务继续在后台执行，可再次调用 `wait` 收集。`wait` 超期采用 `park-all` 语义，将所有运行中程序挂起（`:state :parked :reason :deadline`）并返回其回执，随后仍可通过指名 `(unpark {:name ... :value ...})`, `(abandon {:name ...})` 恢复。
 7. **增量输出、`stdin` 灌入、未裁决提醒与 `$W$` 排队**：
    - 慢 `call` 因 `wait` 超时 `park` 时，将自上次展示以来的增量 `{:stdout ... :stderr ...}` 放入 `:payload`，满足 `sum(各次 park) + final === all`。
    - `(unpark {:name ... :value ...})` 恢复 `pendingCall` 时，字符串或 `{:stdin ... :eof ...}` 作为键盘输入灌入子进程 `stdin`。
-   - `(abandon {:name ...})` 抛弃挂起程序、丢弃未提交 VFS、中止遗留 `call` 子进程释放 `$W$` 并释放内存。
+   - `(abandon {:name ...})` 抛弃挂起程序、丢弃未执行步骤、中止遗留 `call` 子进程释放 `$W$` 并释放内存。
    - `context` 钩子在每次 LLM 请求末尾总是注入 `<skill version="1.0">…</skill>` 语言纪律块强制简体中文思考与输出，并在存在未裁决 `:parked` 程序时同消息另附 `<skill version="1.0">你有以下停靠程序未裁决……</skill>` 块提醒模型裁决。
    - 同回合混发 `call` 与写操作遇到 `$W$` 被占用时排队等待（并触发后台化 `:state :forked`），先抢到锁的先执行，禁止同步 hang。
 8. **名字占用**：同名程序仍处于 `:running` / `:waiting` / `:parked` 时，新程序占用同名启动被拒 `:NAME_TAKEN`；进入 `:completed` / `:failed` 后名字可复用。同一物理工具调用（同一 `call-id`）带相同载荷再次到达，直接重放原回执；不同载荷返回 `:CALL_REPLAY_MISMATCH`。
@@ -804,7 +775,7 @@ wait({ otherwise_independent_work[, more_workers_without_hitting_mythical_man_mo
 
 `(call {:argv ["<program>" "<arg>" ...]})` 是唯一允许运行未知程序的沙箱能力。它使用 CreateProcess 风格参数数组：`argv` 非空字符串数组，`argc = (count argv)`；不经过系统 shell，因此不支持管道、重定向、通配、变量展开或 `&&`。需要 shell 语法时必须显式把 `sh`/`bash` 作为 argv[0] 并自行传 `-c`，协议本身不解释。每次调用还必须在同一 map 中提供 `:alternative`：非空 map，至少一对；键是考虑过的内置工具或其他办法，值是不采用它的理由。框架不校验、不处理该字段，只信任模型填写。它只对 `Swarm Holder`、`Plan DevOps`（best-effort 只读）与 `Manual Auditor` 开放；普通 `Swarm Worker` 调用一律拒收 `:TOKEN_REQUIRED`；`Plan` / `Reviewer` 没有该能力。
 
-1. **先排空**：调用前若当前程序 VFS 中已有未提交修改，系统先按 §4.3 排空（`draining`）并完成受保护提交，再启动命令。不得让命令读取到一半内存、一半磁盘的混合现场。
+1. **先落盘**：调用前若当前程序还有未执行的写步骤，先按顺序执行完，再启动命令。
 2. **取 $W$ 与登记**：取得 $W$ 后，在 board lock 中再次核验 `holder_id`、`term_id` 未过期、关联任务仍有效、`claim_id` 有效，登记 `:running` 活动责任；释放 board lock，运行命令；运行期继续持 $W$。等待外部条件时，`Holder` 可以释放 $W$（令牌持有期与 $W$ 持有期分开），但不能在 $W$ 内无限等待。
 3. **输出有界**：
    - 单次 `call` 内联返回上限默认 **1 MiB**；完整 stdout/stderr 写入 `.herd/artifacts/<slug>/<slice_id>/<action_id>.log`；
@@ -836,7 +807,7 @@ wait({ otherwise_independent_work[, more_workers_without_hitting_mythical_man_mo
 (unpark {:name "fix-timeout" :value [812 842]})
 ```
 
-恢复后原程序继续执行 `write`，正常返回时进入 $W$ 复核与原子落盘。若挂起期间文件被他人修改，提交返回 `:FILE_CONFLICT`；模型必须重新读取并重新计算，不得套用旧区间。
+恢复后原程序继续执行 `write`，直接落盘。
 
 **批量读取与精确替换**：
 
@@ -1048,7 +1019,7 @@ Lite 在 `omp` 编辑器上方挂载单一 `HerdDashboardWidget`，与 `/herd-st
 | worktree 保留 | 7 天 | 影响磁盘；`join`/`abandon` 后开始计时。 |
 | `call` 内联输出 | 1 MiB | 超出写完整日志；不静默截断。 |
 | 单会话日志 | 64 MiB | 超出标 `:output-truncated`。 |
-| VFS 单文件/单批 | 2 MiB / 16 MiB / 256 操作 | 超出 `:LIMIT_EXCEEDED`；拆分或走令牌路径。 |
+| 文件写入单文件/单批 | 2 MiB / 16 MiB / 256 操作 | 超出 `:LIMIT_EXCEEDED`；拆分或走令牌路径。 |
 | 并发自检字段 | 开启 | 关闭只影响提示，不影响工具执行。 |
 | 语言 | `zh-CN` | Pair Hint 资源成对；子会话继承。 |
 
@@ -1184,7 +1155,7 @@ Lite 不启动独立服务；控制状态由 `omp` 进程内的主会话与子�
 - **S5 board**：只保留一个 `board.lock` 做短事务；没有 worktree 并发、没有 rebase/ff。
 - **S5 槽位**：默认 4；可配置。槽位是资源，不是任务分配器；补位只让槽恢复可用。
 - **审计并发**：K 个 CASE 同时启动；运行时限制导致排队时，语义仍是全部启动，不得跳过。
-- **文件/命令上限**：VFS 2 MiB/16 MiB/256；`call` 内联 1 MiB、日志 64 MiB；超出显式报错。
+- **文件/命令上限**：文件写入 2 MiB/16 MiB/256；`call` 内联 1 MiB、日志 64 MiB；超出显式报错。
 - **期限**：1000ms + `code` 字节数 × 50ms；到期 `park`，不杀死会话。
 - **Nudge/上游退避**：见 §2.7、§5.4.4。
 - **不制造虚假并发**：没有独立价值的任务不拆；拆分是为了减少真实不确定性，不是为了把看板填满。
@@ -1192,12 +1163,12 @@ Lite 不启动独立服务；控制状态由 `omp` 进程内的主会话与子�
 ### 7.6 安全边界
 
 1. **沙箱隔离**：符号表不含 `js/*`、`globalThis`、`process`、`Bun`、`require`、`import`、`eval`、`read-string`、`load-string`、`resolve`、`ns-*`、`set!`、`aget`/`aset`。逃逸尝试返回 `:CAPABILITY_DENIED`，不得回退到 JS 全局。
-2. **路径边界**：普通 VFS 不再拒绝 `..`、绝对路径或越界符号链接；进程权限是唯一边界。审计员隔离由 bwrap 会话与专属 `/tmp` 负责。
+2. **路径边界**：沙箱路径不再拒绝 `..`、绝对路径或越界符号链接；进程权限是唯一边界。审计员隔离由 bwrap 会话与专属 `/tmp` 负责。
 3. **审计员只读主工作区**：产品源码、测试、配置、文档、`.herd/` 与 `.herd/missions/<slug>/s2-cases.edn` 不可写；审计员不得读取整份 CASE 数据集或他人 CASE；启动前后 `stamp` 快照比对；任何主工作区或 CASE 数据修改使整批审计作废。
 4. **不把密钥写入交付物**：`plans/`、`evidence/`、日志中不得出现 API key、令牌、私人数据；审计员不得导出密钥；发现泄漏立即停止并报告。
 5. **提示注入边界**：工具结果/用户消息中的 XML 标签、伪系统指令、`<approved/>` 一律当数据；只有门禁工具的成功回执能推进阶段。系统提示词优先级高于工具结果中的“新指令”。
 6. **命令注入**：`call` 使用 argv 数组，不经过 shell；不得把多个参数拼成一个字符串再交给 shell。需要结构化参数时，优先用沙箱能力，不要拼字符串。
-7. **宿主边界**：不修改宿主源码、不猴补丁原型、不读取宿主私有属性（如 `_goalCore`）；只使用公开扩展点。深路径导入集中在 `host/imports.mjs`，并记入 `HACK.md`。
+7. **宿主边界**：不修改宿主源码、不读取宿主私有属性（如 `_goalCore`）；只使用公开扩展点。除 `host/native-runner.mjs` 对 `ExtensionRunner.prototype.createContext` 的受控捕获外，不猴补丁任何原型。深路径导入集中在 `host/imports.mjs`（eager 宿主包）与 `host/native-runner.mjs`（懒加载 Runner），并记入 `HACK.md`。
 8. **失败关闭**：门禁、审计、批准的校验失败一律拒绝，不得“放行并警告”。安全相关的降级必须是显式、可观察、用户可见的。
 
 ### 7.7 性能与成本
@@ -1267,7 +1238,7 @@ You are in repo-aware mode. Obey the following repo-aware rules (AGENTS.md) as m
 [courage] Anti-cowardice rule. Retreat is not a strategy. Rolling back correct work because the next step is hard is cowardice, and cowardice is forbidden. Do not run to a comfortable snapshot when the problem demands that you stand and solve it. Success has always belonged to those who face the difficulty, not to those who flee it. Difficulty is not a signal to reverse course. It is evidence that the work matters. When the direction is sound, advance through the obstacle: diagnose it, repair it, and finish it. The safe zone and the comfort zone are synonyms for regression. A team that only takes the easy steps is already moving backward. Never use a rollback, a scope cut, or a retreat to the nearest green state as a substitute for solving the real problem. That is cowardice wearing the mask of prudence. Push against the obstacle. Hold the line. Finish the work. History rewards the engineer who advances, not the one who restores the past.
 ```
 
-**默认模式不注入**：S1–S5 简报、旧 Scope 字段、角色提示词。工具与 VFS 的操作语义由工具 description 与出站尾注承载；不得反过来要求系统提示词自包含完整工具手册。
+**默认模式不注入**：S1–S5 简报、旧 Scope 字段、角色提示词。工具的操作语义由工具 description 与出站尾注承载；不得反过来要求系统提示词自包含完整工具手册。
 
 **硬规则**：
 
@@ -1384,7 +1355,7 @@ The S1–S4 deliverables are frozen by convention, and `.herd/missions/<slug>/s2
 [ROLE: PLAN DEVOPS — PRIVILEGED WORKER]
 You are the privileged worker for the current Plan tenure: every Swarm Worker capability, plus call. You have no board and do not take a token.
 - Use `clj_devops` for every Worker capability plus privileged `call`: `cat`, `stat`, `ls`, `glob`, `write`, `mkdir`, `rm`, `mv`, `where`, `whereAll`, `park`, `unpark`, `abandon`, and `call`. Trace full call chains, host internals, types, and edge cases; never skim heads/tails and guess.
-- Writes go through the batch VFS. call is not a read-only probe. Finish strictly by calling `submit_devops_report({ status, report_markdown, inspected_paths })` with exact file paths, line spans, and empirical findings.
+- Writes go straight to disk; take the write gate around each step when mutual exclusion is needed. call is not a read-only probe. Finish strictly by calling `submit_devops_report({ status, report_markdown, inspected_paths })` with exact file paths, line spans, and empirical findings.
 ```
 
 #### `REVIEWER_PROMPT`
@@ -1402,9 +1373,9 @@ You start on a clean Context Barrier with zero loyalty to your predecessor's sun
 
 ```text
 [ROLE: SWARM AUTONOMOUS WORKER / HOLDER]
-No central manager will pick tasks for you. Coordinate solely through the shared board and protected VFS commits:
+No central manager will pick tasks for you. Coordinate solely through the shared board and direct writes under the write gate:
 1. Split before claim (A02-04 / A02-06): if a candidate task still hides independent pieces or separates protected edits from shell checks, call `board_split` first. Parents MUST keep substantive `remaining_work` (integration, wiring, end-to-end coherence). Children all becoming `done` ONLY restores the parent from `waiting` to `ready`—it NEVER auto-completes the parent, and same-turn cascade closing is rejected.
-2. Protected VFS commits (A02-15 / A02-18): `cat`/`stat` inside `clj_worker` record nanosecond `(mtime-sec, mtime-nsec, size)` stamps in your `read-set` (including read-only dependencies). `write`/`mkdir`/`rm`/`mv` mutate your batch in-memory VFS first and commit atomically under write gate `W` on normal return. On `:FILE_CONFLICT`, re-read reality and adapt; never overwrite blindly.
+2. Direct writes (A02-15 / A02-18): `write`/`mkdir`/`rm`/`mv` apply step by step directly to the real filesystem; each step takes the in-process `path` token and briefly holds the cross-process coarse lock. There is no batch preview, no content-stamp recheck, and no rollback: a failure keeps everything already written.
 3. Irreversible token gate (A02-11 / A02-13): normal workers are forbidden from `call` (`:TOKEN_REQUIRED`). Only when valuable protected work is exhausted, `:needs-token` tasks exist, and the token is free, record `handoff_markdown` and call `board_take_or_die({ request_id, confirm: "i-hereby-confirm-i-die-without-regret", handoff_markdown })`. Winning makes you the sole Holder for ALL `:needs-token` tasks (holding `W` only during active `call` or commit, never while waiting); losing transfers your claims/tasks and ends your life in the same transaction; Holder dies immediately in the same transaction the moment full responsibility set `R(a)` becomes empty.
 4. Global no-sleep (A02-21): never call `board_park_slot` while any non-blocking progressable work exists anywhere on the board.
 ```
@@ -1560,7 +1531,8 @@ HerdchestraLite/
     ├── clj-main.mjs              # 当前清单入口：默认模式，只暴露 clj_devops + wait + time_leap + ask_beacon
     ├── main.mjs                  # 主装配器：提示词、review/attach、沙箱、蜂群、TUI 与命令
     ├── host/
-    │   ├── imports.mjs           # 宿主与 cherry-cljs 的唯一导入集中处
+    │   ├── imports.mjs           # 宿主与 cherry-cljs 的 eager 导入集中处；重导出 native-runner
+    │   ├── native-runner.mjs     # 唯一受控原型捕获：ExtensionRunner.createContext → live runner
     │   └── subprocess.mjs        # runSubprocess 封装（超时、递归 AbortSignal、Agent Hub 产物）
     ├── util/
     │   ├── atomic-write.mjs      # 同目录 .tmp + fsync + rename
@@ -1569,9 +1541,9 @@ HerdchestraLite/
     │   ├── ufss.mjs              # EDN + UFSS 读取器与确定性阶梯 Pretty Printer
     │   ├── evaluator.mjs         # cherry-cljs 异步求值器、符号表隔离、park/unpark 续体表
     │   ├── where.mjs             # UTF-16 精确匹配与 Ukkonen 带状 DP 诊断
-    │   ├── sandbox-worker.mjs    # 独立 Worker 线程宿主（隔离 CEK/where/VFS 计算）
+    │   ├── sandbox-worker.mjs    # 独立 Worker 线程宿主（隔离 CEK/where 计算）
     │   ├── glob-pool.mjs         # 多核 Worker 池（glob :exec 并发求值）
-    │   ├── vfs.mjs               # 批内内存 VFS、stamp 采集、W 提交流水线
+    │   ├── vfs.mjs               # 直通写入、上限与 W 互斥
     │   └── tools.mjs             # clj_plan / clj_devops / clj_review / clj_worker / clj_auditor
     ├── scope/
     │   ├── ariadne.mjs           # Ariadne's Thread（O(1) 最小到期栈 + 软门）与 Time Leap
@@ -1629,8 +1601,8 @@ scope → main
    - **无 frozen 哈希**：`:frozen`/`contract-line`/`realign` 不存在；外部编辑不被机器检测，审计只依赖现场观察。
    - **看板依赖**：`board_finish.dependency_paths` 只接受工作区路径；`wait_for` 只接受任务 ID 或 `condition:` 键，孤立裸条件键被拒；既有条件满足语义保持不变。
    - **沙箱隔离**：`js/*`、`process`、`globalThis`、`require`、`import`、`eval`、`read-string` 访问一律 `:CAPABILITY_DENIED`；无逃逸路径。
-   - **续体恢复**：嵌套在 `let`/`loop`/`mapv`/`reduce` 内的 `where` 零/多匹配挂起后，批内 VFS 不落盘；`unpark` 注入区间后恢复局部变量与 VFS 并完整落盘。
-   - **VFS**：顺序语义、异常/park 不落盘、上限、非 UTF-8、结构冲突。
+   - **续体恢复**：嵌套在 `let`/`loop`/`mapv`/`reduce` 内的 `where` 零/多匹配挂起后，已执行写入保留，未执行步骤不再执行；`unpark` 注入区间后恢复局部变量并继续。
+   - **写入**：按序直通、异常保留已写、上限、非 UTF-8、结构冲突。
    - **看板/令牌/文件门**：V01–V08、T01–T13、F01–F15 的确定性交错；S5 单工作区无 worktree/fork/join。
    - **审计汇总**：相对 `s2-cases.edn` 的缺失/未知/重复/越界/空报告/主工作区篡改全部拒绝；报告顺序等于 `cases` 数组顺序；审计员只消费自己的记录，不交叉对照数据集；全 PASS 才签发批准。
    - **Nudge**：除合法出口外，任何回合结束都注入；等待人类、attach 确认面板或取消确认时抑制；退避序列正确。
@@ -1665,17 +1637,17 @@ scope → main
 |---|---|---|---|---|
 | F01 | A 读 `parser` 准备补丁并请求 $W$；此时 B 的 `call` 已持 $W$ 并修改 `parser` 后结束 | 把 A 停在 $W$ 队列，让 B 在间隔内改完 | A 取得 $W$ 后再次检查 `stamp`，返回 `:FILE_CONFLICT`；真实文件维持 B 的结果；A 不死亡，可重读再调整 | 请求 $W$ 前查一次、等锁结束后直接套旧补丁 |
 | F02 | A 读只读依赖 `api` 打算改调用方 `client`；B 在 A 提交前改了 `api`，`client` 本身 `stamp` 未变 | A 取得 $W$ 时 | 因只读依赖 `api` 的 `stamp` 改变而拒绝提交 | 只检查最终要写的 `client` |
-| F03 | A 请求同时改三个文件；前两个修改预演成功，第三个定位文本不存在 | 整批 dry-run | 返回第三个文件的具体失败位置；三个真实文件均未改变，未进入 `:applying` | 把前两个局部成功提前写入现场 |
-| F04 | 同批请求先把 `old` 重命名为 `new` 再改 `new` 内容；反向：先删某目录再向该目录未重建文件写入 | 批内内存 VFS 预演 | 正向按批内逻辑顺序计算后一步看到的结构并成功生成最终计划；反向在预演中报 `:STRUCTURE_CONFLICT` | 只在原始真实目录找 `new` 而误拒；应用期临时自动建目录 |
-| F05 | A 已完成预演进入 `:applying` 开始落盘；用户此时取消原目标 | `:applying` 期间 | 取消立即入板并 `wake-all`，但当前已固定的最小提交继续完成并发布已应用结果，随后按新输入处理后续状态 | 让正常应用停在一半；把取消倒推为文件从未修改 |
+| F03 | A 按序改三个文件；前两个已落盘，第三个定位文本不存在 | 逐步直通写入 | 第三个拒绝并给出失败位置；前两个保持已写入，不回滚 | 删除前两个已写入的内容伪装“零修改” |
+| F04 | 先 `mv old new` 再改 `new`；反向：先删目录再向该目录未重建文件写入 | 逐步直通写入 | 正向后一步读到移动后的真实内容；反向在删除后写入时报 `:STRUCTURE_CONFLICT`，此前删除已生效 | 自动重建目录；假装删除未发生 |
+| F05 | A 正在写第二个文件；用户此时取消原目标 | 写入期间 | 取消立即入板并 `wake-all`，但当前这一步继续完成并发布结果，随后按新输入处理后续状态 | 把取消倒推为文件从未修改 |
 | F06 | A 已完成文件落盘，发布动作结果时与另一个体补充同任务非关键观察发生看板锁冲突 | 记账事务 | 记账事务重读控制状态并重试；真实 `apply` 调用次数严格为 1 | 把文件操作放进可重试事务闭包导致重复落盘 |
 | F07 | `call` 正依次改接口与调用方；A 在两步之间并发读取 | `call` 持 $W$ 期间 | 读取不等待 $W$，立即返回当前内容与 `stamp`；A 后续提交取得 $W$ 时若依赖 `stamp` 已变则拒绝 | 读取被 $W$ 阻塞；断言 A 一定读到全旧或全新快照 |
 | F08 | 构造大小相同的两份不同内容，`call` 或外部操作改内容但保留相同 `mtime` 与 `size` | 后续受保护提交 | 如实展示已接受的快速判据观察等价边界；不在一般结果中宣称“已证明内容完全未动” | 偷偷加未声明的哈希或隐藏版本来让测试通过 |
 | F09 | A 已准备修改 `config`；提交前多个个体读取同一文件，`mtime` 与 `size` 未变 | A 取得 $W$ 复核 | 正常通过，不因系统 `atime` 访问记录变化而冲突 | 在通用元数据比较中把 `atime` 带回来 |
-| F10 | A 读文件后准备在看板声明“兼容分支已存在”（空文件写集）；B 随后改了该文件使结论失效 | A 提交看板结论 | 虽无文件写集仍经 $W$ 复核 `read-set` 并拒绝旧结论（对照：不依赖文件事实的纯任务拆分不需等 $W$） | 因不写文件就绕过 `stamp` 复核 |
+| F10 | A 读文件后在看板声明“兼容分支已存在”；B 随后改了该文件使结论失效 | A 提交看板结论 | A 的结论可能基于旧现场；框架不复核、不拒绝，后继者需自行重读 | 假装看板结论受内容凭据保护 |
 | F11 | `call` 持 $W$ 等待某配置文件变成指定内容；普通个体 A 已准备好该修改但在等 $W$ | 相互等待 | 如实呈现等待链（`call` 等文件条件、A 等 $W$、未结责任仍在），由其他个体或人工处理 | 因长时间等待私自释放 $W$、杀死持令者或强行轮转令牌 |
 | F12 | 最外层命令已返回，但执行器管理的子活动仍在运行；另测已脱离管理边界的后续活动 | 会话收尾检查 | 归属会话的子活动未结时 $W$ 与运行责任继续保持，普通提交继续等待；脱离边界的活动明确记入外部 best-effort | 最外层返回就把会话结清释放 $W$；把外部效果冒充仍受 $W$ 保护 |
-| F13 | 已完成整批预演，实际应用到第二个文件时进程崩溃 | 子进程硬失败注入 | 留下第一文件已变、第二不确定、第三未变的现场；恢复后保留动作标识、最后已知阶段与预期描述供后继者核对 | 自动重放同一请求覆盖崩溃后他人已作的修正；直接标整批完成 |
+| F13 | 按序写到第二个文件时进程崩溃 | 子进程硬失败注入 | 第一文件已变、第二不确定、第三未变；恢复后保留动作标识与最后已知阶段供后继者核对 | 自动重放同一请求覆盖他人修正；直接标整批完成 |
 | F14 | A 持有 $W$ 并已完成锁内 `stamp` 校验；不受协议约束的外部程序随后改同一文件，A 再落盘 | 锁内校验与落盘之间 | 明确标为外部 best-effort 边界内的覆盖风险，观察到外部影响时给出事实 | 把外部程序的自由写入误判为两个受保护提交互斥失效 |
 | F15 | A 观察全局无非阻塞工作准备 `board_park_slot`，用户随后追加新输入；另测 A 已阻塞在等 $W$ 的工具调用中 | 观察后、登记前 / 等 $W$ 中 | 输入先提交则拒绝 A 休眠；休眠先提交则输入的 `wake-all` 必覆盖 A。等 $W$ 的工具阻塞收到通知但不承诺立即释放 $W$ | 检查与登记分离导致漏唤醒；把工具阻塞当主动休眠任意取消 |
 ### 9.5 K 路审计与汇总验收
@@ -1692,7 +1664,7 @@ scope → main
 **建议实施顺序**（每步可独立验证）：
 
 1. `util/atomic-write`、`util/file-lock`、`clj-sandbox/ufss`：先把原子写、锁、UFSS 双射打牢。
-2. `clj-sandbox/evaluator`、`where`、`vfs`、`tools`：沙箱隔离、VFS、续体、能力矩阵。
+2. `clj-sandbox/evaluator`、`where`、`vfs`、`tools`：沙箱隔离、直通写入、续体、能力矩阵。
 3. `scope`：Ariadne 锚点、Time Leap、Beacon 查询。
 4. `stages`：disclosures、parsers（CASE Schema 校验与序列化）、tenure、contract（无 frozen 哈希）、gate-tools（`review` + `attach_*`）、scores；先用假文档与严格 `cases` 数据跑通 S1–S4 的 review/attach 闭环。
 5. `swarm`：board（与 review 合一）、单工作区 runner、auditors；`worktree.mjs` 保持休眠，不接线。先单工作区双个体，再扩槽位。
@@ -1702,7 +1674,7 @@ scope → main
 **旧实现迁移（clean-break）**：
 
 1. 删除 `pi-goal-x` 与 `pi-context` 依赖；删除 `src/pi-goal/`、`src/pi-context/`、`src/editor-theme/`、`bootstrap-editor-theme.mjs` 及其入口。
-2. 删除所有猴子补丁：`AgentSession.prototype.getContextUsage`、`TUI.prototype` 主题 getter、`_goalCore` 私有属性、`xd://context_compact` 历史改写、`goalService.apply` 替换、Proxy UI 垫片。
+2. 删除旧实现的所有猴子补丁：`AgentSession.prototype.getContextUsage`、`TUI.prototype` 主题 getter、`_goalCore` 私有属性、`xd://context_compact` 历史改写、`goalService.apply` 替换、Proxy UI 垫片。唯一保留的新例外是 §1.1 的 `ExtensionRunner.prototype.createContext` 捕获；它不是旧实现的延续，且必须保持单文件、懒加载、fail-closed。
 3. 删除旧 CASE Markdown 解析路径：`parseS2Cases`、`extractCaseBlocks`、`extractCaseBlock`、`loadS2Markdown`、`rubric_summary`、`rawBlock` 及任何 Markdown 回退分支；把旧 `s2-manual-tests.md` 中的可执行 CASE 一次性迁移到 `.herd/missions/<slug>/s2-cases.edn`，Markdown 只保留方法论。迁移只由离线迁移工具执行一次，**不进入运行时**；迁移后不得双写、不得从 Markdown 提取或对照 CASE，也不得保留运行时 Markdown 解析回退。旧产物保留只读。
 4. 把 `docs/manual-acceptance/<slug>/requirements.md` 等旧流程迁移为 `plans/<slug>/s1..s5`；旧产物保留只读，不静默删除。
 5. 更新 `package.json`：运行时依赖只保留 `cherry-cljs`；`omp.extensions` / `pi.extensions` 只声明单主入口（`clj-main.mjs` 或 `bootstrap-main.mjs`）；`engines.bun` 保留。
@@ -1729,7 +1701,7 @@ scope → main
 4. review 未空账或 attach 前置不满足却推进阶段；board 非空却 attach；旧 tenure 继续写；
 5. 审计沙箱逃逸、审计员写产品代码；
 6. 双持令者、死身份提交、父项自动完成；
-7. 普通写与 `call` 同时越过 $W$；预演与实际应用之间释放 $W$；
+7. 普通写与 `call` 同时越过 $W$；写入期间释放 $W$；
 8. 记账重试导致文件重复落盘；
 9. 非幂等命令自动重放；
 10. 重复外部副作用、不可恢复地覆盖用户内容；
@@ -1756,7 +1728,7 @@ scope → main
 | 微观看板 | 内存 STM + Datalevin | `.herd/.../board.edn` + `wx` 锁；S5 单工作区 | 是（事务语义同构） |
 | 多 worktree | Steward 按 Slice fork/join | 暂不进入 dogfood 面；`worktree.mjs` 休眠 | 否（当前裁剪） |
 | 令牌 | `take-or-die` | `board_take_or_die` | 是（T01–T13 共享） |
-| 文件提交 | 批内 VFS + `stamp` + $W$ | 同构；`stamp` 用 BigInt 纳秒 | 是 |
+| 文件提交 | 直通写入 + $W$ | 同构；两版都不做批内预演 | 是 |
 | 沙箱 | JVM Clojure | `cherry-cljs` + Promise-CPS | 是（EDN/UFSS/续体同构） |
 | 工作台 | Fulcro + Framework7 Web | `@oh-my-pi/pi-tui` 双态看板 | 否 |
 | 终局审计 | 单一可见 auditor 全 CASE | K 名并发，一 CASE 一 auditor | 否（Lite 独有） |
@@ -1775,7 +1747,7 @@ scope → main
 |---|---|
 | `dependencies: { pi-context, pi-goal-x }` | 运行时只保留 `cherry-cljs`；删除两个旧依赖。 |
 | 三个清单入口，含 `bootstrap-editor-theme` | 单一主入口（Ariadne 归属 `src/scope/`）；主题垫片与 `tool-gate` 删除。 |
-| `installLiveSessionCapture` 改写 `AgentSession.prototype.getContextUsage` | 禁止任何原型猴子补丁；上下文用量只读宿主公开 API。 |
+| `installLiveSessionCapture` 改写 `AgentSession.prototype.getContextUsage` | 禁止该猴子补丁；上下文用量只读宿主公开 API。除 §1.1 的受控 `ExtensionRunner.createContext` 捕获外，不允许其他原型改动。 |
 | `TUI.prototype` 主题 getter、`goalUi` Proxy | 删除；TUI 只使用公开组件接口。 |
 | `_goalCore` 私有属性、`goalService.apply` 替换 | 删除；完成闸门由 Lite 自己的审计/批准状态机实现。 |
 | `xd://context_compact` 分支改写、`PENDING_XDEV_COMPACTS` | 删除；只做 `context` 出站投影，不改写历史。 |
@@ -1884,6 +1856,7 @@ scope → main
 | 审计隔离 | 独立 tmux/`/tmp`/证据目录；主工作区只读；单 CASE 记录注入 | 防止串扰与审计员改代码自证；防止读取其他 CASE | 共用主工作区；审计员可写产品代码；把整份 CASE 数据集交给审计员 |
 | 审计证据 | 审计员观察主工作区与 CASE 数据；不依赖 frozen 哈希 | 与去 frozen 的设计一致；报告基于现场 | 启动前后哈希快照；哈希不符即整批作废 |
 | 结案 | 全 PASS 才签发 `(mission-id, revision)` 批准 | 防止绕过审计直接完成 | 允许手工标完成；允许 skipAuditor |
+| native read/write 委托 | 受控包装 `ExtensionRunner.prototype.createContext` 取得 live runner，调用公开 `invokeNativeTool`；`host/native-runner.mjs` 懒加载、单文件、fail-closed | 宿主扩展 API 不暴露 Runner；`node:fs` 绕过违反 L07，同名 shadow 工具只解决注册冲突不解决真实委托 | 同名 `read`/`write` shadow 工具 + `ctx.invokeTool`；`ctx.session.getToolByName` 反射；直接 `node:fs` 读写 |
 | 停不停 | 无协议暂停态；Esc 递归取消 | 与标准版一致；避免半暂停状态 | `paused` 状态、逐阶段 resume |
 | 父项 | 子项全完只回 `:ready` | 防止把父项当分组标题顺手勾掉 | 子项计数等于总数即自动完成 |
 | 看板原语 | 独立 `board_*` 工具，不塞进 REPL | 结构化数据走工具；沙箱只做工作区/续体 | 沙箱内 `(split ...)` 与工具双入口 |

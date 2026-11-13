@@ -64,7 +64,6 @@ export function createAriadneStore() {
 				beacons: new Map(),
 				usedNames: new Map(),
 				compactionKey: null,
-				historyRecovered: false,
 				pendingLeap: null,
 			};
 			sessions.set(sessionKey, s);
@@ -100,11 +99,11 @@ export function createAriadneStore() {
 		return null;
 	}
 
-	function pushStackFrame(v, params, programName, toolCallId, toolName) {
+	function pushStackFrame(v, params, programName, toolCallId, toolName, { replay = false } = {}) {
 		const hasThread = params[ARIADNE_BUDGET_FIELD] !== undefined;
 		const hasGoal = params[ARIADNE_GOAL_FIELD] !== undefined;
 
-		if (hasGoal && !hasThread) {
+		if (hasGoal && !hasThread && !replay) {
 			throw herdError("INVALID_ARGUMENT", `${ARIADNE_GOAL_FIELD} requires ${ARIADNE_BUDGET_FIELD}`, {
 				field: ARIADNE_GOAL_FIELD,
 			});
@@ -132,6 +131,12 @@ export function createAriadneStore() {
 			}
 			ownGoal = rawGoal.trim();
 			ownDeadline = v.currentTurn + 1 + turns;
+		} else if (replay && hasGoal && typeof params[ARIADNE_GOAL_FIELD] === "string") {
+			// Replayed history may contain partially recorded anchors (older
+			// receipts, host-trimmed arguments). Keep the goal for orientation;
+			// no deadline is invented.
+			const replayGoal = params[ARIADNE_GOAL_FIELD].trim();
+			if (replayGoal.length > 0) ownGoal = replayGoal;
 		}
 
 		const frame = {
@@ -153,8 +158,9 @@ export function createAriadneStore() {
 	function validateAndApplyFork(sessionKey, params, programName, toolCallId, toolName) {
 		const s = getSession(sessionKey);
 		const old = s.usedNames.get(programName);
-		if (old && old !== toolCallId) throw herdError("NAME_TAKEN", `Program name already used: ${programName}`);
-		if (old) return {};
+		const active = s.active.indexByProgram.has(programName);
+		if (active && old !== toolCallId) throw herdError("NAME_TAKEN", `Program name already used: ${programName}`);
+		if (active) return {};
 		const result = pushStackFrame(s.active, params, programName, toolCallId, toolName);
 		s.usedNames.set(programName, toolCallId);
 		return result;
@@ -186,7 +192,7 @@ export function createAriadneStore() {
 							.filter(
 								(block) =>
 									block?.type === "toolCall" &&
-									/^clj_(plan|devops|review|worker)$/.test(block.name) &&
+									/^clj_(plan|devops|review|worker|auditor)$/.test(block.name) &&
 									typeof block.id === "string" &&
 									(typeof block.arguments?.name === "string" || resultNames.has(block.id)),
 							)
@@ -209,11 +215,7 @@ export function createAriadneStore() {
 		if (s.compactionKey !== compactionKey) {
 			s.compactionKey = compactionKey;
 			s.active = createEmptyVerse();
-			s.historyRecovered = false;
 		}
-		if (s.historyRecovered) return;
-		s.historyRecovered = true;
-
 		for (const call of calls(postEntries)) {
 			if (call.id === currentCallId) continue;
 			if (s.active.indexByProgram.has(call.arguments.name)) continue;
@@ -255,11 +257,10 @@ export function createAriadneStore() {
 		return sessions.delete(sessionKey);
 	}
 
-	function timeLeap(sessionKey, params, { leafId = null, parkedNames = [] } = {}) {
-
+	function timeLeap(sessionKey, params) {
 		if (params[ARIADNE_BUDGET_FIELD] !== undefined || params[ARIADNE_GOAL_FIELD] !== undefined) {
 			throw herdError(
-				"INVALID_ARGUMENT",
+				'INVALID_ARGUMENT',
 				`time_leap does not accept ${ARIADNE_BUDGET_FIELD} or ${ARIADNE_GOAL_FIELD}; re-anchor on your next clj_* call`,
 				{ field: params[ARIADNE_BUDGET_FIELD] !== undefined ? ARIADNE_BUDGET_FIELD : ARIADNE_GOAL_FIELD },
 			);
@@ -268,89 +269,124 @@ export function createAriadneStore() {
 		const experience = params.experience;
 		const beaconNameParam = params.beacon_name;
 		const beaconDescription = params.beacon_description;
-		if (typeof targetProgram !== "string" || targetProgram.trim().length === 0) {
-			throw herdError("INVALID_ARGUMENT", "time_leap requires a non-empty target string", { field: "target" });
+		if (typeof targetProgram !== 'string' || targetProgram.trim().length === 0) {
+			throw herdError('INVALID_ARGUMENT', 'time_leap requires a non-empty target string', { field: 'target' });
 		}
-		if (typeof experience !== "string" || experience.trim().length === 0) {
-			throw herdError("INVALID_ARGUMENT", "time_leap requires a non-empty experience string", { field: "experience" });
+		if (typeof experience !== 'string' || experience.trim().length === 0) {
+			throw herdError('INVALID_ARGUMENT', 'time_leap requires a non-empty experience string', { field: 'experience' });
 		}
-		if (typeof beaconNameParam !== "string" || beaconNameParam.trim().length === 0) {
-			throw herdError("INVALID_ARGUMENT", "time_leap requires a non-empty beacon_name string", { field: "beacon_name" });
+		if (typeof beaconNameParam !== 'string' || beaconNameParam.trim().length === 0) {
+			throw herdError('INVALID_ARGUMENT', 'time_leap requires a non-empty beacon_name string', { field: 'beacon_name' });
 		}
-		if (typeof beaconDescription !== "string" || beaconDescription.trim().length === 0) {
-			throw herdError("INVALID_ARGUMENT", "time_leap requires a non-empty beacon_description string", { field: "beacon_description" });
+		if (typeof beaconDescription !== 'string' || beaconDescription.trim().length === 0) {
+			throw herdError('INVALID_ARGUMENT', 'time_leap requires a non-empty beacon_description string', { field: 'beacon_description' });
 		}
-
 		const s = getSession(sessionKey);
-		const v = s.active;
-		const idx = v.indexByProgram.get(targetProgram);
-		if (idx === undefined) {
-			throw herdError(
-				"PROGRAM_UNKNOWN",
-				`Unknown target for time_leap (must be a post-compaction clj_* anchor on the current timeline): ${targetProgram}`,
-				{
-					target: targetProgram,
-					known: v.stack.map((f) => f.programName),
-					beacons: [...s.beacons.keys()],
-				},
-			);
-		}
-
-		if (Array.isArray(parkedNames) && parkedNames.length > 0) {
-			const prefixNames = new Set(v.stack.slice(0, idx).map((f) => f.programName));
-			const orphans = parkedNames.filter((name) => typeof name === "string" && !prefixNames.has(name));
-			if (orphans.length > 0) {
-				throw herdError(
-					"RESOURCES_NOT_QUIESCENT",
-					`Target ${JSON.stringify(targetProgram)} does not know about your parked programs (${orphans.join(", ")}). Resolve them via (unpark ...) or (abandon ...) before leaping.`,
-					{ target: targetProgram, orphans },
-				);
-			}
-		}
-
-		const targetFrame = v.stack[idx];
-		const beaconName = beaconNameParam.trim();
-		if (s.beacons.has(beaconName)) {
-			throw herdError("NAME_TAKEN", `Beacon name already exists: ${beaconName}`, {
-				name: beaconName,
+		const targetName = targetProgram.trim();
+		if (s.beacons.has(targetName)) {
+			throw herdError('NAME_TAKEN', `NAME_TAKEN: beacon ${targetName} is read-only and cannot be a time_leap target`, {
+				target: targetName,
 				beacons: [...s.beacons.keys()],
 			});
 		}
+		const beaconName = beaconNameParam.trim();
+		if (s.beacons.has(beaconName)) {
+			throw herdError('NAME_TAKEN', `Beacon name already exists: ${beaconName}`, { name: beaconName, beacons: [...s.beacons.keys()] });
+		}
+		const targetFrame = s.active.stack.find((frame) => frame.programName === targetName);
+		s.pendingLeap = {
+			targetProgram: targetProgram.trim(),
+			experience: experience.trim(),
+			beaconName,
+			beaconDescription: beaconDescription.trim(),
+			targetGoal: targetFrame?.ownGoal ?? nearestGoal(s.active),
+		};
+		return { pending: true, target: targetProgram.trim(), beaconName };
+	}
 
-		s.beacons.set(beaconName, {
-			name: beaconName,
-			description: beaconDescription.trim(),
+	function findTargetCall(messages, targetProgram) {
+		let found = null;
+		for (let index = 0; index < messages.length; index += 1) {
+			const message = messages[index];
+			if (message?.role !== 'assistant' || !Array.isArray(message.content)) continue;
+			for (const block of message.content) {
+				if (block?.type !== 'toolCall' || typeof block.id !== 'string') continue;
+				if (!/^clj_(plan|devops|review|worker|auditor)$/.test(block.name)) continue;
+				if (block.arguments?.name !== targetProgram) continue;
+				found = {
+					index,
+					toolCallId: block.id,
+					goal:
+						typeof block.arguments?.[ARIADNE_GOAL_FIELD] === 'string' ? block.arguments[ARIADNE_GOAL_FIELD] : null,
+				};
+			}
+		}
+		return found;
+	}
+
+	function rebuildFrames(v, messages) {
+		v.stack.length = 0;
+		v.indexByProgram.clear();
+		for (const message of messages) {
+			if (message?.role !== 'assistant' || !Array.isArray(message.content)) continue;
+			for (const block of message.content) {
+				if (block?.type !== 'toolCall' || typeof block.id !== 'string') continue;
+				if (!/^clj_(plan|devops|review|worker|auditor)$/.test(block.name)) continue;
+				const name = block.arguments?.name;
+				if (typeof name !== 'string' || name.length === 0) continue;
+				pushStackFrame(v, block.arguments, name, block.id, block.name, { replay: true });
+				v.currentTurn += 1;
+			}
+		}
+		v.turnDirty = false;
+	}
+
+	function resolvePendingLeap(sessionKey, messages, { leafId = null } = {}) {
+		const s = getSession(sessionKey);
+		const pending = s.pendingLeap;
+		if (!pending) return null;
+		s.pendingLeap = null;
+		const list = Array.isArray(messages) ? messages : [];
+		const found = findTargetCall(list, pending.targetProgram);
+		if (found === null) return { found: false, target: pending.targetProgram };
+		const v = s.active;
+		const stackIndex = v.indexByProgram.get(pending.targetProgram);
+		if (stackIndex !== undefined) {
+			// The live stack still knows this anchor (the common case: the leap
+			// happens in the same process that forked it). Keep its real budgets
+			// and frame identity instead of re-deriving weaker data from message
+			// arguments, then cut back to the target anchor (keep its prefix).
+			const targetFrame = v.stack[stackIndex];
+			for (const frame of v.stack.slice(stackIndex)) {
+				v.indexByProgram.delete(frame.programName);
+			}
+			v.stack.length = stackIndex;
+			v.currentTurn = targetFrame.turnAtCall;
+			v.turnDirty = false;
+		} else {
+			// After a restart or compaction the stack is gone; rebuild the prefix
+			// from durable message history as a best-effort orientation.
+			rebuildFrames(v, list.slice(0, found.index));
+		}
+		const targetGoal = found.goal ?? pending.targetGoal ?? nearestGoal(v);
+		s.beacons.set(pending.beaconName, {
+			name: pending.beaconName,
+			description: pending.beaconDescription,
 			leafId,
 			messagesSnapshot: null,
 		});
-
-		const targetGoal = targetFrame.ownGoal ?? nearestGoal(v, idx);
-		const discarded = v.stack.splice(idx);
-		for (const frame of discarded) {
-			v.indexByProgram.delete(frame.programName);
-		}
-		v.currentTurn = targetFrame.turnAtCall;
-		v.turnDirty = false;
-
-		const nextRemaining = remainingTurns(v);
-		
-
-		s.pendingLeap = {
-			targetProgram,
-			cutCallId: targetFrame.toolCallId,
-			leavingBeaconName: beaconName,
-			targetGoal,
-			experience: experience.trim(),
-		};
-
+		const userMessage = buildTimeLeapUserMessage({ targetGoal, experience: pending.experience });
+		const remaining = remainingTurns(v);
 		return {
-			target: targetProgram,
-			beaconName,
-			remaining: nextRemaining,
-			updatedBudget: nextRemaining,
+			found: true,
+			target: pending.targetProgram,
+			beaconName: pending.beaconName,
+			messages: [...list.slice(0, found.index), userMessage],
+			cutCallId: found.toolCallId,
+			targetGoal,
+			remaining,
+			updatedBudget: remaining,
 			budgets: budgetEntries(v),
-			discarded: discarded.map((frame) => frame.programName),
-			beacons: listBeacons(sessionKey),
 		};
 	}
 
@@ -361,13 +397,6 @@ export function createAriadneStore() {
 		if (!saved) return;
 		if (leafId !== undefined && leafId !== null) saved.leafId = leafId;
 		if (Array.isArray(messages)) saved.messagesSnapshot = [...messages];
-	}
-
-	function consumePendingLeap(sessionKey) {
-		const s = getSession(sessionKey);
-		const leap = s.pendingLeap;
-		s.pendingLeap = null;
-		return leap;
 	}
 
 	function status(sessionKey) {
@@ -400,8 +429,8 @@ export function createAriadneStore() {
 		markTurnActive,
 		settleTurn,
 		timeLeap,
+		resolvePendingLeap,
 		attachBeaconSnapshot,
-		consumePendingLeap,
 		listBeacons,
 		getBeacon,
 		retireSession,
@@ -416,64 +445,17 @@ function formatTurns(value) {
 }
 
 
+const RESUME_NOTE =
+	"The handoff below records the actual latest state at leap time. Verify files, tests, and commits first; finished items stay finished and must not be re-closed or replayed; partially finished items continue from their latest observed state; immediately start the next new unit of work.";
+
 function buildTimeLeapUserMessage({ targetGoal, experience }) {
 	const sections = [];
 	if (targetGoal) sections.push(`Goal: ${targetGoal}`);
+	sections.push(RESUME_NOTE);
 	sections.push(experience);
 	return {
 		role: "user",
 		content: [{ type: "text", text: sections.join("\n\n") }],
 	};
-}
-
-function cutFromToolCall(messages, cutCallId, targetProgram, userMessage) {
-	let assistantIdx = -1;
-	let resolvedCallId = cutCallId;
-
-	if (typeof resolvedCallId === "string" && resolvedCallId.length > 0) {
-		assistantIdx = messages.findIndex(
-			(m) =>
-				m &&
-				m.role === "assistant" &&
-				Array.isArray(m.content) &&
-				m.content.some((b) => b && b.type === "toolCall" && b.id === resolvedCallId),
-		);
-	}
-
-	if (assistantIdx === -1 && targetProgram) {
-		const needle = `:name ${JSON.stringify(targetProgram)}`;
-		const resultIdx = messages.findIndex((m) => {
-			if (m?.role !== "toolResult") return false;
-			const blocks = Array.isArray(m.content) ? m.content : [];
-			return blocks.some((b) => typeof b?.text === "string" && b.text.includes(needle));
-		});
-		if (resultIdx !== -1 && typeof messages[resultIdx]?.toolCallId === "string") {
-			resolvedCallId = messages[resultIdx].toolCallId;
-			assistantIdx = messages.findIndex(
-				(m) =>
-					m &&
-					m.role === "assistant" &&
-					Array.isArray(m.content) &&
-					m.content.some((b) => b && b.type === "toolCall" && b.id === resolvedCallId),
-			);
-		}
-		if (assistantIdx === -1 && resultIdx !== -1) {
-			assistantIdx = resultIdx;
-		}
-	}
-
-	if (assistantIdx === -1) return [...messages, userMessage];
-	return [...messages.slice(0, assistantIdx), userMessage];
-}
-
-/**
- * Forward-clean Time Leap++ rewrite: always cuts the current active messages at
- * `cutCallId` and replaces everything after with `Goal + experience`.
- * Never switches branches and never resurrects old universe snapshots.
- */
-export function applyTimeLeapToMessages(messages, leap) {
-	if (!Array.isArray(messages) || !leap) return { messages };
-	const userMessage = buildTimeLeapUserMessage(leap);
-	return { messages: cutFromToolCall(messages, leap.cutCallId, leap.targetProgram, userMessage) };
 }
 

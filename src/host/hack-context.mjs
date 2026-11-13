@@ -91,23 +91,34 @@ export function syncSessionDelta(sessionManager, before, after, prefixLen) {
 		return { persisted: false, branched: false, appended: 0 };
 	}
 
+	const pending = after.length - prefixLen;
+	if (pending > 64) {
+		return { persisted: false, branched: false, appended: 0, skipped: "append-limit" };
+	}
 	let branched = false;
 	if (prefixLen < before.length) {
 		const branchEntries = sessionManager.getBranch();
 		const messageEntries = Array.isArray(branchEntries)
 			? branchEntries.filter((entry) => entry && MESSAGE_ENTRY_TYPES.has(entry.type))
 			: [];
-		const targetEntry = messageEntries[prefixLen];
-		if (!targetEntry) {
-			return { persisted: false, branched: false, appended: 0 };
+		let replacedEntry = null;
+		const replaced = before[prefixLen];
+		for (let index = messageEntries.length - 1; index >= 0; index -= 1) {
+			const entry = messageEntries[index];
+			if (deepEqual(entry.message ?? entry, replaced)) {
+				replacedEntry = entry;
+				break;
+			}
 		}
-		if (targetEntry.parentId == null) {
+		if (replacedEntry === null || replacedEntry.parentId == null) {
 			if (typeof sessionManager.resetLeaf !== "function") {
 				return { persisted: false, branched: false, appended: 0 };
 			}
 			sessionManager.resetLeaf();
+		} else if (typeof sessionManager.branch === "function") {
+			sessionManager.branch(replacedEntry.parentId);
 		} else {
-			sessionManager.branch(targetEntry.parentId);
+			return { persisted: false, branched: false, appended: 0 };
 		}
 		branched = true;
 	}

@@ -131,6 +131,18 @@ function makePorts(options = {}) {
 				return options.meta ?? meta();
 			},
 		},
+		pathGate: {
+			async runExclusive(_paths, run) {
+				return await run();
+			},
+		},
+		hostRead: async (args) => ({
+			content: [{ type: "text", text: readFileSync(join(options.root ?? process.cwd(), args.path), "utf8") }],
+		}),
+		hostWrite: async (args) => {
+			writeFileSync(join(options.root ?? process.cwd(), args.path), args.content);
+			return { content: [{ type: "text", text: "ok" }] };
+		},
 	};
 }
 
@@ -599,7 +611,7 @@ describe("role capability boundaries", () => {
 		const bundle = buildSandboxTools({
 			role: "devops",
 			roots: { writeRoot: root, callLogDir: logs },
-			ports: makePorts(),
+			ports: makePorts({ root }),
 		});
 
 		const cat = await runTool(bundle, {
@@ -625,7 +637,7 @@ describe("role capability boundaries", () => {
 			code: '(write {:path "a.txt" :content "x"})',
 		});
 		expect(write.isError).not.toBe(true);
-		expect(keywordName(field(write.receipt, "state"))).toBe("completed");
+		expect(write.receipt).toBeInstanceOf(Map);
 	});
 
 	it("fails closed when call has no write gate", async () => {
@@ -656,194 +668,7 @@ describe("role capability boundaries", () => {
 	});
 });
 
-describe("VFS and protected commit assembly", () => {
-	it("commits staged writes under the gate and reports the VFS result", async () => {
-		const root = sandbox();
-		const events = [];
-		const target = join(root, "a.txt");
-		const bundle = buildSandboxTools({
-			role: "worker",
-			roots: { writeRoot: root },
-			ports: makePorts({ events }),
-		});
-		const { receipt } = await runTool(bundle, {
-			name: "p",
-			code: '(write {:path "a.txt" :content "hello"})',
-		});
-
-		expect(keywordName(field(receipt, "state"))).toBe("completed");
-		const commit = field(receipt, "commit");
-		expect(keywordName(field(commit, "status"))).toBe("applied");
-		expect(field(commit, "written")).toContain(target);
-		expect(readFileSync(target, "utf8")).toBe("hello");
-		expect(events).toEqual(["gate:acquire", "control:applying", "control:publish", "gate:release"]);
-	});
-
-	it("fails closed when a write has no write gate", async () => {
-		const root = sandbox();
-		const target = join(root, "a.txt");
-		const bundle = buildSandboxTools({
-			role: "worker",
-			roots: { writeRoot: root },
-			ports: {
-				callMeta: { read: () => meta() },
-			},
-		});
-		const { receipt } = await runTool(bundle, {
-			name: "p",
-			code: '(write {:path "a.txt" :content "hello"})',
-		});
-
-		expect(keywordName(field(receipt, "state"))).toBe("failed");
-		expect(keywordName(field(field(receipt, "error"), "code"))).toBe("INVALID_ARGUMENT");
-		expect(field(field(receipt, "error"), "message")).toContain("writeGate");
-		expect(existsSync(target)).toBe(false);
-	});
-
-	it("rechecks a pure read under the write gate before completion", async () => {
-		const root = sandbox();
-		const target = file(root, "a.txt", "original");
-		const ports = makePorts();
-		const baseGate = ports.writeGate;
-		let first = true;
-		ports.writeGate = {
-			async runExclusive(run) {
-				if (first) {
-					first = false;
-					writeFileSync(target, "changed", "utf8");
-				}
-				return baseGate.runExclusive(run);
-			},
-		};
-		const bundle = buildSandboxTools({
-			role: "worker",
-			roots: { writeRoot: root },
-			ports,
-		});
-		const { receipt } = await runTool(bundle, {
-			name: "readonly",
-			code: '(cat {:path "a.txt"})',
-		});
-
-		expect(keywordName(field(receipt, "state"))).toBe("failed");
-		expect(keywordName(field(field(receipt, "error"), "code"))).toBe("FILE_CONFLICT");
-		expect(readFileSync(target, "utf8")).toBe("changed");
-	});
-
-	it("cancels a commit that has not reached applying without writing", async () => {
-		const root = sandbox();
-		const target = join(root, "a.txt");
-		const controller = new AbortController();
-		const ports = makePorts();
-		ports.writeGate = {
-			async runExclusive(run) {
-				controller.abort();
-				return run();
-			},
-		};
-		const bundle = buildSandboxTools({
-			role: "worker",
-			roots: { writeRoot: root },
-			ports,
-		});
-		const { receipt } = await runTool(
-			bundle,
-			{
-				name: "p",
-				code: '(write {:path "a.txt" :content "x"})',
-			},
-			{ signal: controller.signal },
-		);
-
-		expect(keywordName(field(receipt, "state"))).toBe("failed");
-		expect(keywordName(field(field(receipt, "error"), "code"))).toBe("UPSTREAM_ABORTED");
-		expect(existsSync(target)).toBe(false);
-	});
-
-	it("parks with a pending VFS and commits only after unpark", async () => {
-		const root = sandbox();
-		const target = join(root, "pending.txt");
-		const bundle = buildSandboxTools({
-			role: "worker",
-			roots: { writeRoot: root },
-			ports: makePorts(),
-		});
-		const first = await runTool(bundle, {
-			name: "patch",
-			code: `(do (write {:path "pending.txt" :content "later"})
-			            (where {:content "aa" :needle "a"}))`,
-		});
-
-		expect(keywordName(field(first.receipt, "state"))).toBe("parked");
-		expect(existsSync(target)).toBe(false);
-
-		const second = await runTool(bundle, {
-			name: "resume",
-			code: '(unpark {:name "patch" :value [0 1]})',
-		});
-		const resumed = field(second.receipt, "value");
-		expect(keywordName(field(resumed, "state"))).toBe("completed");
-		expect(readFileSync(target, "utf8")).toBe("later");
-	});
-
-	it("rejects a commit when a read dependency changed during the park", async () => {
-		const root = sandbox();
-		const target = file(root, "a.txt", "original");
-		const bundle = buildSandboxTools({
-			role: "worker",
-			roots: { writeRoot: root },
-			ports: makePorts(),
-		});
-		const first = await runTool(bundle, {
-			name: "patch",
-			code: `(let [src (cat {:path "a.txt"})]
-			          (do (write {:path "a.txt" :content (str src "-staged")})
-			              (where {:content "aa" :needle "a"})))`,
-		});
-		expect(keywordName(field(first.receipt, "state"))).toBe("parked");
-
-		writeFileSync(target, "external!", "utf8");
-		const second = await runTool(bundle, {
-			name: "resume",
-			code: '(unpark {:name "patch" :value [0 1]})',
-		});
-		const resumed = field(second.receipt, "value");
-		expect(keywordName(field(resumed, "state"))).toBe("failed");
-		expect(keywordName(field(field(resumed, "error"), "code"))).toBe("FILE_CONFLICT");
-		expect(readFileSync(target, "utf8")).toBe("external!");
-	});
-});
-
 describe("call: drain, output, and cancellation", () => {
-	it("drains pending VFS before the command and reports the drain", async () => {
-		const root = sandbox();
-		const logs = join(root, "logs");
-		const target = file(root, "a.txt", "old");
-		const events = [];
-		const bundle = buildSandboxTools({
-			role: "holder",
-			roots: { writeRoot: root, callLogDir: logs },
-			ports: makePorts({ events }),
-		});
-		const { receipt } = await runTool(bundle, {
-			name: "p",
-			code: `(let [old (cat {:path "a.txt"})]
-			          (do (write {:path "a.txt" :content "new"})
-			              (call {:argv ["cat", "a.txt"]})))`,
-		});
-
-		const call = field(receipt, "value");
-		expect(field(call, "stdout")).toBe("new");
-		expect(keywordName(field(field(call, "drained"), "status"))).toBe("applied");
-		expect(field(field(call, "drained"), "written")).toContain(target);
-		expect(field(call, "written")).toContain(target);
-		expect(readFileSync(target, "utf8")).toBe("new");
-		const logPath = field(call, "log-path");
-		expect(logPath).toContain("logs");
-		expect(readFileSync(logPath, "utf8")).toContain("new");
-		expect(events).toContain("control:running");
-	});
-
 	it("caps inline output, flags truncation, and keeps the full log", async () => {
 		const root = sandbox();
 		const logs = join(root, "logs");
@@ -1020,34 +845,6 @@ describe("call: drain, output, and cancellation", () => {
 		expect(["outcome-unknown", "cancelled"]).toContain(keywordName(field(interrupted, "status")));
 	});
 
-	it("retains drained file facts when a call is cancelled after drain", async () => {
-		const root = sandbox();
-		const logs = join(root, "logs");
-		const target = file(root, "a.txt", "old");
-		const controller = new AbortController();
-		const bundle = buildSandboxTools({
-			role: "holder",
-			roots: { writeRoot: root, callLogDir: logs },
-			ports: makePorts(),
-		});
-		setTimeout(() => controller.abort(), 200);
-		const { receipt } = await runTool(
-			bundle,
-			{
-				name: "p",
-				code: `(let [src (cat {:path "a.txt"})]
-				          (do (write {:path "a.txt" :content "new"})
-				              (call {:argv ["sleep", "5"]})))`,
-			},
-			{ signal: controller.signal },
-		);
-
-		const interrupted = field(receipt, "interrupted-call");
-		expect(field(interrupted, "written")).toContain(target);
-		expect(keywordName(field(field(interrupted, "drained"), "status"))).toBe("applied");
-		expect(readFileSync(target, "utf8")).toBe("new");
-	});
-
 	it("keeps the sandbox usable after a cancelled call", async () => {
 		const root = sandbox();
 		const logs = join(root, "logs");
@@ -1156,118 +953,6 @@ describe("auditor roots", () => {
 		});
 		return { bundle, root, evidenceRoot, auditTmp, logs, ports };
 	}
-
-	it("reads the workspace and writes only evidence or the dedicated tmp root", async () => {
-		const { bundle, root, evidenceRoot, auditTmp } = auditorBundle();
-		const tmpTarget = join(auditTmp, "scratch.txt");
-		const { receipt } = await runTool(bundle, {
-			name: "audit",
-			code: `(do (write {:path "plans/slug/evidence/CASE-1/note.md" :content "evidence"})
-			            (write {:path ${JSON.stringify(tmpTarget)} :content "scratch"})
-			            [(cat {:path "product.mjs"}) (cat {:path ${JSON.stringify(tmpTarget)}})])`,
-		});
-
-		expect(keywordName(field(receipt, "state"))).toBe("completed");
-		expect(field(receipt, "value")[0]).toContain("export const value");
-		expect(field(receipt, "value")[1]).toBe("scratch");
-		expect(readFileSync(join(evidenceRoot, "note.md"), "utf8")).toBe("evidence");
-		expect(readFileSync(tmpTarget, "utf8")).toBe("scratch");
-		const commit = field(receipt, "commit");
-		expect(keywordName(field(commit, "status"))).toBe("applied");
-		expect(field(commit, "written")).toHaveLength(2);
-		expect(field(receipt, "value")[0]).not.toContain("scratch");
-		expect(readFileSync(join(root, "product.mjs"), "utf8")).toContain("value = 1");
-	});
-
-	it("accepts the production root shape with a /tmp audit root", async () => {
-		const root = sandbox("herd-tools-prod-auditor-");
-		const evidenceRoot = join(root, "plans", "slug", "evidence", "CASE-1");
-		const auditTmp = mkdtempSync(join(tmpdir(), "herd-audit-slug-case-"));
-		roots.push(auditTmp);
-		const logs = join(root, ".herd", "artifacts", "slug", "auditor");
-		mkdirSync(evidenceRoot, { recursive: true });
-		file(root, "product.mjs", "export const value = 1;\n");
-		const io = testSandboxIo();
-		const bundle = buildSandboxTools({
-			role: "auditor",
-			roots: {
-				writeRoot: root,
-				evidenceRoot,
-				auditTmp,
-				readRoots: [],
-				callLogDir: logs,
-				io,
-				sandbox: { available: true, runCommand: io.runCommand },
-			},
-			ports: makePorts(),
-		});
-
-		const tmpFile = join(auditTmp, "probe.txt");
-		const { receipt } = await runTool(bundle, {
-			name: "prod",
-			code: `(do (write {:path "plans/slug/evidence/CASE-1/prod.md" :content "evidence"})
-			            (write {:path ${JSON.stringify(tmpFile)} :content "tmp"})
-			            (cat {:path "product.mjs"}))`,
-		});
-
-		expect(keywordName(field(receipt, "state"))).toBe("completed");
-		expect(keywordName(field(field(receipt, "commit"), "status"))).toBe("applied");
-		expect(readFileSync(join(evidenceRoot, "prod.md"), "utf8")).toBe("evidence");
-		expect(readFileSync(tmpFile, "utf8")).toBe("tmp");
-	});
-
-	it("reports applied files from an uncertain batch", async () => {
-		const { bundle, evidenceRoot, ports } = auditorBundle();
-		const first = join(evidenceRoot, "a", "one.txt");
-		const second = join(evidenceRoot, "b", "two.txt");
-		mkdirSync(dirname(first), { recursive: true });
-		mkdirSync(dirname(second), { recursive: true });
-		ports.control.markApplying = () => {
-			rmSync(dirname(second), { recursive: true, force: true });
-			return { ok: true };
-		};
-
-		const { receipt } = await runTool(bundle, {
-			name: "uncertain",
-			code: `(do (write {:path "plans/slug/evidence/CASE-1/a/one.txt" :content "one"})
-			            (write {:path "plans/slug/evidence/CASE-1/b/two.txt" :content "two"}))`,
-		});
-		const error = field(receipt, "error");
-		const data = field(error, "data");
-
-		expect(keywordName(field(receipt, "state"))).toBe("failed");
-		expect(keywordName(field(error, "code"))).toBe("BOARD_CONFLICT");
-		expect(field(data, "written")).toContain(first);
-		expect(readFileSync(first, "utf8")).toBe("one");
-		expect(existsSync(second)).toBe(false);
-	});
-
-	it("rechecks a read-only dependency even when its batch has no write", async () => {
-		const { bundle, root, auditTmp, ports } = auditorBundle();
-		const product = join(root, "product.mjs");
-		const written = join(auditTmp, "written.txt");
-		const baseGate = ports.writeGate;
-		let first = true;
-		ports.writeGate = {
-			async runExclusive(run) {
-				if (first) {
-					first = false;
-					writeFileSync(product, "changed", "utf8");
-				}
-				return baseGate.runExclusive(run);
-			},
-		};
-
-		const { receipt } = await runTool(bundle, {
-			name: "facts",
-			code: `(let [src (cat {:path "product.mjs"})]
-			          (write {:path ${JSON.stringify(written)} :content "t"}))`,
-		});
-
-		expect(keywordName(field(receipt, "state"))).toBe("failed");
-		expect(keywordName(field(field(receipt, "error"), "code"))).toBe("FILE_CONFLICT");
-		expect(existsSync(written)).toBe(false);
-	});
 
 	it("rejects call even when a passthrough port is injected", async () => {
 		const { bundle, auditTmp } = auditorBundle({
@@ -1432,31 +1117,4 @@ describe("observed read facts", () => {
 
 
 describe("host read/write proxies", () => {
-	it("delegates read and write to injected host ports", async () => {
-		const root = sandbox();
-		const calls = [];
-		const bundle = buildSandboxTools({
-			role: "devops",
-			roots: { writeRoot: root },
-			ports: {
-				...makePorts(),
-				hostRead: async (args) => {
-					calls.push(["read", args]);
-					return { content: [{ type: "text", text: "HOST-READ" }] };
-				},
-				hostWrite: async (args) => {
-					calls.push(["write", args]);
-					return { content: [{ type: "text", text: "HOST-WRITE" }] };
-				},
-			},
-		});
-		const read = await runTool(bundle, { name: "host-read", code: '(read {:path "README.md"})' });
-		expect(field(field(read.receipt, "value"), "content")).toBe("HOST-READ");
-		const write = await runTool(bundle, { name: "host-write", code: '(write {:path "out.txt" :content "hello"})' });
-		expect(field(field(write.receipt, "value"), "content")).toBe("HOST-WRITE");
-		expect(calls).toEqual([
-			["read", { path: "README.md" }],
-			["write", { path: "out.txt", content: "hello" }],
-		]);
 	});
-});

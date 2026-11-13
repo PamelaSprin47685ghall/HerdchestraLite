@@ -47,6 +47,9 @@ host/imports
   ├── host/subprocess
   └── clj-sandbox/evaluator
 
+host/native-runner（懒加载宿主 Runner；被 imports 重导出）
+  └── clj-main
+
 util/atomic-write ── clj-sandbox/vfs
 clj-sandbox/ufss ── clj-sandbox/evaluator
 clj-sandbox/where ── clj-sandbox/evaluator
@@ -66,7 +69,7 @@ swarm/auditors（只依赖 util/errors）
 prompts/common、prompts/runtime-wires（不 import 其他产品模块）；prompts/roles ── clj-sandbox/ufss
 tui/dashboard-widget ── tui/dashboard-model
 
-clj-main ── clj-sandbox/tools、host/hack-context、host/hack-system-prompt、prompts/common、clj-sandbox/ufss、scope/ariadne、util/errors
+clj-main ── clj-sandbox/tools、host/native-runner、host/hack-context、host/hack-system-prompt、prompts/common、clj-sandbox/ufss、scope/ariadne、util/errors
 main ── 以上全部（按需注入）
 bootstrap-main ── host/health + main
 scope/gate ───── scope/ledger、scope/schema
@@ -84,7 +87,8 @@ scope/gate ───── scope/ledger、scope/schema
 
 | 路径 | 隐藏的变化秘密 | 直接依赖 |
 |---|---|---|
-| `host/imports.mjs` | 宿主与 `cherry-cljs` 的唯一导入点、版本/能力探测 | — |
+| `host/imports.mjs` | 宿主与 `cherry-cljs` 的 eager 导入点、版本/能力探测；重导出 `native-runner` | `native-runner` |
+| `host/native-runner.mjs` | 唯一受控原型捕获：`ExtensionRunner.prototype.createContext` → live runner（懒加载字面量 import） | — |
 | `host/subprocess.mjs` | 完整 `AgentDefinition`、`runSubprocess`、取消树、artifacts 语义 | `imports`、`util/errors` |
 | `host/health.mjs` | 跨入口 health 注册表 | — |
 | `util/atomic-write.mjs` | 同目录 `.tmp` + `fsync` + `rename` | `errors` |

@@ -5,10 +5,16 @@
  * `loadCherry`, `detectCapabilities`, or `hostDiagnostics` from this module, so
  * a host version drift has exactly one landing place.
  *
- * Nothing in this file patches a host object, reads a private field (names
- * starting with `_`), or invents a capability that was not observed. A probe
- * that cannot be answered without a live event or context is reported as
- * `false` and listed in `unverified`; callers must treat that as unavailable.
+ * One deliberate exception patches a host prototype: `native-runner.mjs`
+ * wraps `ExtensionRunner.prototype.createContext` so the extension can keep a
+ * reference to the live runner and delegate to its public `invokeNativeTool`.
+ * The host exposes no other supported route to the native built-ins. The
+ * capture is lazy because the runner module's source graph is not importable
+ * outside the host; a failed import is reported and the sandbox fails closed.
+ * The implementation lives in its own narrow module so sandbox-only tests do
+ * not pull the host package root; this file re-exports it. Everything else
+ * here reads only public fields and never invents a capability. The exception,
+ * its observed host version, and its rollback live in HACK.md.
  *
  * The omp extension loader rewrites host specifiers. Loading this module with
  * plain Node or Bun outside omp resolves the installed host package if one is
@@ -22,6 +28,20 @@ import * as codingAgent from "@oh-my-pi/pi-coding-agent";
 import { cherryStatus } from "../clj-sandbox/cherry.mjs";
 
 const HOST_PACKAGE = "@oh-my-pi/pi-coding-agent";
+
+/* ------------------------------------------------------------------ */
+/* Native tool runner capture                                          */
+/* ------------------------------------------------------------------ */
+
+// Implementation lives in `native-runner.mjs`; re-exported here as the single
+// host-boundary surface.
+export {
+	getNativeRunner,
+	installRunnerCapture,
+	restoreRunnerCapture,
+	runnerCaptureStatus,
+	runnerForContext,
+} from "./native-runner.mjs";
 
 const { AgentSession, Container, Markdown, Settings, Spacer, Text, VERSION, runSubprocess, runSubagentFollowUpTurn } =
 	codingAgent;

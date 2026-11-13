@@ -13,24 +13,15 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, unlinkSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { ERROR_CODES, herdError, isHerdError, messageOf, renderError } from "../util/errors.mjs";
 import { abandonedCapabilities, abortProgram, createSandboxSession, runProgram } from "./evaluator.mjs";
-import { createObservationLedger } from "./observations.mjs";
+import { createObservationLedger, createStampFromStats } from "./observations.mjs";
 import { EdnKeyword, renderReceipt } from "./ufss.mjs";
 import {
 	createBatch,
 	runCall,
-	commit as vfsCommit,
-	glob as vfsGlob,
-	list as vfsList,
-	mkdir as vfsMkdir,
-	move as vfsMove,
-	readText as vfsRead,
-	remove as vfsRemove,
-	stat as vfsStat,
-	write as vfsWrite,
 } from "./vfs.mjs";
 
 const KW_CACHE = new Map();
@@ -702,18 +693,6 @@ function readPlanCases(context, requested) {
 	]);
 }
 
-function classifyRead(context, requested) {
-	return { batch: context.primary, path: requested };
-}
-
-function classifyWrite(context, requested) {
-	return { batch: context.primary, path: requested };
-}
-
-function classifyMove(context, source, target) {
-	return { batch: context.primary, source, target };
-}
-
 function callControlAdapter(control) {
 	if (!control || typeof control !== "object") {
 		return control;
@@ -779,15 +758,25 @@ function makeCapabilityTable(context, ports, execution) {
 		table.read = async (args) => {
 			const requested = requireArgumentString(args, "path");
 			if (typeof ports.hostRead !== "function") {
-				const target = classifyRead(context, requested);
-				const result = vfsRead(target.batch, target.path);
-				return new Map([
-					[kw("content"), result.content],
-					[kw("stamp"), stampValue(result.stamp)],
-					[kw("virtual"), result.virtual],
-				]);
+				throw herdError("HOST_API_MISMATCH", "host read is unavailable; VFS fallback is disabled", { capability: "read" });
 			}
+			const absolute = isAbsolute(requested) ? resolve(requested) : resolve(context.roots.writeRoot, requested);
+			const before = lstatSync(absolute, { bigint: true });
 			const result = await ports.hostRead(ednArgsToObject(args));
+			const after = lstatSync(absolute, { bigint: true });
+			const stampOf = (stats) => ({
+				mtimeSec: Number(stats.mtimeNs / 1000000000n),
+				mtimeNsec: Number(stats.mtimeNs % 1000000000n),
+				size: Number(stats.size),
+			});
+			if (before !== null && after !== null) {
+				const first = stampOf(before);
+				const second = stampOf(after);
+				if (first.mtimeSec !== second.mtimeSec || first.mtimeNsec !== second.mtimeNsec || first.size !== second.size) {
+					throw herdError(":changed-during-read", `file changed while it was read: ${requested}`, { path: requested });
+				}
+				context.stamps.set(absolute, second);
+			}
 			return new Map([
 				[kw("path"), requested],
 				[kw("content"), hostResultText(result)],
@@ -804,27 +793,70 @@ function makeCapabilityTable(context, ports, execution) {
 					return frozen;
 				}
 			}
-			const target = classifyRead(context, requested);
-			const result = vfsRead(target.batch, target.path);
+			const absolute = isAbsolute(requested) ? resolve(requested) : resolve(context.roots.writeRoot, requested);
+			let stats;
+			try {
+				stats = lstatSync(absolute, { bigint: true });
+			} catch {
+				throw herdError(":STRUCTURE_CONFLICT", `file does not exist: ${requested}`, { path: requested });
+			}
+			if (stats.isDirectory()) {
+				throw herdError(":STRUCTURE_CONFLICT", `path is a directory: ${requested}`, { path: requested });
+			}
+			if (stats.size > BigInt(context.primary.limits.fileBytes)) {
+				throw herdError(":LIMIT_EXCEEDED", `file exceeds the limit: ${requested}`, {
+					path: requested,
+					limit: context.primary.limits.fileBytes,
+				});
+			}
+			const bytes = readFileSync(absolute);
+			let content;
+			try {
+				content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+			} catch {
+				throw herdError(":NOT_UTF8", `file is not valid UTF-8: ${requested}`, { path: requested });
+			}
+			const stamp = {
+				mtimeSec: Number(stats.mtimeNs / 1000000000n),
+				mtimeNsec: Number(stats.mtimeNs % 1000000000n),
+				size: Number(stats.size),
+			};
+			context.stamps.set(absolute, stamp); context.observations?.observe(context.observationScope, { path: absolute, exists: true, kind: 'file', stamp: createStampFromStats(stats) });
 			return new Map([
-				[kw("content"), result.content],
-				[kw("stamp"), stampValue(result.stamp)],
-				[kw("virtual"), result.virtual],
+				[kw("content"), content],
+				[kw("stamp"), stampValue(stamp)],
+				[kw("virtual"), false],
 			]);
 		};
 	}
 	if (capabilities.has("stat")) {
 		table.stat = (args) => {
 			const requested = requireArgumentString(args, "path");
-			const target = classifyRead(context, requested);
-			return statValue(vfsStat(target.batch, target.path));
+			const absolute = isAbsolute(requested) ? resolve(requested) : resolve(context.roots.writeRoot, requested);
+			let stats = null;
+			try { stats = lstatSync(absolute, { bigint: true }); } catch (error) { if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error; }
+			if (stats === null) return statValue({ exists: false, size: null, mtimeSec: null, mtimeNsec: null, isDir: false, isFile: false, isSymlink: false, virtual: false });
+			const mtimeSec = Number(stats.mtimeNs / 1000000000n);
+			const mtimeNsec = Number(stats.mtimeNs % 1000000000n);
+			const size = Number(stats.size);
+			context.stamps.set(absolute, { mtimeSec, mtimeNsec, size });
+			return statValue({ exists: true, size, mtimeSec, mtimeNsec, isDir: stats.isDirectory(), isFile: stats.isFile(), isSymlink: stats.isSymbolicLink(), virtual: false });
 		};
 	}
 	if (capabilities.has("ls")) {
 		table.ls = (args) => {
 			const requested = requireArgumentString(args, "path");
-			const target = classifyRead(context, requested);
-			return listValue(vfsList(target.batch, target.path));
+			const absolute = isAbsolute(requested) ? resolve(requested) : resolve(context.roots.writeRoot, requested);
+			let stats = null;
+			try { stats = lstatSync(absolute, { bigint: true }); } catch (error) { if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error; }
+			if (stats === null) return listValue({ exists: false, entries: [] });
+			if (!stats.isDirectory()) throw herdError(':STRUCTURE_CONFLICT', `path is not a directory: ${requested}`, { path: requested });
+			const entries = readdirSync(absolute).sort().map((name) => {
+				let child = null;
+				try { child = lstatSync(join(absolute, name), { bigint: true }); } catch { child = null; }
+				return { name, isDir: Boolean(child?.isDirectory()), isFile: Boolean(child?.isFile()), isSymlink: Boolean(child?.isSymbolicLink()), virtual: false };
+			});
+			return listValue({ exists: true, entries });
 		};
 	}
 	if (capabilities.has("glob")) {
@@ -836,7 +868,16 @@ function makeCapabilityTable(context, ports, execution) {
 			const requested = args.path === undefined || args.path === null ? "" : requireArgumentString(args, "path");
 			const dot = args.dot === true;
 			const onlyFiles = args.onlyFiles !== false && args["only-files"] !== false;
-			const result = await vfsGlob(context.primary, pattern, requested, { dot, onlyFiles });
+			const absolute = isAbsolute(requested) ? resolve(requested) : resolve(context.roots.writeRoot, requested);
+			let stats = null;
+			try { stats = lstatSync(absolute, { bigint: true }); } catch (error) { if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error; }
+			if (stats === null) return new Map([[kw('exists'), false], [kw('entries'), []]]);
+			if (!stats.isDirectory()) throw herdError(':STRUCTURE_CONFLICT', `path is not a directory: ${requested}`, { path: requested });
+			const entries = [];
+			const globber = new Bun.Glob(pattern);
+			for await (const entry of globber.scan({ cwd: absolute, onlyFiles, dot })) entries.push(entry.split(String.fromCharCode(92)).join('/'));
+			entries.sort();
+			const result = { exists: true, entries };
 			return new Map([
 				[kw("exists"), result.exists],
 				[kw("entries"), result.entries],
@@ -846,47 +887,79 @@ function makeCapabilityTable(context, ports, execution) {
 	if (capabilities.has("write")) {
 		table.write = async (args) => {
 			const requested = requireArgumentString(args, "path");
+			const content = requireArgumentString(args, "content");
 			if (typeof ports.hostWrite !== "function") {
-				const target = classifyWrite(context, requested);
-				const result = vfsWrite(target.batch, target.path, requireArgumentString(args, "content"));
-				return operationPath(result, ["path", "bytes", "replaced"]);
+				throw herdError("HOST_API_MISMATCH", "host write is unavailable; VFS fallback is disabled", { capability: "write" });
 			}
-			try {
-				const result = await ports.hostWrite(ednArgsToObject(args));
+			const bytes = Buffer.byteLength(content, "utf8");
+			if (bytes > 2 * 1024 * 1024) {
+				throw herdError(":LIMIT_EXCEEDED", `fileBytes limit exceeded: ${requested}`, { path: requested, bytes });
+			}
+			const absolute = isAbsolute(requested) ? resolve(requested) : resolve(context.roots.writeRoot, requested);
+			const parent = dirname(absolute);
+			const parentStats = lstatSync(parent);
+			if (!parentStats || !parentStats.isDirectory()) {
+				throw herdError(":STRUCTURE_CONFLICT", `parent directory is missing: ${parent}`, { path: requested });
+			}
+			if (typeof ports.pathGate?.runExclusive !== "function") {
+				throw herdError("HOST_API_MISMATCH", "path token gate is unavailable", { capability: "write" });
+			}
+			return await ports.pathGate.runExclusive([absolute], async () => {
+				const hostParams = ednArgsToObject(args);
+				const expected = context.stamps.get(absolute);
+				if (expected !== undefined) hostParams.__expectedStamp = expected;
+				const result = await ports.hostWrite(hostParams);
 				return new Map([
 					[kw("path"), requested],
 					[kw("content"), hostResultText(result)],
 					[kw("host"), true],
 				]);
-			} catch (error) {
-				// Host write is unavailable in default mode; preserve the protected VFS path.
-				const target = classifyWrite(context, requested);
-				const result = vfsWrite(target.batch, target.path, requireArgumentString(args, "content"));
-				return operationPath(result, ["path", "bytes", "replaced"]);
-			}
+			});
 		};
 	}
 	if (capabilities.has("mkdir")) {
-		table.mkdir = (args) => {
-			const target = classifyWrite(context, requireArgumentString(args, "path"));
-			return operationPath(vfsMkdir(target.batch, target.path), ["path"]);
+		table.mkdir = async (args) => {
+			const requested = requireArgumentString(args, "path");
+			const absolute = isAbsolute(requested) ? resolve(requested) : resolve(context.roots.writeRoot, requested);
+			return await ports.pathGate.runExclusive([absolute], async () => {
+				try {
+					mkdirSync(absolute);
+				} catch (error) {
+					throw herdError(":STRUCTURE_CONFLICT", messageOf(error), { path: requested });
+				}
+				return new Map([[kw("path"), requested]]);
+			});
 		};
 	}
 	if (capabilities.has("rm")) {
-		table.rm = (args) => {
-			const target = classifyWrite(context, requireArgumentString(args, "path"));
-			return operationPath(vfsRemove(target.batch, target.path), ["path"]);
+		table.rm = async (args) => {
+			const requested = requireArgumentString(args, "path");
+			const absolute = isAbsolute(requested) ? resolve(requested) : resolve(context.roots.writeRoot, requested);
+			return await ports.pathGate.runExclusive([absolute], async () => {
+				try {
+					if (lstatSync(absolute).isDirectory()) rmdirSync(absolute);
+					else unlinkSync(absolute);
+				} catch (error) {
+					throw herdError(":STRUCTURE_CONFLICT", messageOf(error), { path: requested });
+				}
+				return new Map([[kw("path"), requested]]);
+			});
 		};
 	}
 	if (capabilities.has("mv")) {
-		table.mv = (args) => {
+		table.mv = async (args) => {
 			const source = requireArgumentString(args, "source");
-			const target = requireArgumentString(args, "target");
-			if (context.role === "auditor") {
-				const move = classifyMove(context, source, target);
-				return operationPath(vfsMove(move.batch, move.source, move.target), ["source", "target"]);
-			}
-			return operationPath(vfsMove(context.primary, source, target), ["source", "target"]);
+			const requested = requireArgumentString(args, "target");
+			const sourcePath = isAbsolute(source) ? resolve(source) : resolve(context.roots.writeRoot, source);
+			const targetPath = isAbsolute(requested) ? resolve(requested) : resolve(context.roots.writeRoot, requested);
+			return await ports.pathGate.runExclusive([sourcePath, targetPath], async () => {
+				try {
+					renameSync(sourcePath, targetPath);
+				} catch (error) {
+					throw herdError(":STRUCTURE_CONFLICT", messageOf(error), { source, target: requested });
+				}
+				return new Map([[kw("source"), source], [kw("target"), requested]]);
+			});
 		};
 	}
 	if (context.role === "auditor" && !auditorSandboxReady(context)) {
@@ -992,7 +1065,7 @@ function makeCapabilityTable(context, ports, execution) {
 					batch: context.primary,
 					argv,
 					cwd: targetCwd,
-					writeGate: ports.writeGate,
+					writeGate: ports.globalGate ?? ports.writeGate,
 					control: callControl,
 					identity,
 					claim,
@@ -1075,8 +1148,9 @@ function createContext(role, roots, observations = null, observationScope = null
 		role,
 		roots,
 		primary,
+		stamps: new Map(),
 		tmp: null,
-		sandbox: roots.sandbox,
+		sandbox: roots.sandbox, observations, observationScope,
 		programName,
 	};
 }

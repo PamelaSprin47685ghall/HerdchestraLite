@@ -27,6 +27,7 @@ const state = {
 	activeSignals: new Map(),
 	writeGateQueues: new Map(),
 	pendingHostTools: new Map(),
+	pendingTokens: new Map(),
 	hostSeq: 0,
 };
 
@@ -46,6 +47,72 @@ function toolFailure(error) {
 		content: [{ type: "text", text: `${code}: ${errorText(error)}` }],
 		details: { code },
 		isError: true,
+	};
+}
+
+function requestToken(sessionKey, kind, paths) {
+	const id = `token-${++state.hostSeq}`;
+	return new Promise((resolve, reject) => {
+		state.pendingTokens.set(id, { resolve, reject });
+		parentPort.postMessage({ type: "tokenAcquire", id, sessionKey, kind, paths });
+	});
+}
+
+function releaseToken(sessionKey, token) {
+	if (!token || !Array.isArray(token.ids)) return;
+	parentPort.postMessage({ type: "tokenRelease", sessionKey, ownerId: token.owner, ids: token.ids });
+}
+
+function createGlobalGate(root, ownerId, sessionKey, onWaitLock) {
+	const lockDir = join(root, ".herd", "locks");
+	mkdirSync(lockDir, { recursive: true });
+	const lockPath = join(lockDir, "clj-core.cross-process.lock");
+	return {
+		async runExclusive(run, signal) {
+			onWaitLock?.(true);
+			try {
+				const token = await requestToken(sessionKey, "global", []);
+				try {
+					const acquired = await withLock(
+						lockPath,
+						{
+							lock_id: "clj-core",
+							purpose: "clj-core global write",
+							slice_id: "clj-core",
+							owner_agent_id: ownerId,
+							pid: process.pid,
+						},
+						run,
+					);
+					if (acquired?.ok) return acquired.value;
+					throw herdError(acquired?.code ?? ":BOARD_CONFLICT", acquired?.message ?? "cross-process lock is held", {
+						lock: lockPath,
+					});
+				} finally {
+					releaseToken(sessionKey, token);
+				}
+			} finally {
+				onWaitLock?.(false);
+			}
+		},
+	};
+}
+
+function createPathGate(sessionKey, onWaitLock) {
+	return {
+		async runExclusive(paths, run) {
+			onWaitLock?.(true);
+			try {
+				const token = await requestToken(sessionKey, "path", paths);
+				try {
+					return await run();
+				} finally {
+					releaseToken(sessionKey, token);
+				}
+			} finally {
+				onWaitLock?.(false);
+			}
+		},
 	};
 }
 
@@ -128,6 +195,8 @@ function createControl() {
 function createPorts(root, ownerId, withWriteGate, onCallActivity, onWaitLock, sessionKey, hostTools = {}) {
 	return {
 		...(withWriteGate ? { writeGate: createWriteGate(root, ownerId, onWaitLock) } : {}),
+		pathGate: createPathGate(sessionKey, onWaitLock),
+		globalGate: createGlobalGate(root, ownerId, sessionKey, onWaitLock),
 		control: createControl(),
 		identity: { agent_id: ownerId, status: "alive", term_id: "clj-core" },
 		claim: { claim_id: "clj-core", status: "active", term_id: "clj-core" },
@@ -183,11 +252,24 @@ if (parentPort && workerData?.__sandboxWorker === true) {
 	parentPort.on("message", async (msg) => {
 		if (!msg || typeof msg !== "object") return;
 
+		if (msg.type === "tokenGranted" || msg.type === "tokenFailed") {
+			const pending = state.pendingTokens.get(msg.id);
+			if (pending !== undefined) {
+				state.pendingTokens.delete(msg.id);
+				if (msg.type === "tokenFailed") {
+					pending.reject(herdError(":BOARD_CONFLICT", msg.error ?? "token request failed"));
+				} else {
+					pending.resolve(msg);
+				}
+			}
+			return;
+		}
+
 		if (msg.type === "hostToolDone") {
 			const pending = state.pendingHostTools.get(msg.id);
 			if (pending !== undefined) {
 				state.pendingHostTools.delete(msg.id);
-				if (msg.error) pending.reject(herdError("HOST_API_MISMATCH", msg.error));
+				if (msg.error) pending.reject(herdError(msg.code ?? "HOST_API_MISMATCH", msg.error));
 				else pending.resolve(msg.result);
 			}
 			return;
