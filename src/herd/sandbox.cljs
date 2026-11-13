@@ -199,19 +199,24 @@
    nil))
 
 (defn- charge! [name bytes ops]
-  (let [{:keys [used-bytes used-ops max-bytes max-ops]}
-        (get @budgets name {:used-bytes 0 :used-ops 0
-                            :max-bytes (* 16 1024 1024) :max-ops 256})
-        next-bytes (+ used-bytes bytes)
-        next-ops (+ used-ops ops)]
-    (when (> next-bytes max-bytes)
-      (throw (ex-info "batch byte budget exceeded"
-                      {:code :LIMIT_EXCEEDED :bytes next-bytes :limit max-bytes})))
-    (when (> next-ops max-ops)
-      (throw (ex-info "batch operation budget exceeded"
-                      {:code :LIMIT_EXCEEDED :ops next-ops :limit max-ops})))
-    (swap! budgets assoc name {:used-bytes next-bytes :used-ops next-ops
-                               :max-bytes max-bytes :max-ops max-ops})))
+  (let [error (atom nil)]
+    (swap! budgets
+           (fn [m]
+             (let [{:keys [used-bytes used-ops max-bytes max-ops]}
+                   (get m name {:used-bytes 0 :used-ops 0
+                                :max-bytes (* 16 1024 1024) :max-ops 256})
+                   next-bytes (+ used-bytes bytes)
+                   next-ops (+ used-ops ops)]
+               (cond
+                 (> next-bytes max-bytes)
+                 (do (reset! error {:code :LIMIT_EXCEEDED :bytes next-bytes :limit max-bytes}) m)
+                 (> next-ops max-ops)
+                 (do (reset! error {:code :LIMIT_EXCEEDED :ops next-ops :limit max-ops}) m)
+                 :else
+                 (assoc m name {:used-bytes next-bytes :used-ops next-ops
+                                :max-bytes max-bytes :max-ops max-ops})))))
+    (when-let [data @error]
+      (throw (ex-info "batch budget exceeded" data)))))
 
 (defn- bigint-parts [value]
   (let [text (str value)
