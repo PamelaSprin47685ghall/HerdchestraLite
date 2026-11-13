@@ -78,6 +78,95 @@
               (release-lock fd)
               (throw error)))))))
 
+(defonce token-state
+  (atom {:paths #{} :path-waiters {} :global false :global-waiters []}))
+
+(defn- token-path [p]
+  (let [absolute (resolve-path p)]
+    (try
+      (.realpathSync fs-native absolute)
+      (catch :default _
+        (try
+          (.realpathSync fs-native (path/dirname absolute))
+          (catch :default _ absolute))))))
+
+(defn- paths-free? [paths]
+  (let [state @token-state]
+    (and (not (:global state))
+         (every? (fn [p] (not (contains? (:paths state) p))) paths))))
+
+(defn- grant-path-waiters! []
+  (when-not (:global @token-state)
+    (doseq [[id entry] (:path-waiters @token-state)]
+      (let [paths (:paths entry)]
+        (when (and (seq paths) (paths-free? paths))
+          (swap! token-state update :path-waiters dissoc id)
+          (swap! token-state update :paths into paths)
+          ((:resolve entry) paths))))))
+
+(defn- acquire-paths! [paths]
+  (js/Promise.
+    (fn [resolve]
+      (if (paths-free? paths)
+        (do
+          (swap! token-state update :paths into paths)
+          (resolve paths))
+        (let [id (str "wait-" (js/Date.now) "-" (js/Math.random))]
+          (swap! token-state assoc-in [:path-waiters id]
+                 {:paths (set paths) :resolve resolve}))))))
+
+(defn- release-paths! [paths]
+  (swap! token-state update :paths #(reduce disj % paths))
+  (grant-path-waiters!))
+
+(defn- acquire-global! []
+  (js/Promise.
+    (fn [resolve]
+      (let [state @token-state]
+        (if (and (not (:global state)) (empty? (:paths state)))
+          (do
+            (swap! token-state assoc :global true)
+            (resolve true))
+          (swap! token-state update :global-waiters conj resolve))))))
+
+(defn- grant-global! []
+  (when (and (not (:global @token-state)) (empty? (:paths @token-state)))
+    (when-let [waiters (seq (:global-waiters @token-state))]
+      (let [resolve (first waiters)]
+        (swap! token-state update :global-waiters #(vec (rest %)))
+        (swap! token-state assoc :global true)
+        (resolve true)))))
+
+(defn- release-global! []
+  (swap! token-state assoc :global false)
+  (if (seq (:global-waiters @token-state))
+    (grant-global!)
+    (grant-path-waiters!)))
+
+(defn- with-path-token [paths f]
+  (let [paths (vec (sort (distinct (map token-path paths))))]
+    (-> (acquire-paths! paths)
+        (.then
+          (fn [_]
+            (chain (f)
+                   (fn [value]
+                     (release-paths! paths)
+                     value)
+                   (fn [error]
+                     (release-paths! paths)
+                     (throw error))))))))
+
+(defn- with-global-token [f]
+  (-> (acquire-global!)
+      (.then
+        (fn [_]
+          (chain (f)
+                 (fn [value]
+                   (release-global!)
+                   value)
+                 (fn [error]
+                   (release-global!)
+                   (throw error)))))))
 (defn cat [{:keys [path]}]
   (.readFile fs-promises (resolve-path path) "utf8"))
 
@@ -156,28 +245,37 @@
       (throw (ex-info "write exceeds the 2 MiB limit"
                       {:code :LIMIT_EXCEEDED :path path :bytes bytes
                        :limit max-write-bytes})))
-    (with-lock
+    (with-path-token
+      [path]
       (fn []
-        (let [absolute (resolve-path path)
-              native (.-__herdNative js/globalThis)
-              runner (when native ((.-getRunner native)))]
-          (when-not (and runner (.hasNativeTool runner "write"))
-            (throw (ex-info "host native write is unavailable"
-                            {:code :HOST_API_MISMATCH :path path})))
-          (check-stamp! absolute (:__expectedStamp request))
-          (-> (.invokeNativeTool runner "write"
-                                 #js {:path absolute :content content}
-                                 #js {})
-              (.then (fn [_] nil))))))))
+        (with-lock
+          (fn []
+            (let [absolute (resolve-path path)
+                  native (.-__herdNative js/globalThis)
+                  runner (when native ((.-getRunner native)))]
+              (when-not (and runner (.hasNativeTool runner "write"))
+                (throw (ex-info "host native write is unavailable"
+                                {:code :HOST_API_MISMATCH :path path})))
+              (check-stamp! absolute (:__expectedStamp request))
+              (-> (.invokeNativeTool runner "write"
+                                     #js {:path absolute :content content}
+                                     #js {})
+                  (.then (fn [_] nil))))))))))
 
 (defn mkdir [{:keys [path]}]
-  (with-lock (fn [] (.mkdir fs-promises (resolve-path path) #js {:recursive true}))))
+  (with-path-token
+    [path]
+    (fn [] (with-lock (fn [] (.mkdir fs-promises (resolve-path path) #js {:recursive true}))))))
 
 (defn rm [{:keys [path]}]
-  (with-lock (fn [] (.rm fs-promises (resolve-path path) #js {:recursive true :force true}))))
+  (with-path-token
+    [path]
+    (fn [] (with-lock (fn [] (.rm fs-promises (resolve-path path) #js {:recursive true :force true}))))))
 
 (defn mv [{:keys [source target]}]
-  (with-lock (fn [] (.rename fs-promises (resolve-path source) (resolve-path target)))))
+  (with-path-token
+    [source target]
+    (fn [] (with-lock (fn [] (.rename fs-promises (resolve-path source) (resolve-path target)))))))
 
 (defn write-with-name [name request]
   (charge! name (js/Buffer.byteLength (:content request) "utf8") 1)
@@ -502,43 +600,45 @@
 (defn call
   [{:keys [argv cwd name max-inline-bytes max-log-bytes] :or {cwd "."}} timeout-ms]
   (let [program-name (or name @current-name)]
-    (with-lock
+    (with-global-token
       (fn []
-        (js/Promise.
-          (fn [resolve reject]
-            (let [argv (vec argv)
-                  inline-limit (or max-inline-bytes default-max-inline-bytes)
-                  log-limit (or max-log-bytes default-max-log-bytes)
-                  _ (when (zero? (count argv))
-                      (throw (ex-info "argv must not be empty" {:code :INVALID_ARGUMENT})))
-                  log-path (call-log-path)
-                  child (cp/spawn (first argv) (clj->js (rest argv))
-                                  #js {:cwd cwd :stdio #js ["ignore" "pipe" "pipe"]})
-                  state (atom {:out "" :err "" :truncated false :log-truncated false})
-                  timer (js/setTimeout
-                          (fn []
-                            (.kill child "SIGKILL")
-                            (unregister-call! program-name)
-                            (reject (ex-info "call timed out" {:code :STALLED})))
-                          (or timeout-ms 30000))]
-              (register-call! program-name {:child child :reject reject :timer timer})
-              (.on (.-stdout child) "data" #(append-capped state :out (str %) log-path inline-limit log-limit))
-              (.on (.-stderr child) "data" #(append-capped state :err (str %) log-path inline-limit log-limit))
-              (.on child "error"
-                   (fn [e]
-                     (js/clearTimeout timer)
-                     (unregister-call! program-name)
-                     (reject e)))
-              (.on child "close"
-                   (fn [code]
-                     (js/clearTimeout timer)
-                     (unregister-call! program-name)
-                     (resolve {:exit code
-                               :stdout (:out @state)
-                               :stderr (:err @state)
-                               :output-truncated (:truncated @state)
-                               :log-truncated (:log-truncated @state)
-                               :log log-path}))))))))))
+        (with-lock
+          (fn []
+            (js/Promise.
+              (fn [resolve reject]
+                (let [argv (vec argv)
+                      inline-limit (or max-inline-bytes default-max-inline-bytes)
+                      log-limit (or max-log-bytes default-max-log-bytes)
+                      _ (when (zero? (count argv))
+                          (throw (ex-info "argv must not be empty" {:code :INVALID_ARGUMENT})))
+                      log-path (call-log-path)
+                      child (cp/spawn (first argv) (clj->js (rest argv))
+                                      #js {:cwd cwd :stdio #js ["ignore" "pipe" "pipe"]})
+                      state (atom {:out "" :err "" :truncated false :log-truncated false})
+                      timer (js/setTimeout
+                              (fn []
+                                (.kill child "SIGKILL")
+                                (unregister-call! program-name)
+                                (reject (ex-info "call timed out" {:code :STALLED})))
+                              (or timeout-ms 30000))]
+                  (register-call! program-name {:child child :reject reject :timer timer})
+                  (.on (.-stdout child) "data" #(append-capped state :out (str %) log-path inline-limit log-limit))
+                  (.on (.-stderr child) "data" #(append-capped state :err (str %) log-path inline-limit log-limit))
+                  (.on child "error"
+                       (fn [e]
+                         (js/clearTimeout timer)
+                         (unregister-call! program-name)
+                         (reject e)))
+                  (.on child "close"
+                       (fn [code]
+                         (js/clearTimeout timer)
+                         (unregister-call! program-name)
+                         (resolve {:exit code
+                                   :stdout (:out @state)
+                                   :stderr (:err @state)
+                                   :output-truncated (:truncated @state)
+                                   :log-truncated (:log-truncated @state)
+                                   :log log-path}))))))))))))
 
 (defn call-with-name [name request timeout-ms]
   (call (assoc request :name name) timeout-ms))
