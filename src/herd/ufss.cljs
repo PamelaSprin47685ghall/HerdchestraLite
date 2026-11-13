@@ -72,9 +72,10 @@
 (defn unwrap
   "Replace UFSS fences with standard CLJS strings. Code state only.
 
-  `min-hashes` is 2 for ClojureScript source (`#\"` is regex) and 1 for EDN
-  data (`#\"` is a fence)."
-  ([source] (unwrap source 2))
+  A ClojureScript regex ends at a quote without a trailing `#`, while a UFSS
+  fence ends at a quote followed by `#`; both source and data therefore use
+  the same minimum depth of one."
+  ([source] (unwrap source 1))
   ([source min-hashes]
   (let [n (count source)]
     (loop [i 0 out []]
