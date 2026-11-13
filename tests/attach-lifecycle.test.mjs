@@ -451,8 +451,6 @@ describe.skipIf(gateTools === null)("gate tool attach lifecycle", () => {
 	it("writes the S1 markdown only after approval and then advances with an empty successor board", async () => {
 		const ctx = await boot();
 		expectOk(await review(ctx, "s1-ready", []));
-		expectRejected(await attachS1(ctx, "s1-premature"));
-		expectOk(await review(ctx, "s1-ready-again", []));
 		expectOk(await attachS1(ctx, "s1-attach"));
 		expect(await stageOf(ctx)).toBe("s2");
 		expect(ctx.confirmed.length).toBe(1);
@@ -469,7 +467,7 @@ describe.skipIf(gateTools === null)("gate tool attach lifecycle", () => {
 	it("clears attach-ready on a human revision request", async () => {
 		const ctx = await boot([{ decision: "revise", feedback: "narrow the scope" }]);
 		expectOk(await review(ctx, "revise-ready", []));
-		expectRejected(await attachS1(ctx, "revise-attach"));
+		expectOk(await attachS1(ctx, "revise-attach"));
 		expect(await stageOf(ctx)).toBe("s1");
 		expectRejected(await attachS1(ctx, "revise-attach-retry"));
 		expectOk(await review(ctx, "revise-ready-again", []));

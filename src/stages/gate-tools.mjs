@@ -1456,6 +1456,7 @@ export function registerGateTools(pi, deps) {
 	}
 	const service = createGateService(deps);
 	const schemas = schemaFor(pi);
+	const replay = new Map();
 
 	const execute = (name, parameters, description, call) => {
 		pi.registerTool({
@@ -1473,10 +1474,21 @@ export function registerGateTools(pi, deps) {
 				}
 				const role = roleOfContext(deps, ctx);
 				const slug = slugOfContext(deps, ctx);
+				const replayKey = typeof toolCallId === "string" && toolCallId.length > 0 ? `${name}:${toolCallId}` : null;
+				const payloadKey = JSON.stringify(params ?? {});
+				if (replayKey !== null && replay.has(replayKey)) {
+					const cached = replay.get(replayKey);
+					if (cached.payloadKey !== payloadKey) {
+						return toolFailure({ ok: false, error: herdLikeError(new Error("call-id was reused with a different payload"), ":CALL_REPLAY_MISMATCH") });
+					}
+					return cached.result;
+				}
 				try {
-					return toolResult(
+					const result = toolResult(
 						await call(params ?? {}, { root, callId: toolCallId, signal, role, slug }),
 					);
+					if (replayKey !== null) replay.set(replayKey, { payloadKey, result });
+					return result;
 				} catch (error) {
 					return toolFailure({ ok: false, error: herdLikeError(error, ":INVALID_ARGUMENT") });
 				}
