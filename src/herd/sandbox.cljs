@@ -272,12 +272,20 @@
     [path]
     (fn [] (with-lock (fn [] (.mkdir fs-promises (resolve-path path) #js {:recursive true}))))))
 
+(defn- reject-root! [p]
+  (when (= (resolve-path p) (path/resolve "."))
+    (throw (ex-info "refusing to remove or move the session root"
+                    {:code :INVALID_ARGUMENT :path p}))))
+
 (defn rm [{:keys [path]}]
+  (reject-root! path)
   (with-path-token
     [path]
     (fn [] (with-lock (fn [] (.rm fs-promises (resolve-path path) #js {:recursive true :force true}))))))
 
 (defn mv [{:keys [source target]}]
+  (reject-root! source)
+  (reject-root! target)
   (with-path-token
     [source target]
     (fn [] (with-lock (fn [] (.rename fs-promises (resolve-path source) (resolve-path target)))))))
