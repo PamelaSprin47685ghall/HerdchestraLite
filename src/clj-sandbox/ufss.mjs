@@ -767,7 +767,7 @@ export function renderReceipt(value) {
 
 export const UFSS_PROMPT_NOTE = [
 	"# Universal Fence-Scaled String (UFSS): Arbitrary-Depth Raw Fences",
-	"Default: use a two-hash fence (`##\"...\"##`) for ordinary text; when developing HerdchestraLite itself, default to more hashes because its source, docs, and prompts contain many quotes, backslashes, and fence-like sequences. Raise the fence instead of escaping.",
+	"Default: use a two-hash fence depth (`##`) for ordinary text; when developing HerdchestraLite itself, default to more hashes because its source, docs, and prompts contain many quotes, backslashes, and fence-like sequences. Raise the fence instead of escaping.",
 	"",
 	"Every receipt you get is EDN, and every string in it is printed as UFSS (Universal Fence-Scaled String). You are not restricted to one escaping style; you are expected to pick the strongest one.",
 	"",

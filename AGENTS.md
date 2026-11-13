@@ -78,7 +78,7 @@ Lite 版不把模型当傻子。它不把每个动作都拆成一条“爷爷辈
 | **Ariadne's Thread（阿里阿德涅之线）** | 每次 `clj_*` 调用携带的 `ariadne_budget` 与 `ariadne_goal` 续体注解；以零成本锚点、回合预算软提醒与 `time_leap` 剪枝治理上下文。 |
 | **Time Leap（时间跃迁）** | 把当前时间线剪回一个干净的 `clj_*` 锚点，携带完整经验并留下只读 Beacon。 |
 | **Beacon（灯塔）** | 被剪枝桠的只读记忆摘要；只能通过 `ask_beacon` 查询，绝不复活。 |
-| **UFSS** | Universal Fence-Scaled String，变长围栏字符串（`#"..."#`、`#"""..."""#`）。系统向模型呈现结构化数据时使用。一般默认使用 `##"..."##`；开发 HerdchestraLite 时默认使用更多 `#`。 |
+| **UFSS** | Universal Fence-Scaled String，变长围栏字符串（`#"..."#`、`#"""..."""#`）。系统向模型呈现结构化数据时使用。一般默认使用 `##`；开发 HerdchestraLite 时默认使用更多 `#`。 |
 | **CASE** | 随 `attach_manual_tests` 的 `cases` 参数提交、由框架独立持久化为 `.herd/missions/<slug>/s2-cases.edn` 权威控制态的可独立执行、独立评分的验收用例；`s2-manual-tests.md` 只写方法论，不是 CASE 来源。 |
 | **评分细则（Rubric）** | 每个 CASE 记录中 `rubric` 字段携带的 0–100 可复现评分规则，随 CASE 一起冻结；要求两名独立审计员面对同一证据时分差不超过 ±5。 |
 | **WTP** | Willingness to Pay，主观支付意愿。每个 CASE 分 `user_score`（外部用户价值）与 `developer_score`（内部工程质量），最终分取 `min(user_score, developer_score)`。 |
