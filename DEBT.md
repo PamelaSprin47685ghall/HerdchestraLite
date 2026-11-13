@@ -63,11 +63,12 @@
 - **缺口**：完整装配（`review`/`attach_*`、看板、S5 runner、K 路审计、TUI）仍未迁移到 CLJS；旧 `src/*.mjs` 模块仍存在但不由默认入口加载。
 - **下一步**：按 `MIGRATION.md` 台账继续迁移完整装配，完成后删除旧模块。
 
-## D20 多程序并发共享 SCI 全局 ctx
+## D20 多程序共享 SCI 全局 ctx
 
-- **缺口**：`herd.repl` 每次用 `nbb/load-string` 在同一个 SCI ctx 内定义 `__run`，`sandbox/current-name` 与 `current-notifier` 也是全局单例；两个 `clj_devops` 并发运行会互相覆盖 `__run`，后启动者还会覆盖 `park` 的归属。
-- **影响**：默认面通常串行，但宿主并行工具调用下可能串名、串停靠点。
-- **下一步**：为每个程序创建独立 SCI ctx（或至少独立 `__run` 命名空间），把 `current-name`/notifier 改为按 `agent_id` 或程序名分区。
+- **现状**：`park`/`where` 已用词法 `__herd-program-name` 与按名 `notifiers` 分区；并发 `prog-a`/`prog-b` 的 parked 回执与 `unpark` 已在新进程验证。
+- **剩余缺口**：`nbb/load-string` 仍在同一 SCI ctx 定义同名 `__run`；已运行帧不受影响，但同一 tick 内两个 `evaluate` 的 `__run` 定义会互相覆盖。
+- **影响**：默认面并发工具调用下，park/notifier 已隔离；`__run` 覆盖仍是理论风险。
+- **下一步**：为每个程序生成唯一 `__run` 符号（如 `__run-<name>`）或在独立 SCI ctx 中求值；补并发 park/unpark 回归。
 
 ## D22 `wait` 超时的 runtime-parked 无法 `unpark`
 
