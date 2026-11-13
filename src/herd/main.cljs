@@ -358,6 +358,10 @@ Time leap experience:
           (let [fs (js/require "node:fs")
                 entry {:at (js/Date.now)
                        :payload-keys (vec (js/Object.keys payload))
+                       :prompt-cache-key (str (.-prompt_cache_key payload))
+                       :model (str (.-model payload))
+                       :max-tokens (str (.-max_tokens payload))
+                       :reasoning-effort (str (.-reasoning_effort payload))
                        :system-hash system-hash
                        :tools-hash tools-hash
                        :messages-hash messages-hash
