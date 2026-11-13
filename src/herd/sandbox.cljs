@@ -199,6 +199,24 @@
                            (.then (fn [groups] (reduce (fn [acc group] (into acc group)) [] (array-seq groups)))))))))]
     (walk root)))
 
+(defn- run-bounded [f items limit]
+  (let [items (vec items)
+        n (count items)
+        results (atom (vec (repeat n nil)))
+        cursor (atom 0)
+        worker (fn worker []
+                 (let [i (dec (second (swap-vals! cursor inc)))]
+                   (if (>= i n)
+                     (js/Promise.resolve nil)
+                     (-> (js/Promise.resolve (f (nth items i)))
+                         (.then (fn [value]
+                                  (swap! results assoc i value)
+                                  (worker)))))))]
+    (-> (js/Promise.all
+          (into-array (map (fn [_] (worker))
+                           (range (min (max 1 n) (max 1 limit))))))
+        (.then (fn [_] @results)))))
+
 (defn glob [{:keys [pattern path dot onlyFiles only-files exec] :as request}]
   (when-not (and (string? pattern) (pos? (count pattern)))
     (throw (ex-info "pattern must be a non-empty string"
@@ -229,13 +247,15 @@
                     prefix (if (and path (pos? (count path)))
                              (str (string/replace path #"/+$" "") "/")
                              "")
-                    results (js/Promise.all
-                              (into-array (map (fn [rel] (call-fn (str prefix rel))) relative)))]
+                    results (run-bounded
+                              (fn [rel] (call-fn (str prefix rel)))
+                              relative
+                              8)]
                 (-> results
                     (.then (fn [values]
                              {:exists true
                               :entries relative
-                              :results (vec (array-seq values))}))))))))))
+                              :results (vec values)}))))))))))
 
 (defn stat [{:keys [path]}]
   (-> (.stat fs-promises (resolve-path path))
