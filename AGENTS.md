@@ -77,7 +77,7 @@ Lite 版不把模型当傻子。它不把每个动作都拆成一条“爷爷辈
 | **Ariadne's Thread（阿里阿德涅之线）** | 每次 `clj_*` 调用携带的 `ariadne_budget` 与 `ariadne_goal` 续体注解；以零成本锚点、回合预算软提醒与 `time_leap` 剪枝治理上下文。 |
 | **Time Leap（时间跃迁）** | 把当前时间线剪回一个干净的 `clj_*` 锚点，携带完整经验并留下只读 Beacon。 |
 | **Beacon（灯塔）** | 被剪枝桠的只读记忆摘要；只能通过 `ask_beacon` 查询，绝不复活。 |
-| **UFSS** | Universal Fence-Scaled String，变长围栏字符串。系统向模型呈现结构化数据时使用；普通文本默认 `##"..."##` / `##"""..."""##`，开发 HerdchestraLite 自身默认 `###"..."###` / `###"""..."""###`。围栏深度任意：零个（裸多行块）、一个或更多 `#` 均合法；默认仅是约定。多行围栏的闭合围栏允许尾随文本（例如集合闭合符 `}`）同行；reader 在闭合围栏处结束字符串，尾随文本继续按正常语法解析。 |
+| **UFSS** | Universal Fence-Scaled String，ClojureScript 字符串字面量的可逆方言。系统向模型呈现结构化数据时使用；普通文本默认 `##"..."##` / `##"""..."""##`，开发 HerdchestraLite 自身默认 `###"..."###` / `###"""..."""###`。围栏深度任意：零个（裸多行块）、一个或更多 `#` 均合法；writer 取满足闭合条件的最小深度。正则 `#"..."` 无闭合 `#`，fence `#"..."#` 有闭合 `#`，二者可完美区分。多行围栏的闭合围栏允许尾随文本（例如集合闭合符 `}`）同行；reader 在闭合围栏处结束字符串，尾随文本继续按正常语法解析。**标准格式化流水线**：`UFSSify`（字符串 → 标准字符串 / 最小 fence / 顶格三引号）→ `cljs.pprint`（官方布局）。数据层 `print`/`read` 双射；源码层由 pre-pass 展开为标准 CLJS 字符串。 |
 | **CASE** | 随 `attach_manual_tests` 的 `cases` 参数提交、由框架独立持久化为 `.herd/missions/<slug>/s2-cases.edn` 权威控制态的可独立执行、独立评分的验收用例；`s2-manual-tests.md` 只写方法论，不是 CASE 来源。 |
 | **评分细则（Rubric）** | 每个 CASE 记录中 `rubric` 字段携带的 0–100 可复现评分规则，随 CASE 一起冻结；要求两名独立审计员面对同一证据时分差不超过 ±5。 |
 | **WTP** | Willingness to Pay，主观支付意愿。每个 CASE 分 `user_score`（外部用户价值）与 `developer_score`（内部工程质量），最终分取 `min(user_score, developer_score)`。 |
@@ -1880,7 +1880,7 @@ scope → main
 | 审计返回 | 新增 `attach_case_audit` 提交分数与报告；不要求 evidence 目录 | 能用流程解决的不用证据目录；避免与审计员路径边界冲突 | 强制 `plans/<slug>/evidence/<case_id>/` |
 | attach 面板 | 工具执行内阻塞：approve 解除并继续，revise 留下重做，deny 转 `ask_user`，面板不可用才 pending | 阻塞符合旧面板行为；deny 交回人类说明 | 全部走 pending 异步 |
 | 运行时 | `nbb`（Node 上的 SCI）+ 薄 `.mjs` 引导 + `src/herd/*.cljs` | 官方 reader、真宏、`^:async`/`await`、CLJS 持久值；mjs 只做宿主注入 | `cherry-cljs` + 自建 CEK；scittle 浏览器发行版 |
-| UFSS 打印 | 先 UFSS（`UfssString` + `IPrintWithWriter`）再 `cljs.pprint`；多行 body 顶格，`""",` 同行 | pprint 在排版阶段看到最终 fence；宽容缩进与尾随闭合文本 | 先 pprint 后字符串替换；闭合围栏独占一行；缩进不足报错 |
+| UFSS 打印 | 标准格式化 = `UFSSify`（`UfssString` + `IPrintWithWriter`）→ `cljs.pprint`；多行 body 顶格，`""",` 同行；最小 fence 深度 | pprint 在排版阶段看到最终 fence；宽容缩进与尾随闭合文本；数据层双射 | 先 pprint 后字符串替换；闭合围栏独占一行；缩进不足报错；固定 `##` |
 
 ### 10.5 参考索引
 
