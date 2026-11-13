@@ -3,7 +3,8 @@
  *
  * The widget is layout only. It reads lines from `dashboard-model.mjs`, picks
  * compact or expanded, fits the terminal width, and applies the stable-height
- * lock. It never owns status words, counts, waiting chains, or audit scores.
+ * lock. It never owns status words, tenure/attach state, review findings,
+ * counts, waiting chains, or audit scores.
  *
  * Host boundary: only the public `ctx.ui.setWidget(key, content, {placement})`
  * is used. `setHookWidget` is private to the host and is never called. A
@@ -310,7 +311,13 @@ const asDashboardModel = (value) => {
 const regimeKeyFor = (model, expanded) => {
 	const view = expanded ? (model.expanded?.regime ?? "expanded") : "compact";
 	const audit = model.audit?.active ? `audit-${model.audit.phaseIndex}` : "audit-off";
-	return `${expanded ? "expanded" : "compact"}:${view}:${audit}:${model.mission?.slug ?? "-"}`;
+	const stage = model.mission?.stage ?? "-";
+	const tenure = model.mission?.tenure?.id ?? "-";
+	const attach = model.mission?.attach?.ready ? "attached" : "pending";
+	const review = model.review?.open ? `findings-${model.review.findings.length}` : "quiescent";
+	return `${expanded ? "expanded" : "compact"}:${view}:${audit}:${stage}:${tenure}:${attach}:${review}:${
+		model.mission?.slug ?? "-"
+	}`;
 };
 
 const maxHeightFor = (expanded, options) => {

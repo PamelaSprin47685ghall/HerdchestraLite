@@ -7,7 +7,6 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -34,7 +33,6 @@ import activate, {
 	parentContextFor,
 	persistDevopsSession,
 	readDevopsReport,
-	realignEditedFrozen,
 	rememberDevopsSession,
 	sandboxRoots,
 	sessionIdentity,
@@ -46,12 +44,8 @@ import activate, {
 import { sandboxCapability } from "../src/sandbox/bwrap.mjs";
 import { writeAuditModelSeed } from "../src/sandbox/model-seed.mjs";
 import {
-	commitS2,
 	createMission,
-	freezeStage,
 	readMission,
-	saveS1Summary,
-	saveStageDocument,
 } from "../src/stages/contract.mjs";
 import { addTasks, apply, initialBoard, openBoard, registerActor } from "../src/swarm/board.mjs";
 import { inspectLock, withLock } from "../src/util/file-lock.mjs";
@@ -215,14 +209,13 @@ describe("main assembly", () => {
 		const pi = fakePi();
 		await activate(pi);
 		for (const name of [
-			"advance_s1",
-			"advance_s2",
-			"advance_s3",
-			"advance_s4",
+			"review",
+			"attach_brainstorm",
+			"attach_manual_tests",
+			"attach_dev_guide",
+			"attach_coordination",
 			"board_split",
 			"board_finish",
-			"fork_slices",
-			"join_slice",
 			"abandon_slice",
 			"clj_plan",
 			"clj_review",
@@ -242,7 +235,7 @@ describe("main assembly", () => {
 		]) {
 			expect(pi.tools.has(name)).toBe(false);
 		}
-		for (const name of ["advance_s1", "clj_plan", "board_split", "submit_case_audit"]) {
+		for (const name of ["review", "clj_plan", "board_split", "submit_case_audit"]) {
 			const parameters = pi.tools.get(name).parameters;
 			expect(parameters.properties.must_think_in).toBeUndefined();
 			expect(parameters.properties.intent).toBeUndefined();
@@ -352,7 +345,7 @@ describe("main assembly", () => {
 		}
 	});
 
-	it("shows the full disk S1 document and re-reads it for the freeze", async () => {
+	it("writes the S1 markdown, shows the real disk document, and barriers on approval", async () => {
 		const root = temporaryRoot();
 		const previousCwd = process.cwd();
 		process.chdir(root);
@@ -397,29 +390,32 @@ describe("main assembly", () => {
 					component.handleInput("enter");
 				});
 			};
-			const result = await pi.tools.get("advance_s1").execute(
-				"approval-display",
-				{
-					slug,
-					brainstorm_markdown: document,
-					summary: "完整文档批准",
-					non_goals: ["不实现标准版"],
-				},
-				undefined,
-				undefined,
-				ctx,
-			);
-			expect(result.isError).not.toBe(true);
+			await pi.tools.get("review").execute("review-empty", { findings: [] }, undefined, undefined, ctx);
+			const result = await pi.tools
+				.get("attach_brainstorm")
+				.execute("approval-display", { markdown: document }, undefined, undefined, ctx);
+			expect(result.isError, result.content?.[0]?.text).not.toBe(true);
 			expect(bottom.join("\n")).toContain("LONG-TAIL-");
+			expect(readFileSync(path, "utf8")).toBe(edited);
+			expect(existsSync(join(root, ".herd", "missions", slug, "s1-summary.md"))).toBe(false);
 			const read = await readMission(root, slug);
 			expect(read.mission.stage).toBe(":s2");
-			expect(read.mission.frozen.s1.sha256).toBe(createHash("sha256").update(edited, "utf8").digest("hex"));
+			const missionText = readFileSync(join(root, ".herd", "missions", slug, "mission.edn"), "utf8");
+			expect(missionText).toContain(":barrier");
+			expect(missionText).toContain(":s1");
+			expect(missionText).toContain(":s2");
+			expect(readFileSync(join(root, ".herd", "missions", slug, "board.edn"), "utf8")).toMatch(
+				/tasks\s+\{\s*\}/,
+			);
+			expect(
+				pi.sent.some((entry) => String(entry.message?.content ?? "").includes("ENTERING STAGE S2")),
+			).toBe(true);
 		} finally {
 			process.chdir(previousCwd);
 		}
 	});
 
-	it("iterates S1 after a revision and freezes the second summary on approval", async () => {
+	it("keeps S1 after a revise and requires a fresh empty review before the next attach", async () => {
 		const root = temporaryRoot();
 		const previousCwd = process.cwd();
 		process.chdir(root);
@@ -457,49 +453,44 @@ describe("main assembly", () => {
 				new Promise((resolve) => {
 					const component = factory(fakeTui(20), {}, { matches: tuiKeys }, resolve);
 					if (round++ === 0) {
-						component.handleInput("left");
+						component.handleInput("right");
+						component.handleInput("right");
 						component.handleInput("enter");
 						return;
 					}
 					component.handleInput("right");
 					component.handleInput("enter");
 				});
+			await pi.tools.get("review").execute("review-before-1", { findings: [] }, undefined, undefined, ctx);
 			const first = await pi.tools
-				.get("advance_s1")
-				.execute(
-					"round-1",
-					{ slug, brainstorm_markdown: firstDoc, summary: "第一版摘要", non_goals: ["不实现标准版"] },
-					undefined,
-					undefined,
-					ctx,
-				);
-			expect(first.isError).not.toBe(true);
-			expect((await readMission(root, slug)).mission.stage).toBe(":s1");
-			expect(readFileSync(join(root, ".herd", "missions", slug, "s1-summary.md"), "utf8")).toBe("第一版摘要");
+				.get("attach_brainstorm")
+				.execute("round-1", { markdown: firstDoc }, undefined, undefined, ctx);
+			expect(first.isError, first.content?.[0]?.text).not.toBe(true);
+			const afterRevise = await readMission(root, slug);
+			expect(afterRevise.mission.stage).toBe(":s1");
+			const reviseText = readFileSync(join(root, ".herd", "missions", slug, "mission.edn"), "utf8");
+			expect(reviseText).not.toContain(":barrier");
+			expect(reviseText).not.toContain("attach-ready");
 
+			const blocked = await pi.tools
+				.get("attach_brainstorm")
+				.execute("round-1b", { markdown: firstDoc }, undefined, undefined, ctx);
+			expect(blocked.isError).toBe(true);
+
+			await pi.tools.get("review").execute("review-before-2", { findings: [] }, undefined, undefined, ctx);
 			const second = await pi.tools
-				.get("advance_s1")
-				.execute(
-					"round-2",
-					{ slug, brainstorm_markdown: secondDoc, summary: "第二版摘要", non_goals: ["不实现标准版"] },
-					undefined,
-					undefined,
-					ctx,
-				);
-			expect(second.isError).not.toBe(true);
+				.get("attach_brainstorm")
+				.execute("round-2", { markdown: secondDoc }, undefined, undefined, ctx);
+			expect(second.isError, second.content?.[0]?.text).not.toBe(true);
 			const read = await readMission(root, slug);
 			expect(read.mission.stage).toBe(":s2");
-			expect(read.mission.frozen.s1.sha256).toBe(createHash("sha256").update(secondDoc, "utf8").digest("hex"));
-			expect(read.mission.frozen["s1-summary"].sha256).toBe(
-				createHash("sha256").update("第二版摘要", "utf8").digest("hex"),
-			);
-			expect(readFileSync(join(root, ".herd", "missions", slug, "s1-summary.md"), "utf8")).toBe("第二版摘要");
+			expect(readFileSync(join(root, "plans", slug, "s1-brainstorm.md"), "utf8")).toBe(secondDoc);
 		} finally {
 			process.chdir(previousCwd);
 		}
 	});
 
-	it("does not advance S1 when no custom confirmation UI is available", async () => {
+	it("does not barrier S1 when no custom confirmation UI is available", async () => {
 		const root = temporaryRoot();
 		const previousCwd = process.cwd();
 		process.chdir(root);
@@ -530,21 +521,16 @@ describe("main assembly", () => {
 			].join("\n\n");
 			ctx.ui.custom = undefined;
 			ctx.ui.input = undefined;
-			await pi.tools.get("advance_s1").execute(
-				"approval-close",
-				{
-					slug,
-					brainstorm_markdown: document,
-					summary: "等待批准",
-					non_goals: ["不实现标准版"],
-				},
-				undefined,
-				undefined,
-				ctx,
-			);
+			await pi.tools.get("review").execute("review-empty", { findings: [] }, undefined, undefined, ctx);
+			await pi.tools
+				.get("attach_brainstorm")
+				.execute("approval-close", { markdown: document }, undefined, undefined, ctx);
+			expect(readFileSync(join(root, "plans", slug, "s1-brainstorm.md"), "utf8")).toBe(document);
 			const read = await readMission(root, slug);
 			expect(read.mission.stage).toBe(":s1");
-			expect(read.mission.frozen.s1).toBeUndefined();
+			expect(readFileSync(join(root, ".herd", "missions", slug, "mission.edn"), "utf8")).not.toContain(
+				":barrier",
+			);
 		} finally {
 			process.chdir(previousCwd);
 		}
@@ -602,7 +588,7 @@ describe("main assembly", () => {
 		await pi.commands.get("herd").handler("make a tiny feature", ctx);
 		expect(pi.sent.length).toBe(1);
 		expect(pi.sent[0].user).toBe(true);
-		expect(pi.getActiveTools()).toContain("advance_s1");
+		expect(pi.getActiveTools()).toContain("attach_brainstorm");
 		expect(pi.getActiveTools()).toContain("clj_plan");
 		expect(pi.getActiveTools()).not.toContain("board_split");
 		expect(pi.getActiveTools()).not.toContain("clj_worker");
@@ -709,36 +695,55 @@ describe("main assembly", () => {
 		expect(missionStageKey(":completed")).toBe("completed");
 	});
 
-	it("realigns a human-edited frozen S1 document without rewriting bytes", async () => {
+	it("keeps review findings in the board and only marks attach readiness on an empty ledger", async () => {
 		const root = temporaryRoot();
-		await activate(fakePi());
-		const slug = "realign-a";
-		await createMission(root, { slug, seed: "x" });
-		mkdirSync(join(root, "plans", slug), { recursive: true });
-		const documentPath = join(root, "plans", slug, "s1-brainstorm.md");
-		const original = "# S1\n\nOriginal human document.\n";
-		writeFileSync(documentPath, original, "utf8");
-		expect((await saveS1Summary(root, slug, "Original S1 summary")).ok).toBe(true);
-		const frozen = await freezeStage(root, slug, "s1", original, { callId: "freeze-s1" });
-		expect(frozen.ok).toBe(true);
-		const before = await readMission(root, slug);
-		const edited = "# S1\n\nHuman edited document.\n";
-		writeFileSync(documentPath, edited, "utf8");
-		const steered = [];
-		const after = await realignEditedFrozen(
-			{
-				root,
-				slug,
-				pi: { sendMessage: (message, options) => steered.push({ message, options }) },
-				auditRunning: false,
-			},
-			before.mission,
+		const pi = fakePi();
+		await activate(pi);
+		const slug = "review-a";
+		expect((await createMission(root, { slug, seed: "x" })).ok).toBe(true);
+		const ctx = fakeContext(root, "review-session");
+		const review = pi.tools.get("review");
+		expect(review).toBeDefined();
+		const boardPath = join(root, ".herd", "missions", slug, "board.edn");
+		const missionPath = join(root, ".herd", "missions", slug, "mission.edn");
+
+		const added = await review.execute(
+			"review-add",
+			{ findings: [{ key: "gap-a", value: "fix the root cause" }] },
+			undefined,
+			undefined,
+			ctx,
 		);
-		expect(after.frozen.s1.sha256).not.toBe(before.mission.frozen.s1.sha256);
-		expect(after.revision).toBeGreaterThan(before.mission.revision);
-		expect(readFileSync(documentPath, "utf8")).toBe(edited);
-		expect(steered).toHaveLength(1);
-		expect(steered[0].options).toEqual({ deliverAs: "steer" });
+		expect(added.isError, added.content?.[0]?.text).not.toBe(true);
+		expect(readFileSync(boardPath, "utf8")).toContain("fix the root cause");
+
+		const updated = await review.execute(
+			"review-update",
+			{ findings: [{ key: "gap-a", value: "fix the symptom" }] },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(updated.isError).not.toBe(true);
+		expect(readFileSync(boardPath, "utf8")).toContain("fix the symptom");
+		expect(readFileSync(boardPath, "utf8")).not.toContain("fix the root cause");
+
+		const removed = await review.execute(
+			"review-remove",
+			{ findings: [{ key: "gap-a", value: null }] },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(removed.isError).not.toBe(true);
+		expect(readFileSync(boardPath, "utf8")).not.toContain("fix the symptom");
+
+		const stageBefore = (await readMission(root, slug)).mission.stage;
+		const empty = await review.execute("review-empty", { findings: [] }, undefined, undefined, ctx);
+		expect(empty.isError).not.toBe(true);
+		expect((await readMission(root, slug)).mission.stage).toBe(stageBefore);
+		expect(readFileSync(missionPath, "utf8")).toContain("attach-ready");
+		expect(existsSync(join(root, "plans", slug, "s1-brainstorm.md"))).toBe(false);
 	});
 	it("reads effective settings from the host context, not a fabricated object", () => {
 		const live = { get: () => undefined, getModelRoles: () => ({}) };
@@ -1259,7 +1264,7 @@ describe("main assembly", () => {
 		await activate(pi);
 		const tool = pi.tools.get("board_claim");
 		const toolCtx = fakeContext(root, "A");
-		toolCtx.cwd = join(root, ".herd-worktrees", "m", "s");
+		toolCtx.cwd = root;
 		const request = () => ({ task_id: taskId, atomicity_reason: "one result" });
 		const first = await tool.execute("claim-a", request(), undefined, undefined, toolCtx);
 		expect(first.details.ok).toBe(true);
@@ -1270,9 +1275,9 @@ describe("main assembly", () => {
 		expect(claimA).toMatchObject({ task_id: taskId, status: "active" });
 		expect(await claimFor({ id: "B", root, slug: "m" }, "s", fakeContext(root, "B"))).toBeUndefined();
 		expect(await claimFor({ id: "A", root, slug: "missing" }, "s", fakeContext(root, "A"))).toBeUndefined();
-		const worktreeCtx = fakeContext(root, "A");
-		worktreeCtx.cwd = join(root, ".herd-worktrees", "m", "s");
-		expect(await boardRoleExitReady({ id: "A", root, slug: "m", role: "Swarm Worker" }, worktreeCtx)).toBe(false);
+		const singleCtx = fakeContext(root, "A");
+		singleCtx.cwd = root;
+		expect(await boardRoleExitReady({ id: "A", root, slug: "m", role: "Swarm Worker" }, singleCtx)).toBe(false);
 		const current = await board.store.read();
 		const finished = await apply({
 			board,
@@ -1288,7 +1293,7 @@ describe("main assembly", () => {
 			requestId: "finish",
 		});
 		expect(finished.ok).toBe(true);
-		expect(await boardRoleExitReady({ id: "A", root, slug: "m", role: "Swarm Worker" }, worktreeCtx)).toBe(false);
+		expect(await boardRoleExitReady({ id: "A", root, slug: "m", role: "Swarm Worker" }, singleCtx)).toBe(false);
 		await board.store.transaction(async (current) => ({
 			board: {
 				...current,
@@ -1298,7 +1303,7 @@ describe("main assembly", () => {
 			response: { ok: true },
 			commit: true,
 		}));
-		expect(await boardRoleExitReady({ id: "A", root, slug: "m", role: "Swarm Worker" }, worktreeCtx)).toBe(true);
+		expect(await boardRoleExitReady({ id: "A", root, slug: "m", role: "Swarm Worker" }, singleCtx)).toBe(true);
 		await board.store.transaction(async (current) => ({
 			board: {
 				...current,
@@ -1309,7 +1314,7 @@ describe("main assembly", () => {
 			response: { ok: true },
 			commit: true,
 		}));
-		expect(await boardRoleExitReady({ id: "A", root, slug: "m", role: "Swarm Worker" }, worktreeCtx)).toBe(true);
+		expect(await boardRoleExitReady({ id: "A", root, slug: "m", role: "Swarm Worker" }, singleCtx)).toBe(true);
 		const abandoned = await pi.tools
 			.get("abandon_slice")
 			.execute(
@@ -1360,49 +1365,43 @@ describe("main assembly", () => {
 		expect(rootsA.evidenceRoot).toContain(join("evidence", "CASE-01_"));
 		expect(rootsB.evidenceRoot).toContain(join("evidence", "CASE-02-"));
 	});
-	it("detects restart audit readiness from the worktree state", () => {
+	it("detects restart audit readiness from the single-workspace board and CASE dataset", () => {
 		const root = temporaryRoot();
 		const dir = join(root, ".herd", "missions", "mission-a");
 		mkdirSync(dir, { recursive: true });
-		const path = join(dir, "worktrees.edn");
-		const stateEdn = (status, queue = []) =>
-			new Map([
-				[new EdnKeyword("version"), 1],
-				[new EdnKeyword("slug"), "mission-a"],
-				[new EdnKeyword("base"), null],
-				[new EdnKeyword("queue"), queue],
-				[new EdnKeyword("next-seq"), 2],
-				[
-					new EdnKeyword("slices"),
-					new Map([
-						[
-							"a",
-							new Map([
-								[new EdnKeyword("slice-id"), "a"],
-								[new EdnKeyword("status"), new EdnKeyword(status)],
-							]),
-						],
-					]),
-				],
-				[new EdnKeyword("created-at"), "2026-01-01T00:00:00.000Z"],
-				[new EdnKeyword("updated-at"), "2026-01-01T00:00:00.000Z"],
+		const boardPath = join(dir, "board.edn");
+		const casesPath = join(dir, "s2-cases.edn");
+		const key = (name) => new EdnKeyword(name);
+		const map = (entries) => new Map(entries);
+		const task = (state) =>
+			map([
+				[key("state"), key(state)],
+				[key("goal"), "observe the contract"],
 			]);
-		writeFileSync(path, `${printUfss(stateEdn("joined"))}\n`);
+		const board = (tasks) =>
+			map([
+				[key("board-version"), 1],
+				[key("tasks"), map(Object.entries(tasks))],
+				[key("actions"), map([])],
+			]);
+		const cases = `[{:case-id "CASE-01"
+  :path "正常"
+  :threshold 90
+  :steps ["observe"]
+  :expected "works"
+  :rubric "map 0-100"}]
+`;
+		writeFileSync(boardPath, `${printUfss(board({}))}\n`);
+		expect(auditReady({ root, slug: "mission-a" })).toBe(false);
+		writeFileSync(casesPath, cases, "utf8");
 		expect(auditReady({ root, slug: "mission-a" })).toBe(true);
-		writeFileSync(path, `${printUfss(stateEdn("running"))}\n`);
+		writeFileSync(boardPath, `${printUfss(board({ "T-1": task("ready") }))}\n`);
 		expect(auditReady({ root, slug: "mission-a" })).toBe(false);
-		writeFileSync(
-			path,
-			`${printUfss(
-				stateEdn("joined", [
-					new Map([
-						[new EdnKeyword("slice-id"), "a"],
-						[new EdnKeyword("seq"), 1],
-					]),
-				]),
-			)}\n`,
-		);
+		writeFileSync(boardPath, `${printUfss(board({ "T-1": task("done") }))}\n`);
+		expect(auditReady({ root, slug: "mission-a" })).toBe(true);
+		writeFileSync(casesPath, "[]\n", "utf8");
 		expect(auditReady({ root, slug: "mission-a" })).toBe(false);
+		expect(existsSync(join(dir, "worktrees.edn"))).toBe(false);
 	});
 });
 
@@ -1506,11 +1505,10 @@ describe("main board_split default wait behavior", () => {
 		await activate(pi);
 		const slug = "mission";
 		const sliceId = "SLICE-01";
-		const cwd = join(root, ".herd-worktrees", slug, sliceId);
-		mkdirSync(cwd, { recursive: true });
+		const cwd = root;
 		mkdirSync(join(root, "plans", slug), { recursive: true });
 		const handle = openBoard(root, slug, sliceId);
-		expect(handle.boardPath).toContain(`/SLICE-01/`);
+		expect(handle.boardPath).toContain("board.edn");
 		await handle.store.initialize(initialBoard());
 		const seeded = addTasks(registerActor(initialBoard(), { agentId: "board-split-session", slotId: "slot-main" }), [
 			{ goal: "parent task", remainingWork: "split into children", doneWhen: "children complete" },
@@ -1553,8 +1551,7 @@ describe("main board_finish dependency read-set", () => {
 		await activate(pi);
 		const slug = "mission";
 		const sliceId = "slice-a";
-		const cwd = join(root, ".herd-worktrees", slug, sliceId);
-		mkdirSync(cwd, { recursive: true });
+		const cwd = root;
 		mkdirSync(join(root, "plans", slug), { recursive: true });
 		writeFileSync(join(cwd, "dep.mjs"), "export const dep = 1;\n", "utf8");
 		const handle = openBoard(root, slug, sliceId);
@@ -1641,8 +1638,7 @@ describe("main board_finish dependency read-set", () => {
 		await activate(pi);
 		const slug = "mission";
 		const sliceId = "slice-a";
-		const cwd = join(root, ".herd-worktrees", slug, sliceId);
-		mkdirSync(cwd, { recursive: true });
+		const cwd = root;
 		mkdirSync(join(root, "plans", slug), { recursive: true });
 		const depPath = join(cwd, "dep.mjs");
 		writeFileSync(depPath, "export const dep = 1;\n", "utf8");
@@ -1734,140 +1730,199 @@ describe("main board_finish dependency read-set", () => {
 	});
 });
 
-describe("main structured realign tool", () => {
-	it("registers realign_frozen and adopts a human-edited frozen document", async () => {
-		const root = temporaryRoot();
-		const pi = fakePi();
-		await activate(pi);
-		const slug = "realign-tool";
-		expect((await createMission(root, { slug, seed: "x" })).ok).toBe(true);
-		const original = "# S1\n\nOriginal.\n";
-		const documentPath = join(root, "plans", slug, "s1-brainstorm.md");
-		expect((await saveStageDocument(root, slug, "s1", original, { callId: "r-s1" })).ok).toBe(true);
-		expect((await saveS1Summary(root, slug, "Original summary", { callId: "r-sum" })).ok).toBe(true);
-		expect((await freezeStage(root, slug, "s1", undefined, { callId: "r-freeze" })).ok).toBe(true);
-		const edited = `${original}\nHuman edit.\n`;
-		writeFileSync(documentPath, edited, "utf8");
-		const ctx = fakeContext(root, "realign-tool-session");
-		const result = await pi.tools
-			.get("realign_frozen")
-			.execute("realign-s1", { slug, target: "s1" }, undefined, undefined, ctx);
-		expect(result.isError).not.toBe(true);
-		const read = await readMission(root, slug);
-		expect(read.mission.revision).toBeGreaterThan(0);
-		expect(read.mission.frozen.s1.sha256).toBe(createHash("sha256").update(edited, "utf8").digest("hex"));
-	});
-
-	it("turns a CASE-id mapping change into a Nudge and keeps the structured tool reachable", async () => {
-		const root = temporaryRoot();
-		const pi = fakePi();
-		await activate(pi);
-		const slug = "mapping-e2e";
-		expect((await createMission(root, { slug, seed: "x" })).ok).toBe(true);
-		const caseSpec = (caseId, path = "正常") => ({
-			case_id: caseId,
-			path,
+describe("main attach gates", () => {
+	const planCases = [
+		{
+			case_id: "CASE-01",
+			path: "正常",
 			threshold: 90,
 			steps: ["observe the real path"],
 			expected: "observable result",
 			rubric: "map evidence to 0-100",
-		});
-		const initialCases = [
-			caseSpec("CASE-01", "正常"),
-			caseSpec("CASE-02", "错误"),
-			caseSpec("CASE-03", "边界"),
-			caseSpec("CASE-04", "并发"),
-			caseSpec("CASE-05", "恢复"),
-		];
-		expect((await saveStageDocument(root, slug, "s1", "# S1\n\nDoc.\n", { callId: "m-s1" })).ok).toBe(true);
-		expect((await saveS1Summary(root, slug, "Summary", { callId: "m-sum" })).ok).toBe(true);
-		expect((await freezeStage(root, slug, "s1", undefined, { callId: "m-f1" })).ok).toBe(true);
-		const committed = await commitS2(
-			root,
-			slug,
-			{ manual_tests_markdown: "# S2\n\nMethod.\n", cases: initialCases },
-			{ callId: "m-s2" },
-		);
-		expect(committed.ok, committed.error?.message).toBe(true);
-		const modules = [
-			{
-				path: "src/a.mjs",
-				secret_owned: "a",
-				depends_on: [],
-				mapped_cases: initialCases.map((entry) => entry.case_id),
-			},
-		];
-		const slices = [
-			{
-				slice_id: "slice-a",
-				goal: "wire a",
-				inputs: "src/a.mjs",
-				depends_on: [],
-				done_when: "a works",
-				mapped_cases: initialCases.map((entry) => entry.case_id),
-			},
-		];
-		expect((await freezeStage(root, slug, "s3", "# S3\n\nDoc.\n", { callId: "m-f3", modules })).ok).toBe(true);
-		expect((await freezeStage(root, slug, "s4", "# S4\n\nDoc.\n", { callId: "m-f4", slices })).ok).toBe(true);
-		const focusCtx = fakeContext(root, "s5-surface-session");
-		await pi.commands.get("herd-focus").handler(slug, focusCtx);
-		const s5Tools = pi.getActiveTools();
-		expect(s5Tools).toContain("fork_slices");
-		expect(s5Tools).toContain("realign_frozen");
-		expect(s5Tools).not.toContain("clj_plan");
-		const before = await readMission(root, slug);
-		const casesPath = join(root, ".herd", "missions", slug, "cases.edn");
-		const currentCases = readFileSync(casesPath, "utf8");
-		const extraCase = `  {:case-id "CASE-06"
-   :path "正常"
-   :threshold 90
-   :steps ["observe the real path"]
-   :expected "observable result"
-   :rubric "map evidence to 0-100"}\n]`;
-		writeFileSync(casesPath, currentCases.replace(/\]\s*$/, extraCase), "utf8");
-		const sent = [];
-		const state = {
-			root,
-			slug,
-			auditRunning: true,
-			auditInvalidated: false,
-			sandbox: new Map(),
-			agentLife: new Map(),
-			agentTerms: new Map(),
-			pi: { sendMessage: (message, options) => sent.push({ message, options }) },
-		};
-		const pendingMission = await realignEditedFrozen(state, before.mission);
-		expect(pendingMission).toBeTruthy();
-		expect(state.realignPending?.expectedTool).toBe("realign_frozen");
-		expect(state.auditInvalidated).toBe(true);
-		expect(sent.some((entry) => entry.message.customType === "herd-nudge")).toBe(true);
-		const nudge = sent.find((entry) => entry.message.customType === "herd-nudge").message.content;
-		expect(nudge).toContain("realign_frozen");
-		expect(nudge).toContain("MAPPING_REALIGN_REQUIRED");
+		},
+		{
+			case_id: "CASE-02",
+			path: "错误",
+			threshold: 90,
+			steps: ["feed invalid input"],
+			expected: "structured rejection",
+			rubric: "map evidence to 0-100",
+		},
+		{
+			case_id: "CASE-03",
+			path: "边界",
+			threshold: 90,
+			steps: ["probe the boundary"],
+			expected: "bounded result",
+			rubric: "map evidence to 0-100",
+		},
+		{
+			case_id: "CASE-04",
+			path: "并发",
+			threshold: 90,
+			steps: ["race two writers"],
+			expected: "one winner",
+			rubric: "map evidence to 0-100",
+		},
+		{
+			case_id: "CASE-05",
+			path: "恢复",
+			threshold: 90,
+			steps: ["restart mid-write"],
+			expected: "recovers to last commit",
+			rubric: "map evidence to 0-100",
+		},
+	];
 
-		expect(typeof pi.tools.get("realign_frozen")?.execute).toBe("function");
-		const changedIds = initialCases.map((entry) => entry.case_id).concat("CASE-06");
-		const ctx = fakeContext(root, "mapping-tool-session");
-		const result = await pi.tools.get("realign_frozen").execute(
-			"realign-mapping",
-			{
-				slug,
-				target: "s2-cases",
-				modules: [{ ...modules[0], mapped_cases: changedIds }],
-				slices: [{ ...slices[0], mapped_cases: changedIds }],
-			},
-			undefined,
-			undefined,
-			ctx,
-		);
-		expect(result.isError, result.content?.[0]?.text).not.toBe(true);
-		const after = await readMission(root, slug);
-		expect(after.mission.revision).toBeGreaterThan(before.mission.revision);
-		expect(after.mission["contract-line"]).toContain(after.mission.frozen["s2-cases"].sha256);
-		expect(after.mission["contract-line"]).toContain("s3-modules");
-		const moduleSpec = after.mission["s3-modules"][0];
-		const sliceSpec = after.mission["s4-slices"][0];
-		expect(moduleSpec.mapped_cases ?? moduleSpec["mapped-cases"]).toContain("CASE-06");
-		expect(sliceSpec.mapped_cases ?? sliceSpec["mapped-cases"]).toContain("CASE-06");
+	async function startMission(root, pi, id) {
+		await activate(pi);
+		const ctx = fakeContext(root, id);
+		await pi.commands.get("herd").handler("attach chain probe", ctx);
+		const slug = readdirSync(join(root, ".herd", "missions"))[0];
+		ctx.ui.custom = async (factory) =>
+			new Promise((resolve) => {
+				const component = factory(fakeTui(20), {}, { matches: tuiKeys }, resolve);
+				component.handleInput("right");
+				component.handleInput("enter");
+			});
+		const call = (name, callId, params) =>
+			pi.tools.get(name).execute(callId, params, undefined, undefined, ctx);
+		const review = (callId) => call("review", callId, { findings: [] });
+		return { ctx, slug, call, review };
+	}
+
+	async function attachThroughS3(root, pi, id) {
+		const session = await startMission(root, pi, id);
+		await session.review("review-s1");
+		await session.call("attach_brainstorm", "attach-s1", { markdown: "# S1\n\nBrainstorm.\n" });
+		await session.review("review-s2");
+		await session.call("attach_manual_tests", "attach-s2", {
+			markdown: "# S2\n\nMethodology.\n",
+			cases: planCases,
+		});
+		await session.review("review-s3");
+		await session.call("attach_dev_guide", "attach-s3", { markdown: "# S3\n\nGuide.\n" });
+		await session.review("review-s4");
+		return session;
+	}
+
+	it("persists the S2 CASE dataset through attach_manual_tests", async () => {
+		const root = temporaryRoot();
+		const previousCwd = process.cwd();
+		process.chdir(root);
+		try {
+			const pi = fakePi();
+			const session = await startMission(root, pi, "attach-s2-session");
+			await session.review("review-s1");
+			await session.call("attach_brainstorm", "attach-s1", { markdown: "# S1\n\nBrainstorm.\n" });
+			await session.review("review-s2");
+			const result = await session.call("attach_manual_tests", "attach-s2", {
+				markdown: "# S2\n\nMethodology only.\n",
+				cases: planCases,
+			});
+			expect(result.isError, result.content?.[0]?.text).not.toBe(true);
+			expect((await readMission(root, session.slug)).mission.stage).toBe(":s3");
+			expect(readFileSync(join(root, "plans", session.slug, "s2-manual-tests.md"), "utf8")).toContain(
+				"Methodology only.",
+			);
+			const dataset = readFileSync(
+				join(root, ".herd", "missions", session.slug, "s2-cases.edn"),
+				"utf8",
+			);
+			expect(dataset).toContain("CASE-01");
+			expect(dataset).toContain("CASE-05");
+			expect(existsSync(join(root, "plans", session.slug, "s2-cases.edn"))).toBe(false);
+		} finally {
+			process.chdir(previousCwd);
+		}
+	});
+
+	it("writes the S3 guide without a modules gate through attach_dev_guide", async () => {
+		const root = temporaryRoot();
+		const previousCwd = process.cwd();
+		process.chdir(root);
+		try {
+			const pi = fakePi();
+			const session = await attachThroughS3(root, pi, "attach-s3-session");
+			const result = await session.call("attach_dev_guide", "attach-s3", {
+				markdown: "# S3\n\nDeep modules only.\n",
+			});
+			expect(result.isError, result.content?.[0]?.text).not.toBe(true);
+			expect((await readMission(root, session.slug)).mission.stage).toBe(":s4");
+			expect(readFileSync(join(root, "plans", session.slug, "s3-dev-guide.md"), "utf8")).toContain(
+				"Deep modules only.",
+			);
+			const missionText = readFileSync(
+				join(root, ".herd", "missions", session.slug, "mission.edn"),
+				"utf8",
+			);
+			expect(missionText).not.toContain("s3-modules");
+		} finally {
+			process.chdir(previousCwd);
+		}
+	});
+
+	it("requires a non-empty promela but never parses it in attach_coordination", async () => {
+		const root = temporaryRoot();
+		const previousCwd = process.cwd();
+		process.chdir(root);
+		try {
+			const pi = fakePi();
+			const session = await attachThroughS3(root, pi, "attach-s4-session");
+			const empty = await session.call("attach_coordination", "attach-s4-empty", {
+				markdown: "# S4\n\nHandbook.\n",
+				promela: "",
+			});
+			expect(empty.isError).toBe(true);
+			expect((await readMission(root, session.slug)).mission.stage).toBe(":s4");
+			const promela = "never { /* Knuth: await tick; if :: ready -> skip fi */ }";
+			const result = await session.call("attach_coordination", "attach-s4", {
+				markdown: "# S4\n\nHandbook.\n",
+				promela,
+			});
+			expect(result.isError, result.content?.[0]?.text).not.toBe(true);
+			expect((await readMission(root, session.slug)).mission.stage).toBe(":s5");
+			expect(readFileSync(join(root, "plans", session.slug, "s4-coordination.pml"), "utf8")).toBe(promela);
+			const missionText = readFileSync(
+				join(root, ".herd", "missions", session.slug, "mission.edn"),
+				"utf8",
+			);
+			expect(missionText).not.toContain("s4-slices");
+		} finally {
+			process.chdir(previousCwd);
+		}
+	});
+
+	it("narrows the S5 surface to review and attach tools without a worktree surface", async () => {
+		const root = temporaryRoot();
+		const previousCwd = process.cwd();
+		process.chdir(root);
+		try {
+			const pi = fakePi();
+			const session = await attachThroughS3(root, pi, "attach-s5-session");
+			const attached = await session.call("attach_coordination", "attach-s4", {
+				markdown: "# S4\n\nHandbook.\n",
+				promela: "never { skip }",
+			});
+			expect(attached.isError, attached.content?.[0]?.text).not.toBe(true);
+			await pi.commands.get("herd-focus").handler(session.slug, session.ctx);
+			const s5Tools = pi.getActiveTools();
+			expect(s5Tools).toContain("review");
+			expect(s5Tools).toContain("attach_brainstorm");
+			expect(s5Tools).toContain("attach_manual_tests");
+			expect(s5Tools).toContain("attach_dev_guide");
+			expect(s5Tools).toContain("attach_coordination");
+			for (const name of [
+				["fork", "slices"].join("_"),
+				["join", "slice"].join("_"),
+				["work", "tree"].join(""),
+				["g", "c"].join(""),
+			]) {
+				expect(s5Tools).not.toContain(name);
+			}
+			expect(s5Tools).not.toContain("clj_plan");
+		} finally {
+			process.chdir(previousCwd);
+		}
 	});
 });

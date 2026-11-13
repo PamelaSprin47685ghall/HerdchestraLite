@@ -101,6 +101,7 @@ const COMMAND_TYPES = new Map([
 	["resolveCondition", "resolveCondition"],
 	["record_input", "recordInput"],
 	["recordInput", "recordInput"],
+	["review", "review"],
 ]);
 
 /**
@@ -110,9 +111,13 @@ const COMMAND_TYPES = new Map([
  */
 export function initialBoard(options = {}) {
 	const version = Number.isInteger(options.boardVersion) ? options.boardVersion : 0;
+	const mode = options.mode === "plan" ? "plan" : "swarm";
 	return {
 		"board-version": version,
+		mode,
 		tasks: {},
+		"attach-ready": mode === "plan",
+		"review-summary": null,
 		actions: {},
 		actors: {},
 		"token-slot": {
@@ -121,7 +126,7 @@ export function initialBoard(options = {}) {
 			state: "free",
 			"retired-terms": [],
 		},
-		tenure: { term: 0, phase: "swarm" },
+		tenure: { term: 0, phase: mode === "plan" ? "plan" : "swarm" },
 		"next-ids": { task: 1, claim: 1, term: 1, action: 1, event: 1, input: 1 },
 		requests: {},
 		"take-attempts": {},
@@ -289,6 +294,147 @@ export function wakeAll(board, reason = "manual") {
 	return { board: draft, event, epoch };
 }
 
+export function isAttachReady(board) {
+	return Boolean(board && board["attach-ready"]);
+}
+
+/**
+ * Read the plan ledger without mutating it. `empty` is the attach-ready
+ * signal: the stage may attach only while no finding remains.
+ */
+export function reviewLedger(board) {
+	const tasks = Object.values(board?.tasks ?? {});
+	return {
+		summary: board?.["review-summary"] ?? null,
+		findings: tasks.map((task) => ({ key: task.key, value: task.value ?? null })),
+		empty: tasks.length === 0,
+		attachReady: isAttachReady(board),
+	};
+}
+
+/**
+ * Record one review round on the plan ledger.
+ *
+ * A string value upserts the task, nil deletes it, and an empty value array
+ * leaves the tasks unchanged. Review never writes a deliverable and never
+ * advances the tenure stage; it only mutates this board.
+ */
+export function applyReview(board, input = {}) {
+	if (!isBoardState(board)) {
+		return failure("INVALID_ARGUMENT", "board must be a board value", {});
+	}
+	if ((board.mode ?? "swarm") !== "plan") {
+		return failure("INVALID_ARGUMENT", "review requires a plan board", {
+			mode: board.mode ?? "swarm",
+		});
+	}
+	const findings = input.findings ?? [];
+	if (!Array.isArray(findings)) {
+		return failure("INVALID_ARGUMENT", "findings must be an array", { field: "findings" });
+	}
+	const summary = readField(input, "summaryMarkdown", "summary_markdown", "summary");
+	if (summary !== undefined && summary !== null && typeof summary !== "string") {
+		return failure("INVALID_ARGUMENT", "summary_markdown must be a string or nil", {
+			field: "summary_markdown",
+		});
+	}
+	const draft = clone(board);
+	ensureBoardShape(draft);
+	if (summary !== undefined) draft["review-summary"] = summary;
+	for (let index = 0; index < findings.length; index += 1) {
+		const finding = findings[index];
+		if (!finding || typeof finding !== "object") {
+			return failure("INVALID_ARGUMENT", `findings[${index}] must be an object`, {});
+		}
+		const key = readField(finding, "key");
+		if (!isText(key)) {
+			return failure("INVALID_ARGUMENT", `findings[${index}].key must be non-empty`, {});
+		}
+		const value = readField(finding, "value");
+		if (Array.isArray(value)) continue;
+		if (value === null || value === undefined) {
+			deletePlanTask(draft, key);
+			continue;
+		}
+		if (typeof value !== "string") {
+			return failure("INVALID_ARGUMENT", `findings[${index}].value must be a string or nil`, {});
+		}
+		const parentKey = readField(finding, "parentKey", "parent_key");
+		const waitFor = readField(finding, "waitFor", "wait_for");
+		const waiting = readField(finding, "waiting");
+		if (parentKey !== undefined && parentKey !== null) {
+			if (!isText(parentKey) || parentKey === key || !draft.tasks[parentKey]) {
+				return failure("INVALID_ARGUMENT", `findings[${index}].parent_key must name another task`, {
+					parentKey,
+				});
+			}
+		}
+		if (waitFor !== undefined) {
+			if (!Array.isArray(waitFor) || !waitFor.every((entry) => isText(entry) && Boolean(draft.tasks[entry]))) {
+				return failure("INVALID_ARGUMENT", `findings[${index}].wait_for must name existing tasks`, {});
+			}
+		}
+		if (waiting !== undefined && typeof waiting !== "boolean") {
+			return failure("INVALID_ARGUMENT", `findings[${index}].waiting must be boolean`, {});
+		}
+		upsertPlanTask(draft, key, value, { parentKey, waitFor, waiting });
+	}
+	draft["attach-ready"] = Object.keys(draft.tasks).length === 0;
+	const unchanged =
+		stableStringify({
+			tasks: board.tasks,
+			summary: board["review-summary"] ?? null,
+			attachReady: Boolean(board["attach-ready"]),
+		}) ===
+		stableStringify({
+			tasks: draft.tasks,
+			summary: draft["review-summary"] ?? null,
+			attachReady: draft["attach-ready"],
+		});
+	if (unchanged) {
+		return {
+			ok: true,
+			board,
+			changed: false,
+			receipt: {
+				outcome: "review-unchanged",
+				"board-version": board["board-version"],
+				"task-keys": Object.keys(board.tasks ?? {}),
+				"attach-ready": isAttachReady(board),
+			},
+			events: [],
+		};
+	}
+	const nextVersion = (draft["board-version"] ?? 0) + 1;
+	draft["board-version"] = nextVersion;
+	const event = makeEvent(
+		draft,
+		"review",
+		{
+			summary: draft["review-summary"] ?? null,
+			findings: findings.map((entry) => ({
+				key: readField(entry, "key") ?? null,
+				value: readField(entry, "value") ?? null,
+			})),
+			"attach-ready": draft["attach-ready"],
+		},
+		nextVersion,
+		{ requestId: null, actorId: null, turnId: null },
+	);
+	return {
+		ok: true,
+		board: draft,
+		changed: true,
+		receipt: {
+			outcome: "review-recorded",
+			"board-version": nextVersion,
+			"task-keys": Object.keys(draft.tasks),
+			"attach-ready": draft["attach-ready"],
+		},
+		events: [event],
+	};
+}
+
 /**
  * Pure transition. The input board is never mutated.
  *
@@ -305,6 +451,11 @@ export function applyCommand(board, rawArgs = {}) {
 	const type = commandType(command);
 	if (!type) {
 		return reject(failure("INVALID_ARGUMENT", "unknown board command", { command }));
+	}
+	if (type === "review") {
+		const reviewed = applyReview(board, command);
+		if (!reviewed.ok) return { ...reviewed, board, events: [] };
+		return { ...reviewed, replayed: false };
 	}
 	if (!isText(args.requestId)) {
 		return reject(failure("INVALID_ARGUMENT", "request_id is required", { field: "request_id" }));
@@ -489,10 +640,11 @@ export async function apply(rawArgs = {}) {
 
 async function boardTransaction(handle, args) {
 	return handle.store.transaction(async (current) => {
-		if (!current && handle.durable !== false) {
+		const plan = handle.mode === "plan";
+		if (!current && handle.durable !== false && !plan) {
 			const missing = failure("STALE_CONTROL", "slice board is missing or unreadable", {
 				boardPath: handle.boardPath,
-				next: "forkSlices must seed the Slice board; do not rebuild an empty one",
+				next: "seed the tenure board; do not rebuild a missing ledger",
 			});
 			return {
 				board: null,
@@ -501,7 +653,7 @@ async function boardTransaction(handle, args) {
 				commit: false,
 			};
 		}
-		const base = current ?? initialBoard();
+		const base = current ?? initialBoard({ mode: plan ? "plan" : "swarm" });
 		const result = applyCommand(base, args);
 		return {
 			board: result.board,
@@ -581,15 +733,22 @@ async function applyTakeTwoPhase(handle, args) {
  *
  * The only signature is `(root, slug, sliceId, options)`.
  */
-export function openBoard(root, slug, sliceId, options = {}) {
-	if (!isText(root) || !isText(slug) || !isText(sliceId)) {
-		throw new TypeError("openBoard needs root, slug and sliceId");
+export function openBoard(root, slug, sliceIdOrOptions, maybeOptions = {}) {
+	const sliceId = isText(sliceIdOrOptions) ? sliceIdOrOptions : null;
+	const options = isText(sliceIdOrOptions) ? maybeOptions : (sliceIdOrOptions ?? {});
+	if (!isText(root) || !isText(slug)) {
+		throw new TypeError("openBoard needs root and slug");
 	}
-	const directory = join(root, ".herd", "missions", slug, "slices", sliceId);
+	const plan = options.mode === "plan" || sliceId === null;
+	const directory = plan
+		? join(root, ".herd", "missions", slug)
+		: join(root, ".herd", "missions", slug, "slices", sliceId);
 	const boardPath = options.boardPath ?? join(directory, "board.edn");
 	const eventsPath = options.eventsPath ?? join(directory, "events.jsonl");
 	const checkpointPath = options.checkpointPath ?? join(directory, "checkpoint.edn");
-	const lockPath = options.lockPath ?? join(root, ".herd", "locks", `${sliceId}.board.lock`);
+	const lockPath = plan
+		? null
+		: (options.lockPath ?? join(root, ".herd", "locks", `${sliceId}.board.lock`));
 
 	let store = options.store;
 	let durable;
@@ -599,6 +758,8 @@ export function openBoard(root, slug, sliceId, options = {}) {
 			eventsPath,
 			checkpointPath,
 			lockPath,
+			lock: !plan,
+			mode: plan ? "plan" : "swarm",
 			sliceId,
 			lockTimeoutMs: options.lockTimeoutMs,
 			agentState: options.agentState,
@@ -612,6 +773,7 @@ export function openBoard(root, slug, sliceId, options = {}) {
 		root,
 		slug,
 		sliceId,
+		mode: plan ? "plan" : "swarm",
 		boardPath,
 		eventsPath,
 		checkpointPath,
@@ -623,12 +785,10 @@ export function openBoard(root, slug, sliceId, options = {}) {
 	return handle;
 }
 
-/**
- * Read the current board value. Missing or corrupt state returns null; the
- * caller must report or restore it, not rebuild an empty board.
- */
-export async function readBoard(handleOrRoot, slug, sliceId, options = {}) {
-	const handle = isBoardHandle(handleOrRoot) ? handleOrRoot : openBoard(handleOrRoot, slug, sliceId, options);
+export async function readBoard(handleOrRoot, slug, sliceIdOrOptions, options = {}) {
+	const handle = isBoardHandle(handleOrRoot)
+		? handleOrRoot
+		: openBoard(handleOrRoot, slug, sliceIdOrOptions, options);
 	const state = await handle.store.read();
 	return state ?? null;
 }
@@ -701,6 +861,8 @@ export function createFileBoardStore(options = {}) {
 	const eventsPath = options.eventsPath ?? join(dirname(boardPath), "events.jsonl");
 	const checkpointPath = options.checkpointPath ?? join(dirname(boardPath), "checkpoint.edn");
 	const lockPath = options.lockPath ?? join(dirname(boardPath), "board.lock");
+	const lock = options.lock !== false && Boolean(lockPath);
+	const mode = options.mode === "plan" ? "plan" : "swarm";
 	const sliceId = options.sliceId ?? null;
 	const lockTimeoutMs =
 		Number.isInteger(options.lockTimeoutMs) && options.lockTimeoutMs >= 0 ? options.lockTimeoutMs : 5000;
@@ -711,6 +873,7 @@ export function createFileBoardStore(options = {}) {
 	}
 
 	async function withBoardLock(fn) {
+		if (!lock) return fn();
 		const deadline = Date.now() + lockTimeoutMs;
 		while (true) {
 			const meta = {
@@ -768,7 +931,7 @@ export function createFileBoardStore(options = {}) {
 		});
 	}
 
-	async function initialize(board = initialBoard()) {
+	async function initialize(board = initialBoard({ mode })) {
 		if (!isValidBoardState(board)) {
 			throw herdError("INVALID_ARGUMENT", "initialize needs a complete board value", {});
 		}
@@ -2360,7 +2523,11 @@ function retireHolder(board, holderId, reason) {
  */
 function ensureBoardShape(board) {
 	board["board-version"] = Number.isInteger(board["board-version"]) ? board["board-version"] : 0;
+	board.mode ??= "swarm";
+	board["attach-ready"] ??= false;
+	board["review-summary"] ??= null;
 	board.tasks ??= {};
+	if (board.mode === "plan") ensurePlanTasks(board);
 	board.actions ??= {};
 	board.actors ??= {};
 	board["token-slot"] ??= {};
@@ -2368,7 +2535,7 @@ function ensureBoardShape(board) {
 	board["token-slot"]["term-id"] ??= null;
 	board["token-slot"].state ??= "free";
 	board["token-slot"]["retired-terms"] ??= [];
-	board.tenure ??= { term: 0, phase: "swarm" };
+	board.tenure ??= { term: 0, phase: board.mode === "plan" ? "plan" : "swarm" };
 	delete board.tenure.retired;
 	board["next-ids"] ??= {};
 	for (const [key, start] of [
@@ -2388,6 +2555,88 @@ function ensureBoardShape(board) {
 	board.wake.epoch ??= 0;
 	board.conditions ??= {};
 	board.inputs ??= [];
+}
+
+function ensurePlanTasks(board) {
+	for (const [key, task] of Object.entries(board.tasks ?? {})) {
+		if (!task || typeof task !== "object") continue;
+		task.key ??= key;
+		if (task.value === undefined) task.value = null;
+		task["parent-key"] ??= null;
+		task["child-keys"] ??= [];
+		task["wait-for"] ??= [];
+		task.waiting ??= false;
+	}
+}
+
+function setPlanParent(board, task, parentKey) {
+	const previous = task["parent-key"] ?? null;
+	if (previous === parentKey) return;
+	if (previous && board.tasks[previous]) {
+		board.tasks[previous]["child-keys"] = (board.tasks[previous]["child-keys"] ?? []).filter(
+			(child) => child !== task.key,
+		);
+	}
+	task["parent-key"] = parentKey ?? null;
+	if (parentKey && board.tasks[parentKey]) {
+		const children = board.tasks[parentKey]["child-keys"] ?? [];
+		if (!children.includes(task.key)) children.push(task.key);
+		board.tasks[parentKey]["child-keys"] = children;
+	}
+}
+
+function upsertPlanTask(board, key, value, relation = {}) {
+	const task = board.tasks[key] ?? {
+		key,
+		value: null,
+		"parent-key": null,
+		"child-keys": [],
+		"wait-for": [],
+		waiting: false,
+	};
+	task.key = key;
+	task.value = value;
+	if (relation.parentKey !== undefined) setPlanParent(board, task, relation.parentKey);
+	if (relation.waitFor !== undefined) task["wait-for"] = uniqueValues(relation.waitFor);
+	if (relation.waiting !== undefined) task.waiting = relation.waiting;
+	board.tasks[key] = task;
+}
+
+function deletePlanTask(board, key) {
+	const task = board.tasks[key];
+	if (!task) return;
+	const parentKey = task["parent-key"] ?? null;
+	if (parentKey && board.tasks[parentKey]) {
+		board.tasks[parentKey]["child-keys"] = (board.tasks[parentKey]["child-keys"] ?? []).filter(
+			(child) => child !== key,
+		);
+	}
+	for (const other of Object.values(board.tasks)) {
+		if (other === task) continue;
+		if (other["parent-key"] === key) other["parent-key"] = null;
+		other["child-keys"] = (other["child-keys"] ?? []).filter((child) => child !== key);
+		other["wait-for"] = (other["wait-for"] ?? []).filter((entry) => entry !== key);
+	}
+	delete board.tasks[key];
+}
+
+function isValidPlanBoard(value) {
+	if (!value.actions || typeof value.actions !== "object") return false;
+	for (const [key, task] of Object.entries(value.tasks)) {
+		if (!task || typeof task !== "object") return false;
+		if (task.key !== undefined && task.key !== key) return false;
+		if (task.value !== null && task.value !== undefined && typeof task.value !== "string") return false;
+		const parentKey = task["parent-key"];
+		if (parentKey !== null && parentKey !== undefined) {
+			if (typeof parentKey !== "string" || !value.tasks[parentKey]) return false;
+		}
+		if (!Array.isArray(task["child-keys"]) || !Array.isArray(task["wait-for"])) return false;
+		if (task.waiting !== undefined && typeof task.waiting !== "boolean") return false;
+		for (const entry of task["wait-for"]) {
+			if (typeof entry !== "string" || !value.tasks[entry]) return false;
+		}
+	}
+	return true;
 }
 
 function normalizeApplyArgs(raw) {
@@ -2733,6 +2982,7 @@ function isBoardState(value) {
 
 function isValidBoardState(value) {
 	if (!isBoardState(value) || !Number.isInteger(value["board-version"])) return false;
+	if (value.mode === "plan") return isValidPlanBoard(value);
 	if (!value.actions || typeof value.actions !== "object") return false;
 	if (!value["next-ids"] || typeof value["next-ids"] !== "object") return false;
 	const token = value["token-slot"];

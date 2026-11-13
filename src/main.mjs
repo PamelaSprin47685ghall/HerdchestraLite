@@ -30,55 +30,41 @@ import { buildCaseAuditorPrompt, ROLE_PROMPTS_EARLY, ROLE_PROMPTS_LATE } from ".
 import { buildUnattendedNudge, LANGUAGE_SKILL, rewriteVibeModeContext } from "./prompts/runtime-wires.mjs";
 import { createSandboxedRunCommand, sandboxCapability } from "./sandbox/bwrap.mjs";
 import { createAuditorSandbox } from "./sandbox/session.mjs";
+import * as contractPorts from "./stages/contract.mjs";
 import {
-	commitS2,
 	createMission,
-	freezeStage,
 	listMissions,
 	readMission,
 	readPendingGate,
-	readS1Summary,
 	readS2Cases,
-	readS4Slices,
-	realign,
-	saveS1Summary,
-	saveS2Cases,
-	saveStageDocument,
 	takeApprovalAuthority,
-	verifyContract,
-	verifyFrozenPrefix,
 	writeDevopsSessionRef,
 	writePendingGate,
 } from "./stages/contract.mjs";
 import { currentBriefing } from "./stages/disclosures.mjs";
 import { registerGateTools } from "./stages/gate-tools.mjs";
+import { attachToolForStage, buildBarrier, buildSuccessorMission, evaluateAttach } from "./stages/tenure.mjs";
 import { aggregate, writeS5Report } from "./stages/scores.mjs";
 import {
 	AUDIT_SUBMISSION_SCHEMA,
 	createFileSubmissionReader,
-	deriveRepairSlices,
 	snapshotWorkspace,
 	startAuditBatch,
 	writeSubmissionOnce,
 } from "./swarm/auditors.mjs";
 import {
 	apply,
+	applyReview,
 	createWriteGateControl,
 	initialBoard,
+	isAttachReady,
 	openBoard,
 	readBoard,
 	validateDependencyPaths,
+	wakeAll,
 } from "./swarm/board.mjs";
 import { cancelTree, createRunnerPort, recover } from "./swarm/runner.mjs";
-import {
-	abandonSlice,
-	enqueueSlice,
-	forkSlices,
-	gcWorktrees,
-	joinSlice,
-	readWorktreeState,
-	worktreePaths,
-} from "./swarm/worktree.mjs";
+import { abandonSlice } from "./swarm/worktree.mjs";
 import { deriveDashboard } from "./tui/dashboard-model.mjs";
 import { DASHBOARD_TOGGLE_SHORTCUT, mountDashboard } from "./tui/dashboard-widget.mjs";
 import { writeFileAtomic } from "./util/atomic-write.mjs";
@@ -128,7 +114,7 @@ const AUDITOR_SANDBOX = sandboxCapability();
 
 const ROLE_SURFACES = Object.freeze({
 	"Plan DevOps": Object.freeze(["clj_devops", "submit_devops_report", "yield"]),
-	Reviewer: Object.freeze(["clj_review", "submit_review", "yield"]),
+	Reviewer: Object.freeze(["clj_review", "review", "yield"]),
 	"Swarm Worker": Object.freeze(["clj_worker", ...WORKER_BOARD_TOOLS, "yield"]),
 	"Swarm Holder": Object.freeze([
 		"clj_worker",
@@ -163,7 +149,7 @@ export async function boardRoleExitReady(state, ctx) {
 
 export const ROLE_EXIT_TOOLS = Object.freeze({
 	"Plan DevOps": "submit_devops_report",
-	Reviewer: "submit_review",
+	Reviewer: "review",
 	"Swarm Worker": "board_finish",
 	"Swarm Holder": "board_finish",
 	"Manual Auditor": "submit_case_audit",
@@ -179,18 +165,21 @@ const ROLE_PROMPTS = Object.freeze({
 });
 
 const STAGE_SURFACES = Object.freeze({
-	s1: Object.freeze(["clj_plan", "advance_s1", "ask_user", "devops"]),
-	s2: Object.freeze(["clj_plan", "advance_s2", "realign_frozen", "devops"]),
-	s3: Object.freeze(["clj_plan", "advance_s3", "realign_frozen", "devops"]),
-	s4: Object.freeze(["clj_plan", "advance_s4", "realign_frozen", "devops"]),
-	s5: Object.freeze([
-		"ask_user",
-		"realign_frozen",
-		"fork_slices",
-		"join_slice",
-		"gc_worktrees",
-					]),
+	s1: Object.freeze(["clj_plan", "review", "attach_brainstorm", "ask_user", "devops"]),
+	s2: Object.freeze(["review", "attach_manual_tests"]),
+	s3: Object.freeze(["review", "attach_dev_guide"]),
+	s4: Object.freeze(["review", "attach_coordination"]),
+	s5: Object.freeze(["review", "ask_user", "clj_review", "clj_worker", ...BOARD_TOOL_NAMES]),
 });
+
+const STAGE_ATTACH_TOOLS = Object.freeze({
+	s1: "attach_brainstorm",
+	s2: "attach_manual_tests",
+	s3: "attach_dev_guide",
+	s4: "attach_coordination",
+});
+
+const TENURE_BOARD_SLICE = "main";
 
 const ROLE_TOKEN = /^\[HERD_ROLE: ([A-Za-z][A-Za-z0-9 _-]*) nonce=([A-Za-z0-9_-]{8,128})\]$/;
 
@@ -430,101 +419,8 @@ async function readActiveMission(state) {
 		state.mission = undefined;
 		return undefined;
 	}
-	state.mission = await realignEditedFrozen(state, read.mission);
+	state.mission = read.mission;
 	return state.mission;
-}
-
-export async function realignEditedFrozen(state, mission) {
-	if (!mission?.frozen || missionStageKey(mission.stage) === "completed") return mission;
-	if (state.realignPending) return mission;
-	try {
-		const callId = `main-realign-${randomUUID()}`;
-		if (!gateService?.realign) throw new Error("gate service realign is unavailable");
-		const params = { slug: state.slug };
-		if (Array.isArray(mission["s3-modules"])) params.modules = mission["s3-modules"];
-		const slicesRead = await readS4Slices(state.root, state.slug);
-		if (slicesRead?.ok === true && Array.isArray(slicesRead.slices)) params.slices = slicesRead.slices;
-		const result = await gateService.realign(params, { root: state.root, callId });
-		if (result?.ok !== true) {
-			if (result?.error?.code === ":MAPPING_REALIGN_REQUIRED") {
-				const data = isObject(result.error.data) ? result.error.data : {};
-				const pending = {
-					code: ":MAPPING_REALIGN_REQUIRED",
-					message: result.error.message,
-					data,
-					expectedTool: "realign_frozen",
-				};
-				state.realignPending = pending;
-				if (state.auditRunning) state.auditInvalidated = true;
-				const nudge = [
-					"[MAPPING_REALIGN_REQUIRED]",
-					`Expected tool: realign_frozen`,
-					`Mission stage: ${mission.stage}`,
-					"Submit the complete modules and slices arrays through realign_frozen; do not ask the user and do not keep old mappings.",
-					renderError(result.error),
-				].join("\n");
-				try {
-					state.pi?.sendMessage?.({ customType: "herd-nudge", content: nudge, display: false }, { triggerTurn: true });
-				} catch {
-					// The pending marker remains observable to the next turn.
-				}
-				recordHealth({
-					entry: "main.realign",
-					status: "degraded",
-					version: "1",
-					degraded: true,
-					error: "CASE mapping changed; realign_frozen is required",
-					capabilities: { expectedTool: "realign_frozen" },
-				});
-				return mission;
-			}
-			throw new Error(result?.error?.message ?? "realign failed");
-		}
-		const realignedTargets = (result.targets ?? []).filter((entry) => entry.status === "realigned");
-		if (result.status !== "realigned" && realignedTargets.length === 0) return mission;
-		const affected = realignedTargets.flatMap((entry) => {
-			const value = entry.affected;
-			if (!isObject(value)) return [];
-			return Object.entries(value).flatMap(([kind, list]) =>
-				Array.isArray(list) ? list.map((item) => `${kind}:${String(item)}`) : [],
-			);
-		});
-		const hint =
-			result.alignmentHint ??
-			`Frozen documents were realigned to revision ${result.revision ?? "?"}; review their changed sections before continuing.`;
-		const fullHint = affected.length > 0 ? `${hint}; affected ${[...new Set(affected)].join(", ")}` : hint;
-		try {
-			state.pi?.sendMessage?.(
-				{ customType: "herd-alignment", content: fullHint, display: false },
-				{ deliverAs: "steer" },
-			);
-		} catch {
-			// The durable realign already happened; the hint can be reread from the contract.
-		}
-		if (state.auditRunning) state.auditInvalidated = true;
-		recordHealth({
-			entry: "main.realign",
-			status: "ok",
-			version: "1",
-			capabilities: {
-				targets: realignedTargets.map((entry) => entry.target),
-				affected,
-				revision: result.revision,
-			},
-			degraded: false,
-		});
-		const reread = await readMission(state.root, state.slug);
-		return reread?.ok === true ? reread.mission : mission;
-	} catch (error) {
-		recordHealth({
-			entry: "main.realign",
-			status: "degraded",
-			version: "1",
-			degraded: true,
-			error: String(error?.message ?? error),
-		});
-		throw error;
-	}
 }
 
 function persistedFocusSlug(ctx) {
@@ -740,7 +636,7 @@ async function finishBoardTask({ state, ctx, slug, sliceId, port, command, turnI
 		? preflight.credential.entries.map((entry) => entry.path)
 		: [];
 	if (dependencyPaths.length === 0 && observedPaths.length === 0) return port.finishTask(finishArgs);
-	const workspace = worktreePaths(state.root, slug, sliceId).workspace;
+	const workspace = state.root;
 	const dependencyAbsolute = dependencyPaths.map((relative) => {
 		const target = resolve(workspace, relative);
 		try {
@@ -1273,13 +1169,11 @@ export function devopsReportAfterChildFailure(outcome, directory, callId) {
 }
 
 function boardToolContext(state, ctx) {
-	const artifactsDir = artifactsDirFromContext(state, ctx);
-	const slug = state.slug ?? slugFromArtifactsPath(artifactsDir) ?? slugFromCwd(ctx?.cwd);
-	const sliceId = sliceIdFromCwd(ctx?.cwd);
-	if (!slug || !sliceId) {
-		throw herdError(":HOST_API_MISMATCH", "board tool needs trusted mission and Slice context", {});
+	const slug = state.slug ?? slugFromArtifactsPath(artifactsDirFromContext(state, ctx)) ?? slugFromCwd(ctx?.cwd);
+	if (!slug) {
+		throw herdError(":HOST_API_MISMATCH", "board tool needs trusted mission context", {});
 	}
-	return { slug, sliceId };
+	return { slug, sliceId: TENURE_BOARD_SLICE };
 }
 
 function boardFields(value = {}) {
@@ -1578,217 +1472,6 @@ function registerBoardTools(pi) {
 	}
 }
 
-function registerSpawnTools(pi) {
-	pi.registerTool({
-		name: "fork_slices",
-		label: "Fork Slices",
-		description: "Create the ready Slice worktrees and start their tenure runners.",
-		parameters: gatedObject(
-			{
-				slug: Type.String({ minLength: 1 }),
-				slices: Type.Array(Type.Object({}, { additionalProperties: true }), { minItems: 1 }),
-				base: Type.Optional(Type.String({ minLength: 1 })),
-			},
-			{ additionalProperties: false },
-		),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const state = stateFor(ctx);
-			try {
-				const handles = await forkSlices({
-					root: state.root,
-					slug: params.slug,
-					slices: params.slices,
-					base: params.base ?? "HEAD",
-					deps: { board: missionBoardPort(state.root, params.slug) },
-				});
-				for (const handle of handles) {
-					const slice = {
-						root: state.root,
-						slug: params.slug,
-						slice_id: handle.slice_id,
-						workspace: handle.workspace,
-						base: handle.base_commit,
-					};
-					const port = createRunnerPort({ slice, deps: runnerDeps(state, slice) });
-					state.runnerPorts.set(handle.slice_id, port);
-					const started = await port.startSlice(handle);
-					if (started?.ok !== true) return toolErrorFromResult(started);
-				}
-				return toolOk({ ok: true, handles });
-			} catch (error) {
-				return toolFail(error);
-			}
-		},
-	});
-	pi.registerTool({
-		name: "join_slice",
-		label: "Join Slice",
-		description: "Drain one completed Slice from the FIFO queue and fast-forward it.",
-		parameters: gatedObject({ slug: Type.String({ minLength: 1 }) }),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const state = stateFor(ctx);
-			try {
-				const joined = await joinSlice({
-					root: state.root,
-					slug: params.slug,
-					deps: { board: missionBoardPort(state.root, params.slug) },
-				});
-				if (joined?.status === "none") void runMissionAudit(state);
-				return toolOk(joined);
-			} catch (error) {
-				return toolFail(error);
-			}
-		},
-	});
-	pi.registerTool({
-		name: "abandon_slice",
-		label: "Abandon Slice",
-		description: "Retire one Slice with a recorded reason.",
-		parameters: gatedObject(
-			{
-				slug: Type.String({ minLength: 1 }),
-				slice_id: Type.String({ minLength: 1 }),
-				reason: Type.String({ minLength: 1 }),
-			},
-			{ additionalProperties: false },
-		),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const state = stateFor(ctx);
-			if (state.role !== "Swarm Holder") {
-				return toolFail(herdError(":CAPABILITY_DENIED", "only a Swarm Holder may abandon a Slice", {}));
-			}
-			try {
-				return toolOk(
-					await abandonSlice({
-						root: state.root,
-						slug: params.slug,
-						sliceId: params.slice_id,
-						reason: params.reason,
-						actor: sessionIdentity(state, ctx),
-						deps: { board: missionBoardPort(state.root, params.slug) },
-					}),
-				);
-			} catch (error) {
-				return toolFail(error);
-			}
-		},
-	});
-	pi.registerTool({
-		name: "gc_worktrees",
-		label: "GC Worktrees",
-		description: "Collect joined or abandoned Slice worktrees after the retention window.",
-		parameters: gatedObject(
-			{
-				slug: Type.String({ minLength: 1 }),
-				retain_days: Type.Optional(Type.Number({ minimum: 0 })),
-			},
-			{ additionalProperties: false },
-		),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const state = stateFor(ctx);
-			try {
-				return toolOk(
-					await gcWorktrees({
-						root: state.root,
-						slug: params.slug,
-						retainDays: params.retain_days,
-						deps: { board: missionBoardPort(state.root, params.slug) },
-					}),
-				);
-			} catch (error) {
-				return toolFail(error);
-			}
-		},
-	});
-}
-
-function registerRealignTool(pi) {
-	const moduleSchema = Type.Object(
-		{
-			path: Type.String({ minLength: 1 }),
-			secret_owned: Type.String({ minLength: 1 }),
-			depends_on: Type.Array(Type.String({ minLength: 1 })),
-			mapped_cases: Type.Array(Type.String({ minLength: 1 })),
-		},
-		{ additionalProperties: false },
-	);
-	const sliceSchema = Type.Object(
-		{
-			slice_id: Type.String({ minLength: 1 }),
-			goal: Type.String({ minLength: 1 }),
-			inputs: Type.String({ minLength: 1 }),
-			depends_on: Type.Array(Type.String({ minLength: 1 })),
-			done_when: Type.String({ minLength: 1 }),
-			mapped_cases: Type.Array(Type.String({ minLength: 1 })),
-		},
-		{ additionalProperties: false },
-	);
-	pi.registerTool({
-		name: "realign_frozen",
-		label: "Realign Frozen Contract",
-		description:
-			"Structured realignment after a human edit or CASE change. When CASE mappings changed, pass the complete modules and slices arrays; never derive mappings from chat.",
-		parameters: gatedObject(
-			{
-				slug: Type.String({ minLength: 1 }),
-				target: Type.Optional(Type.String({ minLength: 1 })),
-				modules: Type.Optional(Type.Array(moduleSchema, { minItems: 1 })),
-				slices: Type.Optional(Type.Array(sliceSchema, { minItems: 1 })),
-			},
-			{ additionalProperties: false },
-		),
-		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-			const state = stateFor(ctx);
-			const slug = params.slug || state.slug;
-			if (!slug) return toolFail(herdError(":INVALID_ARGUMENT", "realign_frozen needs a mission slug"));
-			const payload = { slug };
-			if (params.target !== undefined) payload.target = params.target;
-			if (params.modules !== undefined) {
-				payload.modules = params.modules.map((entry) => ({
-					path: entry.path,
-					secret_owned: entry.secret_owned,
-					depends_on: entry.depends_on,
-					"mapped-cases": entry.mapped_cases,
-				}));
-			}
-			if (params.slices !== undefined) {
-				payload.slices = params.slices.map((entry) => ({
-					slice_id: entry.slice_id,
-					goal: entry.goal,
-					inputs: entry.inputs,
-					depends_on: entry.depends_on,
-					done_when: entry.done_when,
-					"mapped-cases": entry.mapped_cases,
-				}));
-			}
-			const result = await gateService.realign(payload, {
-				root: state.root,
-				callId: `main-realign-${toolCallId}`,
-			});
-			if (result?.ok !== true) return toolErrorFromResult(result);
-			const reread = await readMission(state.root, slug);
-			if (reread?.ok === true) state.mission = reread.mission;
-			state.realignPending = null;
-			if (state.auditRunning) state.auditInvalidated = true;
-			const hint =
-				result.alignmentHint ??
-				`Frozen contract realigned to revision ${result.revision ?? "?"}; old audits are invalid.`;
-			try {
-				state.pi?.sendMessage?.(
-					{ customType: "herd-alignment", content: hint, display: false },
-					{ deliverAs: "steer" },
-				);
-			} catch {
-				// The durable state is authoritative; the hint is advisory.
-			}
-			if (!state.auditRunning && missionStageKey(state.mission?.stage) === "s5") {
-				void runMissionAudit(state);
-			}
-			return toolOk(result);
-		},
-	});
-}
-
 function registerScopeAndAuditTools(pi) {
 	pi.registerTool({
 		name: "submit_case_audit",
@@ -1850,6 +1533,42 @@ function registerScopeAndAuditTools(pi) {
 					requestId: `oracle-${params.task_id}-${createHash("sha256").update(params.advice_markdown).digest("hex").slice(0, 12)}`,
 				});
 				return toolErrorFromResult(result);
+			} catch (error) {
+				return toolFail(error);
+			}
+		},
+	});
+}
+
+function registerAbandonSliceTool(pi) {
+	pi.registerTool({
+		name: "abandon_slice",
+		label: "Abandon Slice",
+		description: "Retire one Slice with a recorded reason.",
+		parameters: gatedObject(
+			{
+				slug: Type.String({ minLength: 1 }),
+				slice_id: Type.String({ minLength: 1 }),
+				reason: Type.String({ minLength: 1 }),
+			},
+			{ additionalProperties: false },
+		),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const state = stateFor(ctx);
+			if (state.role !== "Swarm Holder") {
+				return toolFail(herdError(":CAPABILITY_DENIED", "only a Swarm Holder may abandon a Slice", {}));
+			}
+			try {
+				return toolOk(
+					await abandonSlice({
+						root: state.root,
+						slug: params.slug,
+						sliceId: params.slice_id,
+						reason: params.reason,
+						actor: sessionIdentity(state, ctx),
+						deps: { board: missionBoardPort(state.root, params.slug) },
+					}),
+				);
 			} catch (error) {
 				return toolFail(error);
 			}
@@ -2275,117 +1994,36 @@ function gateHost(pi) {
 
 function gateRunner() {
 	return Object.freeze({
-		async forkSlices({ root, slug, slices, base }) {
-			const handles = await forkSlices({
-				root,
-				slug,
-				slices,
-				base: base ?? "HEAD",
-				deps: { board: missionBoardPort(root, slug) },
-			});
-			const started = [];
-			for (const handle of handles) {
-				const state = [...sessions.values()].find((entry) => entry.slug === slug) ?? [...sessions.values()][0];
-				if (!state) continue;
-				const slice = { root, slug, slice_id: handle.slice_id, workspace: handle.workspace, base: handle.base_commit };
-				const port = createRunnerPort({ slice, deps: runnerDeps(state, slice) });
-				state.runnerPorts.set(handle.slice_id, port);
-				const result = await port.startSlice(handle);
-				started.push(result);
-				if (result?.ok !== true) return { ok: false, error: result?.error };
-			}
-			return { ok: true, handles, started };
-		},
-		async assertInitialEmptyLedger({ root, slug }) {
-			try {
-				const worktrees = readWorktreeState({ root, slug });
-				if (!worktrees.exists) return { ok: true };
-				for (const sliceId of Object.keys(worktrees.slices ?? {})) {
-					const handle = openBoard(root, slug, sliceId);
-					const board = await readBoard(handle);
-					if (board === null) {
-						return {
-							ok: false,
-							error: { code: ":STALE_CONTROL", message: `slice board missing: ${sliceId}` },
-						};
-					}
-					if (board.tenure?.["initial-ask-used"] === true) {
-						return {
-							ok: false,
-							error: {
-								code: ":ASK_FORBIDDEN_OUTSIDE_S1",
-								message: `initial empty-ledger question already used: ${sliceId}`,
-							},
-						};
-					}
-					if (Object.keys(board.tasks ?? {}).length > 0) {
-						return { ok: false, error: { code: ":NO_PROGRESSABLE_WORK", message: "board already has tasks" } };
-					}
-				}
-				return { ok: true };
-			} catch (error) {
-				return { ok: false, error: { code: ":INVALID_ARGUMENT", message: String(error?.message ?? error) } };
-			}
-		},
 		async submitReview(args) {
 			const state = [...sessions.values()].find((entry) => entry.slug === args.slug) ?? [...sessions.values()][0];
 			if (!state) return { ok: false, error: { code: ":HOST_API_MISMATCH", message: "no active session" } };
-			const sliceId = args.slice_id ?? sliceIdFromCwd(args.workspace) ?? firstSlice(state);
-			if (!sliceId) return { ok: false, error: { code: ":INVALID_ARGUMENT", message: "no Slice to review" } };
-			const slice = {
-				root: state.root,
-				slug: args.slug,
-				slice_id: sliceId,
-				workspace: worktreePaths(state.root, args.slug, sliceId).workspace,
-				base: "HEAD",
-			};
-			const port = state.runnerPorts.get(sliceId) ?? createRunnerPort({ slice, deps: runnerDeps(state, slice) });
-			state.runnerPorts.set(sliceId, port);
-			return port.runTenure({ findings: args.findings, termId: args.tenure_id });
+			const port = runnerPortFor(state, args.slug);
+			return port.runTenure({
+				summary_markdown: args.summary_markdown,
+				findings: args.findings,
+				termId: args.tenure_id,
+			});
 		},
 	});
 }
 
-function firstSlice(state) {
-	try {
-		const worktrees = readWorktreeState({ root: state.root, slug: state.slug });
-		return worktrees.exists ? Object.keys(worktrees.slices ?? {})[0] : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-export function writeLockHeld(lock) {
-	// A stale marker is evidence, not permission: the file must be removed by
-	// recovery/operator confirmation before $W can be considered absent.
-	return lock?.exists === true;
-}
-
-function runnerPortFor(state, slug, sliceId) {
-	const existing = state.runnerPorts.get(sliceId);
+function runnerPortFor(state, slug) {
+	const existing = state.runnerPorts.get(TENURE_BOARD_SLICE);
 	if (existing) return existing;
-	const slice = {
-		root: state.root,
-		slug,
-		slice_id: sliceId,
-		workspace: worktreePaths(state.root, slug, sliceId).workspace,
-	};
+	const slice = { root: state.root, slug, slice_id: TENURE_BOARD_SLICE };
 	const port = createRunnerPort({ slice, deps: runnerDeps(state, slice) });
-	state.runnerPorts.set(sliceId, port);
+	state.runnerPorts.set(TENURE_BOARD_SLICE, port);
 	return port;
 }
 
-export async function wakeRunnerAfterBoardCommand(state, slug, sliceId, command) {
+export async function wakeRunnerAfterBoardCommand(state, slug, _sliceId, command) {
 	if (command?.type !== "release" && command?.type !== "reopen") return undefined;
-	return runnerPortFor(state, slug, sliceId).wake();
+	return runnerPortFor(state, slug).wake();
 }
 
 function runnerDeps(state, slice) {
-	const board = boardHandleFor(state, slice.slice_id);
-	const slug =
-		state.slug ??
-		slugFromCwd(slice.workspace) ??
-		slugFromArtifactsPath(artifactsDirFromContext(state, state.lastContext));
+	const slug = state.slug ?? slugFromArtifactsPath(artifactsDirFromContext(state, state.lastContext));
+	const board = openBoard(state.root, slug, { mode: "swarm" });
 	return {
 		root: state.root,
 		slug,
@@ -2393,9 +2031,6 @@ function runnerDeps(state, slice) {
 		openBoard,
 		agents: {
 			start: (request) => startAgent(request, state),
-		},
-		worktree: {
-			enqueue: (args) => enqueueSlice({ ...args, deps: { board } }),
 		},
 		askUser: async ({ question }) => {
 			if (!gateService) return { ok: false, error: { code: ":HOST_API_MISMATCH", message: "gate service missing" } };
@@ -2410,19 +2045,15 @@ function runnerDeps(state, slice) {
 			);
 			return result?.answer ?? result;
 		},
-		ff: {
-			ready: ({ workspace } = {}) => ffReady(state, workspace),
-		},
 		writeLock: {
 			held: () => {
 				try {
-					const lockPath = join(state.root, ".herd", "locks", `${slice.slice_id}.write-w.lock`);
+					const lockPath = join(state.root, ".herd", "locks", `${TENURE_BOARD_SLICE}.write-w.lock`);
 					const lock = inspectLock(lockPath, {
 						agentState: (agentId) => state.agentLife.get(agentId),
 					});
 					return writeLockHeld(lock);
 				} catch {
-					// Cannot prove the lock is absent; keep quiescence blocked.
 					return true;
 				}
 			},
@@ -3318,29 +2949,21 @@ async function refreshDashboard(state) {
 		return;
 	}
 	const mission = await readActiveMission(state);
-	let slices = [];
-	try {
-		const worktrees = readWorktreeState({ root: state.root, slug: state.slug });
-		if (worktrees.exists) slices = Object.values(worktrees.slices ?? {});
-	} catch {
-		slices = [];
-	}
 	const boards = [];
-	for (const slice of slices) {
-		try {
-			const handle = openBoard(state.root, state.slug, slice.slice_id);
-			const board = await readBoard(handle);
-			if (board !== null) {
-				rememberActors(state, board);
-				boards.push(board);
-			}
-		} catch {
-			// A missing board is shown as degraded by the dashboard input.
+	try {
+		const mode = missionStageKey(mission?.stage) === "s5" ? "swarm" : "plan";
+		const handle = openBoard(state.root, state.slug, { mode });
+		const board = await readBoard(handle);
+		if (board !== null) {
+			rememberActors(state, board);
+			boards.push(board);
 		}
+	} catch {
+		// A missing board is shown as degraded by the dashboard input.
 	}
 	state.snapshot = deriveDashboard({
 		mission,
-		slices,
+		slices: [],
 		boards,
 		now: Date.now(),
 	});
@@ -3457,33 +3080,18 @@ export default async function activate(pi) {
 	publishRoleSurfaces();
 	const toolApi = extensionToolApi(pi);
 	gateService = registerGateTools(toolApi, {
-		contract: {
-			commitS2,
-			createMission,
-			freezeStage,
-			readMission,
-			listMissions,
-			readPendingGate,
-			readS1Summary,
-			readS2Cases,
-			realign,
-			saveS1Summary,
-			saveS2Cases,
-			saveStageDocument,
-			verifyFrozenPrefix,
-			writePendingGate,
-		},
+		contract: contractPorts,
 		host: gateHost(pi),
 		runner: gateRunner(),
 		root: process.cwd(),
 		base: "HEAD",
+		now: () => new Date().toISOString(),
 		roleOf: (ctx) => stateFor(ctx).role ?? "Coordinator",
 		slugOf: (ctx) => trustedMissionSlug(stateFor(ctx), ctx),
 	});
 	registerBoardTools(toolApi);
-	registerSpawnTools(toolApi);
-	registerRealignTool(toolApi);
 	registerScopeAndAuditTools(toolApi);
+	registerAbandonSliceTool(toolApi);
 	registerSandboxTool(toolApi, "clj_plan", "plan");
 	registerSandboxTool(toolApi, "clj_devops", "devops");
 	registerSandboxTool(toolApi, "clj_review", "review");
@@ -3551,20 +3159,6 @@ export default async function activate(pi) {
 					degraded: true,
 					error: String(recovery?.error?.message ?? "recovery scan did not complete"),
 				});
-			} else {
-				for (const entry of recovery.scanned?.board?.slices ?? []) {
-					if (entry.relayPending !== true) continue;
-					const slice = {
-						root: state.root,
-						slug: state.slug,
-						slice_id: entry.sliceId,
-						workspace: worktreePaths(state.root, state.slug, entry.sliceId).workspace,
-					};
-					const port =
-						state.runnerPorts.get(entry.sliceId) ?? createRunnerPort({ slice, deps: runnerDeps(state, slice) });
-					state.runnerPorts.set(entry.sliceId, port);
-					await port.relay();
-				}
 			}
 		}
 		if (!isSubagentContext(ctx) && missionStageKey(state.mission?.stage) === "s5" && auditReady(state)) {
@@ -3710,7 +3304,7 @@ export default async function activate(pi) {
 		for (const port of state.runnerPorts.values()) {
 			port.nudge?.turnEnd?.({
 				stage: "s5",
-				expectedTool: "submit_review",
+				expectedTool: "review",
 				progress: state.turnTools.size > 0,
 				waitingForHuman: false,
 			});
@@ -3783,7 +3377,7 @@ export default async function activate(pi) {
 		if (!stage || stage === "completed" || stage === "s5") return;
 		const pending = await readPendingGate(state.root, state.slug);
 		if (pending?.ok === true && pending.pending !== null) return;
-		const expectedTool = `advance_${stage}`;
+		const expectedTool = STAGE_ATTACH_TOOLS[stage] ?? "review";
 		if (state.turnTools.has(expectedTool)) return;
 		if (failure.kind === "transient") {
 			scheduleUpstreamNudge(pi, state, stage, expectedTool, failure);

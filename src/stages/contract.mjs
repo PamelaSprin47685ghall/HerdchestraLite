@@ -1,9 +1,13 @@
 /**
- * T2: mission contract, stage freezing, realignment, and one-time approval.
+ * Plan-stage persistence and mission control.
  *
  * The module owns `.herd/missions/<slug>/mission.edn`, the stage documents
- * under `plans/<slug>/`, the asynchronous gate record `pending-gate.edn`, and
- * the per-call receipts under `receipts/`.
+ * under `plans/<slug>/`, the S2 CASE dataset, the asynchronous S1 gate record
+ * `pending-gate.edn`, and the one-time approval record.
+ *
+ * There is no frozen hash map, no contract line, and no realignment in this
+ * layer. A stage document is written once by its attach tool and then read as
+ * plain text. A human edit is allowed; nothing detects or replays it.
  *
  * Storage is injected:
  *   store.read()                  -> mission | null
@@ -13,9 +17,9 @@
  *   documents.remove(path)        -> {ok:true} | {ok:false, code, message}
  *   documents.listDir(path)       -> {ok:true, names} | {ok:false, code, message}
  *
- * The default ports use the shared atomic write and lock primitives. Tests and
- * the gate layer may inject a transactional store so two writers cannot race on
- * the mission revision.
+ * S1-S4 have a single writer, so the disk store takes no mission lock: one
+ * read-transform-atomic-write pass is enough. The documents port writes
+ * through `writeFileAtomic` (temp file, fsync, rename).
  *
  * All public functions return `{ok:true, ...}` or
  * `{ok:false, error:{code, message, data}}`. Expected failures never throw.
@@ -23,29 +27,15 @@
  * a failure, never an implicit "continue with defaults".
  *
  * Limits:
- * - Completion is issued only through the one-time process authority returned
- *   by `takeApprovalAuthority()`; its port is the only completion path.
  * - The approval token is `HMAC-SHA256(approval.key, mission-id:revision:
- *   contract-line:report-sha256)`. The framework writes a fresh random key to
+ *   report-sha256)`. The framework writes a fresh random key to
  *   `.herd/missions/<slug>/approval.key` only inside the completion
- *   transaction, so editing `mission.edn` alone cannot mint an approval. The
- *   key persists next to the mission and a fresh process re-verifies with it.
+ *   transaction, so editing `mission.edn` alone cannot mint an approval.
  * - The key is the only approval control state. A missing, empty, or
- *   malformed key fails closed: the completed mission cannot be verified and
- *   cannot be reissued.
- * - T4 owns full CASE reconciliation, row/score checks, evidence checks, and
- *   snapshot comparison. The completion port only checks that the audit was
- *   PASS and that T4's second recheck passed and is bound to this mission,
- *   revision, and report.
- * - The mission lock serializes framework writers. A human edit of a stage
- *   file is not prevented; it is detected by the next hash check and must be
- *   accepted with `realign` before S5 may start or the mission may close.
- * - A receipt file is named by the call-id digest, so an arbitrary call-id
- *   cannot escape `receipts/`; the call-id itself is stored inside.
- * - Callers must give each gate phase its own call-id; the gate layer derives
- *   distinct save/freeze ids from one user call-id.
- * - Failed attempts do not write a receipt. Only a committed transition is
- *   replayed for the same call-id.
+ *   malformed key fails closed.
+ * - `updateMission` is the single mission write path for the attach layer. It
+ *   keeps every field the patch does not name and refuses to remove the
+ *   protected control fields.
  */
 
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
@@ -53,44 +43,36 @@ import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { writeFileAtomic } from "../util/atomic-write.mjs";
 import { herdError, isHerdError, messageOf, printEdn } from "../util/errors.mjs";
-import { withLock } from "../util/file-lock.mjs";
 import { normalizeCaseSpecs } from "./parsers.mjs";
+import {
+	archiveBoardPath as tenureArchiveBoardPath,
+	attachToolForStage,
+	emptyBoard as tenureEmptyBoard,
+	successorTenureId,
+} from "./tenure.mjs";
 
+/** Plan stages that own one attach tool each. */
 export const STAGE_IDS = Object.freeze(["s1", "s2", "s3", "s4"]);
 export const MISSION_STAGES = Object.freeze(["s1", "s2", "s3", "s4", "s5", "completed"]);
 
+/**
+ * Deterministic document names. S4 owns a second document, `s4-promela`,
+ * because the coordination stage attaches both prose and a Promela sketch.
+ */
 export const STAGE_DOCUMENTS = Object.freeze({
 	s1: Object.freeze({ stage: "s1", file: "s1-brainstorm.md" }),
 	s2: Object.freeze({ stage: "s2", file: "s2-manual-tests.md" }),
 	s3: Object.freeze({ stage: "s3", file: "s3-dev-guide.md" }),
 	s4: Object.freeze({ stage: "s4", file: "s4-coordination.md" }),
+	"s4-promela": Object.freeze({ stage: "s4-promela", file: "s4-promela.md" }),
 });
 
-/** Seven control-state entries; this order is the contract-line order. */
-export const FROZEN_KEYS = Object.freeze(["s1", "s1-summary", "s2", "s2-cases", "s3", "s3-modules", "s4"]);
+export const DOCUMENT_STAGES = Object.freeze(["s1", "s2", "s3", "s4", "s4-promela"]);
 
-export function controlPaths(slug) {
-	if (typeof slug !== "string" || !SLUG_RE.test(slug)) throw new TypeError("invalid mission slug");
-	return Object.freeze({
-		missionDir: `.herd/missions/${slug}`,
-		s1: `plans/${slug}/s1-brainstorm.md`,
-		s1Summary: `.herd/missions/${slug}/s1-summary.md`,
-		s2: `plans/${slug}/s2-manual-tests.md`,
-		cases: `.herd/missions/${slug}/cases.edn`,
-		s3: `plans/${slug}/s3-dev-guide.md`,
-		s4: `plans/${slug}/s4-coordination.md`,
-	});
-}
-
-export const CONTRACT_PREFIX = "Verification contract: MANUAL ACCEPTANCE —";
-export const CONTRACT_SUFFIX =
-	"execute every CASE and score min(user_score, developer_score) out of 100; automated tests are NOT acceptance evidence.";
-
-const NEXT_STAGE = Object.freeze({ s1: "s2", s2: "s3", s3: "s4", s4: "s5" });
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
-const HASH_RE = /^[0-9a-f]{64}$/i;
+const HEX64_RE = /^[0-9a-f]{64}$/i;
 const REPORT_PATH = "s5-report.md";
-const MAX_CALL_ID = 256;
+const S2_CASES_PATH = "s2-cases.edn";
 
 /**
  * One-time approval issuance capabilities. Possession of this object is the
@@ -113,14 +95,12 @@ function isText(value) {
 	return typeof value === "string" && value.trim().length > 0;
 }
 
-function sha256(text) {
-	return createHash("sha256").update(text, "utf8").digest("hex");
+function isSlug(value) {
+	return typeof value === "string" && SLUG_RE.test(value);
 }
 
-function normalizeHash(value) {
-	if (typeof value !== "string") return undefined;
-	const text = value.trim().toLowerCase();
-	return HASH_RE.test(text) ? text : undefined;
+function sha256(text) {
+	return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
 function canonicalJson(value) {
@@ -135,18 +115,8 @@ function clone(value) {
 	return structuredClone(value);
 }
 
-function normalizeCallId(value) {
-	if (value === undefined || value === null) return undefined;
-	if (typeof value !== "string") return null;
-	const text = value.trim();
-	if (text.length === 0 || text.length > MAX_CALL_ID) return null;
-	if ([...text].some((character) => character.codePointAt(0) < 0x20)) return null;
-	return text;
-}
-
-function callIdFrom(options) {
-	if (!isPlainObject(options)) return undefined;
-	return normalizeCallId(options.callId ?? options.call_id);
+function stageValue(stage) {
+	return `:${stage}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -191,8 +161,8 @@ function invalidArgument(message, data = {}) {
 // ---------------------------------------------------------------------------
 
 /**
- * Canonical stage id without the EDN colon. Accepts `s1`, `:s1`, `S1`, and
- * `1`. Returns `undefined` for anything else.
+ * Canonical mission stage id without the EDN colon. Accepts `s1`, `:s1`, `S1`,
+ * and `1`. Returns `undefined` for anything else.
  */
 export function normalizeStage(value) {
 	if (typeof value === "number") {
@@ -206,179 +176,57 @@ export function normalizeStage(value) {
 	return undefined;
 }
 
-function stageValue(stage) {
-	return `:${stage}`;
+/**
+ * Canonical document stage id without the EDN colon. Accepts the four plan
+ * stages plus `s4-promela` and `s4_promela`.
+ */
+export function normalizeDocumentStage(value) {
+	if (typeof value !== "string") return undefined;
+	const text = value
+		.trim()
+		.replace(/^:/, "")
+		.toLowerCase()
+		.replace(/_/g, "-");
+	if (text === "s4-promela" || text === "s4promela") return "s4-promela";
+	const stage = normalizeStage(text);
+	return STAGE_IDS.includes(stage) ? stage : undefined;
+}
+
+/** The mission stage that owns one document stage. */
+export function hostStageOf(value) {
+	const stage = normalizeDocumentStage(value);
+	if (!stage) return undefined;
+	return stage === "s4-promela" ? "s4" : stage;
 }
 
 /**
  * Repository-relative path of one S1-S4 stage document.
  *
- * Throws on an invalid slug or a non-stage id: both are programmer errors, not
- * user input. Gate payload validation happens before this helper is called.
+ * Throws on an invalid slug or a non-document stage: both are programmer
+ * errors, not user input. Gate payload validation happens before this helper
+ * is called.
  */
 export function stageDocumentPath(slug, stage) {
-	if (typeof slug !== "string" || !SLUG_RE.test(slug)) throw new TypeError("invalid mission slug");
-	const id = normalizeStage(stage);
-	if (!STAGE_IDS.includes(id)) throw new TypeError("stage must be s1, s2, s3, or s4");
+	if (!isSlug(slug)) throw new TypeError("invalid mission slug");
+	const id = normalizeDocumentStage(stage);
+	if (!id) throw new TypeError("stage must be s1, s2, s3, s4, or s4-promela");
 	return `plans/${slug}/${STAGE_DOCUMENTS[id].file}`;
 }
 
-function documentPath(root, slug, stage) {
-	return join(root, stageDocumentPath(slug, stage));
+/** Repository-relative path of the S2 CASE dataset. */
+export function s2CasesPath(slug) {
+	if (!isSlug(slug)) throw new TypeError("invalid mission slug");
+	return `.herd/missions/${slug}/${S2_CASES_PATH}`;
+}
+
+/** Repository-relative path of one mission's `mission.edn`. */
+export function missionPathOf(slug) {
+	if (!isSlug(slug)) throw new TypeError("invalid mission slug");
+	return `.herd/missions/${slug}/mission.edn`;
 }
 
 function missionDirectory(root, slug) {
 	return join(root, ".herd", "missions", slug);
-}
-function controlPath(root, slug, key) {
-	return join(
-		root,
-		controlPaths(slug)[
-			{
-				s1: "s1",
-				"s1-summary": "s1Summary",
-				s2: "s2",
-				"s2-cases": "cases",
-				s3: "s3",
-				s4: "s4",
-				s4s: "s4",
-			}[key]
-		],
-	);
-}
-
-function controlRelativePath(slug, key) {
-	const paths = controlPaths(slug);
-	if (key === "s1-summary") return paths.s1Summary;
-	if (key === "s2-cases") return paths.cases;
-	if (key === "s3-modules") return null;
-	if (key === "s4-slices") return null;
-	return paths[key];
-}
-
-function canonicalInlineBytes(value) {
-	return printEdn(value, { indent: " " });
-}
-
-function canonicalEdnFile(value) {
-	return `${printEdn(value, { indent: " " })}\n`;
-}
-
-function normalizeModuleRecord(entry) {
-	if (!isPlainObject(entry)) return entry;
-	return {
-		path: entry.path,
-		"secret-owned": entry["secret-owned"] ?? entry.secret_owned,
-		"depends-on": entry["depends-on"] ?? entry.depends_on ?? [],
-		"mapped-cases": entry["mapped-cases"] ?? entry.mapped_cases ?? [],
-	};
-}
-
-function normalizeSliceRecord(entry) {
-	if (!isPlainObject(entry)) return entry;
-	return {
-		"slice-id": entry["slice-id"] ?? entry.slice_id ?? entry.sliceId,
-		goal: entry.goal,
-		inputs: entry.inputs,
-		"depends-on": entry["depends-on"] ?? entry.depends_on ?? [],
-		"done-when": entry["done-when"] ?? entry.done_when,
-		"mapped-cases": entry["mapped-cases"] ?? entry.mapped_cases ?? [],
-	};
-}
-
-const CASE_INPUT_FIELDS = new Set(["case-id", "case_id", "path", "threshold", "steps", "expected", "rubric"]);
-
-function toCaseSnake(entry, index) {
-	if (!isPlainObject(entry)) return entry;
-	for (const key of Object.keys(entry)) {
-		if (!CASE_INPUT_FIELDS.has(key)) {
-			throw herdError(":INVALID_ARGUMENT", `cases[${index}].${key} is not an allowed CASE field`, {
-				field: `cases[${index}].${key}`,
-				index,
-			});
-		}
-	}
-	const hasKebabId = Object.hasOwn(entry, "case-id");
-	const hasSnakeId = Object.hasOwn(entry, "case_id");
-	if (hasKebabId && hasSnakeId) {
-		throw herdError(":INVALID_ARGUMENT", `cases[${index}] uses both case-id and case_id`, {
-			field: `cases[${index}].case_id`,
-			index,
-		});
-	}
-	return {
-		case_id: hasKebabId ? entry["case-id"] : entry.case_id,
-		path: entry.path,
-		threshold: entry.threshold,
-		steps: entry.steps,
-		expected: entry.expected,
-		rubric: entry.rubric,
-	};
-}
-
-function toCaseKebab(entry) {
-	return {
-		"case-id": entry.case_id,
-		path: entry.path,
-		threshold: entry.threshold,
-		steps: [...entry.steps],
-		expected: entry.expected,
-		rubric: entry.rubric,
-	};
-}
-
-function canonicalCases(value) {
-	const normalized = normalizeCaseSpecs(Array.isArray(value) ? value.map(toCaseSnake) : value);
-	if (!normalized.ok) {
-		const first = normalized.errors?.[0];
-		throw herdError(":INVALID_ARGUMENT", first?.message ?? "CASE dataset is invalid", {
-			errors: normalized.errors ?? [],
-		});
-	}
-	return normalized.cases.map(toCaseKebab);
-}
-
-function parseCasesDocument(text) {
-	const value = parseEdn(text);
-	if (!Array.isArray(value) || value.length === 0) {
-		throw herdError(":INVALID_ARGUMENT", "cases.edn must hold a non-empty CASE vector", {});
-	}
-	return canonicalCases(value);
-}
-
-function caseIdsOf(cases) {
-	return cases.map((entry) => entry["case-id"]);
-}
-
-function mappingProblem(cases, modules, slices) {
-	const ids = new Set(caseIdsOf(cases));
-	if (Array.isArray(modules)) {
-		for (const module of modules) {
-			if (!isPlainObject(module) || !Array.isArray(module["mapped-cases"])) continue;
-			for (const caseId of module["mapped-cases"]) {
-				if (!ids.has(caseId)) return { kind: "modules", caseId, reason: "unknown-case" };
-			}
-		}
-		const covered = new Set(
-			modules.flatMap((module) => (Array.isArray(module?.["mapped-cases"]) ? module["mapped-cases"] : [])),
-		);
-		const missing = [...ids].filter((caseId) => !covered.has(caseId));
-		if (missing.length > 0) return { kind: "modules", missing, reason: "uncovered-cases" };
-	}
-	if (Array.isArray(slices)) {
-		for (const slice of slices) {
-			if (!isPlainObject(slice) || !Array.isArray(slice["mapped-cases"])) continue;
-			for (const caseId of slice["mapped-cases"]) {
-				if (!ids.has(caseId)) return { kind: "slices", caseId, reason: "unknown-case" };
-			}
-		}
-		const covered = new Set(
-			slices.flatMap((slice) => (Array.isArray(slice?.["mapped-cases"]) ? slice["mapped-cases"] : [])),
-		);
-		const missing = [...ids].filter((caseId) => !covered.has(caseId));
-		if (missing.length > 0) return { kind: "slices", missing, reason: "uncovered-cases" };
-	}
-	return undefined;
 }
 
 function missionPath(root, slug) {
@@ -396,134 +244,6 @@ function reportPath(root, slug, options = {}) {
 
 function approvalKeyPath(root, slug) {
 	return join(missionDirectory(root, slug), "approval.key");
-}
-
-function receiptKey(callId) {
-	return callId;
-}
-
-function receiptPath(root, slug, key) {
-	return join(missionDirectory(root, slug), "receipts", `${sha256(key)}.edn`);
-}
-
-function missionLockPath(root, slug) {
-	return join(root, ".herd", "locks", `mission-${slug}.lock`);
-}
-
-// ---------------------------------------------------------------------------
-// Contract line
-// ---------------------------------------------------------------------------
-
-/**
- * Render the contract line from the seven frozen control-state entries.
- * `:frozen` is authoritative; this line is only a deterministic view.
- */
-export function buildContractLine(slug, frozen) {
-	if (typeof slug !== "string" || !SLUG_RE.test(slug)) throw new TypeError("invalid mission slug");
-	if (!isPlainObject(frozen)) throw new TypeError("frozen must be an object");
-	const entries = [];
-	for (const key of FROZEN_KEYS) {
-		const entry = frozen[key];
-		if (!isPlainObject(entry)) throw new TypeError(`frozen.${key} is missing`);
-		const hash = normalizeHash(entry.sha256);
-		if (!hash) throw new TypeError(`frozen.${key}.sha256 must be 64 hex characters`);
-		if (key === "s3-modules") {
-			if (entry.path !== undefined && entry.path !== null) {
-				throw new TypeError("frozen.s3-modules is inline and must not carry a path");
-			}
-			entries.push(`s3-modules: inline sha256=${hash}`);
-			continue;
-		}
-		const expected = controlRelativePath(slug, key);
-		if (entry.path !== expected) throw new TypeError(`frozen.${key}.path must be ${expected}`);
-		entries.push(`${key}: ${expected} sha256=${hash}`);
-	}
-	return `${CONTRACT_PREFIX} ${entries.join("; ")}; ${CONTRACT_SUFFIX}`;
-}
-
-/**
- * Parse the exact seven-entry contract line. The frozen map is returned only
- * for display/compatibility; callers must still verify the live files.
- */
-export function parseContractLine(line) {
-	if (typeof line !== "string" || line.includes("\n") || line.includes("\r")) {
-		return invalidArgument("contract-line must be one line", { field: "contract-line" });
-	}
-	const text = line.trim();
-	if (!text.startsWith(`${CONTRACT_PREFIX} `) || !text.endsWith(`; ${CONTRACT_SUFFIX}`)) {
-		return failure(":CONTRACT_HASH_MISMATCH", "contract-line has an unknown prefix or suffix", {
-			reason: "contract-line",
-		});
-	}
-	const middle = text.slice(CONTRACT_PREFIX.length + 1, text.length - CONTRACT_SUFFIX.length - 2).trim();
-	const parts = middle
-		.split(";")
-		.map((part) => part.trim())
-		.filter((part) => part.length > 0);
-	if (parts.length !== FROZEN_KEYS.length) {
-		return failure(":CONTRACT_HASH_MISMATCH", "contract-line must name all seven frozen entries", {
-			reason: "contract-line",
-			count: parts.length,
-		});
-	}
-	const raw = [];
-	let slug;
-	for (let index = 0; index < FROZEN_KEYS.length; index += 1) {
-		const key = FROZEN_KEYS[index];
-		const part = parts[index];
-		if (key === "s3-modules") {
-			const match = /^s3-modules:\s+inline\s+sha256=([0-9a-fA-F]{64})$/.exec(part);
-			if (!match) {
-				return failure(":CONTRACT_HASH_MISMATCH", "contract-line s3-modules entry is malformed", {
-					reason: "contract-line",
-					entry: part,
-				});
-			}
-			raw.push({ key, sha256: match[1].toLowerCase() });
-			continue;
-		}
-		const match = new RegExp(`^${key}:\\s+(\\S+)\\s+sha256=([0-9a-fA-F]{64})$`).exec(part);
-		if (!match) {
-			return failure(":CONTRACT_HASH_MISMATCH", `contract-line entry ${key} is malformed`, {
-				reason: "contract-line",
-				key,
-				entry: part,
-			});
-		}
-		raw.push({ key, path: match[1], sha256: match[2].toLowerCase() });
-		if (key === "s1") {
-			const found = /^plans\/([^/]+)\/([^/]+)$/.exec(match[1]);
-			if (!found) {
-				return failure(":CONTRACT_HASH_MISMATCH", "contract-line s1 path is not canonical", {
-					reason: "contract-line",
-					path: match[1],
-				});
-			}
-			slug = found[1];
-		}
-	}
-	if (slug === undefined || !SLUG_RE.test(slug)) {
-		return failure(":CONTRACT_HASH_MISMATCH", "contract-line names no mission", { reason: "contract-line" });
-	}
-	const frozen = {};
-	for (const entry of raw) {
-		const expected = controlRelativePath(slug, entry.key);
-		if (expected !== null && entry.path !== expected) {
-			return failure(":CONTRACT_HASH_MISMATCH", `contract-line ${entry.key} path is not canonical`, {
-				reason: "contract-line",
-				key: entry.key,
-				expected,
-				actual: entry.path,
-			});
-		}
-		frozen[entry.key] = expected === null ? { sha256: entry.sha256 } : { path: entry.path, sha256: entry.sha256 };
-	}
-	return {
-		ok: true,
-		slug,
-		frozen,
-		hashes: Object.fromEntries(FROZEN_KEYS.map((key) => [key, frozen[key].sha256])),
-	};
 }
 
 // ---------------------------------------------------------------------------
@@ -776,6 +496,78 @@ function parseEdn(text) {
 }
 
 // ---------------------------------------------------------------------------
+// CASE dataset helpers
+// ---------------------------------------------------------------------------
+
+const CASE_INPUT_FIELDS = new Set(["case-id", "case_id", "path", "threshold", "steps", "expected", "rubric"]);
+
+function toCaseSnake(entry, index) {
+	if (!isPlainObject(entry)) return entry;
+	for (const key of Object.keys(entry)) {
+		if (!CASE_INPUT_FIELDS.has(key)) {
+			throw herdError(":INVALID_ARGUMENT", `cases[${index}].${key} is not an allowed CASE field`, {
+				field: `cases[${index}].${key}`,
+				index,
+			});
+		}
+	}
+	const hasKebabId = Object.hasOwn(entry, "case-id");
+	const hasSnakeId = Object.hasOwn(entry, "case_id");
+	if (hasKebabId && hasSnakeId) {
+		throw herdError(":INVALID_ARGUMENT", `cases[${index}] uses both case-id and case_id`, {
+			field: `cases[${index}].case_id`,
+			index,
+		});
+	}
+	return {
+		case_id: hasKebabId ? entry["case-id"] : entry.case_id,
+		path: entry.path,
+		threshold: entry.threshold,
+		steps: entry.steps,
+		expected: entry.expected,
+		rubric: entry.rubric,
+	};
+}
+
+function toCaseKebab(entry) {
+	return {
+		"case-id": entry.case_id,
+		path: entry.path,
+		threshold: entry.threshold,
+		steps: [...entry.steps],
+		expected: entry.expected,
+		rubric: entry.rubric,
+	};
+}
+
+function canonicalCases(value) {
+	const normalized = normalizeCaseSpecs(Array.isArray(value) ? value.map(toCaseSnake) : value);
+	if (!normalized.ok) {
+		const first = normalized.errors?.[0];
+		throw herdError(":INVALID_ARGUMENT", first?.message ?? "CASE dataset is invalid", {
+			errors: normalized.errors ?? [],
+		});
+	}
+	return normalized.cases.map(toCaseKebab);
+}
+
+function parseCasesDocument(text) {
+	const value = parseEdn(text);
+	if (!Array.isArray(value) || value.length === 0) {
+		throw herdError(":INVALID_ARGUMENT", "s2-cases.edn must hold a non-empty CASE vector", {});
+	}
+	return canonicalCases(value);
+}
+
+function caseIdsOf(cases) {
+	return cases.map((entry) => entry["case-id"]);
+}
+
+function canonicalEdnFile(value) {
+	return `${printEdn(value, { indent: " " })}\n`;
+}
+
+// ---------------------------------------------------------------------------
 // Storage ports
 // ---------------------------------------------------------------------------
 
@@ -803,67 +595,30 @@ function readDiskMission(path) {
 }
 
 /**
- * Durable mission store for one mission. The transaction holds
- * `.herd/locks/mission-<slug>.lock` while it reads, transforms, and atomically
- * writes `mission.edn`, so two gate calls cannot both advance the revision.
+ * Durable mission store for one mission. S1-S4 have a single writer, so no
+ * mission lock is taken: the store reads, transforms, and writes `mission.edn`
+ * atomically in one pass.
  */
-function createDiskMissionStore(root, slug, options = {}) {
+function createDiskMissionStore(root, slug) {
 	const path = missionPath(root, slug);
-	const lockPath = missionLockPath(root, slug);
 	return {
 		async read() {
 			return readDiskMission(path);
 		},
 		async transaction(fn) {
-			const acquired = await withLock(
-				lockPath,
-				{
-					purpose: "mission",
-					token: randomUUID(),
-					owner_agent_id: isText(options.agentId) ? options.agentId.trim() : undefined,
-					started_at: new Date().toISOString(),
-				},
-				async () => {
-					const current = readDiskMission(path);
-					const outcome = await fn(current);
-					if (outcome && outcome.commit !== false && outcome.mission !== undefined) {
-						writeFileAtomic(dirname(path), "mission.edn", `${printEdn(outcome.mission, { indent: " " })}\n`);
-					}
-					return outcome?.response;
-				},
-			);
-			if (!acquired.ok) {
-				if (acquired.error) {
-					return {
-						ok: false,
-						error: {
-							code: acquired.error.code,
-							message: acquired.error.message,
-							data: {
-								...(isPlainObject(acquired.error.data) ? acquired.error.data : {}),
-								slug,
-								reason: "mission-lock",
-							},
-						},
-					};
-				}
-				return failure(":STAGE_MISMATCH", "mission is locked by another writer", {
-					slug,
-					reason: "mission-busy",
-					lock: acquired.lock,
-				});
+			const current = readDiskMission(path);
+			const outcome = await fn(current);
+			if (outcome && outcome.commit !== false && outcome.mission !== undefined) {
+				writeFileAtomic(dirname(path), "mission.edn", `${printEdn(outcome.mission, { indent: " " })}\n`);
 			}
-			return (
-				acquired.value ?? invalidArgument("mission store returned no response", { slug, reason: "store-protocol" })
-			);
+			return outcome?.response;
 		},
 	};
 }
 
 /**
  * In-memory store for tests and for the gate layer when it already owns a
- * process-local transaction. One transaction runs at a time, mirroring the
- * mission lock.
+ * process-local transaction. One transaction runs at a time.
  */
 export function createMemoryMissionStore(options = {}) {
 	const initial = isPlainObject(options) && options.initial !== undefined ? options.initial : null;
@@ -979,7 +734,7 @@ function resolveRoot(root) {
 
 function portsFor(root, slug, optionsInput = {}) {
 	const options = isPlainObject(optionsInput) ? optionsInput : {};
-	const store = options.store ?? createDiskMissionStore(root, slug, options);
+	const store = options.store ?? createDiskMissionStore(root, slug);
 	const documents = options.documents ?? createDiskDocuments();
 	if (typeof store?.read !== "function" || typeof store?.transaction !== "function") {
 		throw new TypeError("store must provide read() and transaction(fn)");
@@ -1003,10 +758,7 @@ async function runTransaction(ports, fn) {
 	try {
 		const response = await ports.store.transaction(fn);
 		if (response === undefined) {
-			return invalidArgument("mission store returned no response", {
-				slug: ports.slug,
-				reason: "store-protocol",
-			});
+			return invalidArgument("mission store returned no response", { slug: ports.slug, reason: "store-protocol" });
 		}
 		return response;
 	} catch (error) {
@@ -1084,24 +836,26 @@ async function readApprovalKey(documents, path) {
 	if (!read.ok) {
 		return { ok: false, reason: read.kind, message: read.message };
 	}
-	const key = normalizeHash(read.text.trim());
-	if (!key) {
+	const key = read.text.trim();
+	if (!HEX64_RE.test(key)) {
 		return { ok: false, reason: "invalid", message: "approval.key must contain 64 hex characters" };
 	}
 	return { ok: true, key };
 }
 
 // ---------------------------------------------------------------------------
-// Mission shape, receipts, and preconditions
+// Mission shape and preconditions
 // ---------------------------------------------------------------------------
 
 function normalizeApproval(raw) {
 	if (!isPlainObject(raw)) return undefined;
 	const issuedAt = raw["issued-at"] ?? raw.issuedAt;
-	const reportSha256 = normalizeHash(raw.reportSha256 ?? raw["report-sha256"]);
-	const token = normalizeHash(raw.token);
+	const reportSha256 = raw.reportSha256 ?? raw["report-sha256"];
+	const token = raw.token;
 	if (!Number.isInteger(raw.revision) || raw.revision < 0) return undefined;
-	if (!token || !reportSha256 || !isText(issuedAt)) return undefined;
+	if (typeof token !== "string" || !HEX64_RE.test(token)) return undefined;
+	if (typeof reportSha256 !== "string" || !HEX64_RE.test(reportSha256)) return undefined;
+	if (!isText(issuedAt)) return undefined;
 	return { revision: raw.revision, token, reportSha256, issuedAt };
 }
 
@@ -1111,7 +865,7 @@ function approvalView(approval, missionId) {
 		revision: approval.revision,
 		token: approval.token,
 		reportSha256: approval.reportSha256,
-		issuedAt: approval["issued-at"] ?? approval.issuedAt,
+		issuedAt: approval.issuedAt,
 	};
 }
 
@@ -1120,7 +874,7 @@ function missionShapeProblem(mission) {
 	if (!isText(mission["mission-id"])) {
 		return failure(":INVALID_ARGUMENT", "mission.edn has no mission-id", { field: "mission-id" });
 	}
-	if (typeof mission.slug !== "string" || !SLUG_RE.test(mission.slug)) {
+	if (!isSlug(mission.slug)) {
 		return failure(":INVALID_ARGUMENT", "mission.edn has an invalid slug", { field: "slug" });
 	}
 	const stage = normalizeStage(mission.stage);
@@ -1133,28 +887,22 @@ function missionShapeProblem(mission) {
 	if (!isText(mission["created-at"]) || !isText(mission["updated-at"])) {
 		return failure(":INVALID_ARGUMENT", "mission.edn timestamps are missing", {});
 	}
-	if (!isPlainObject(mission.frozen)) {
-		return failure(":INVALID_ARGUMENT", "mission.edn frozen must be a map", { field: "frozen" });
+	if (mission.tenure !== undefined && mission.tenure !== null) {
+		if (!isPlainObject(mission.tenure) || !isText(mission.tenure["tenure-id"])) {
+			return failure(":INVALID_ARGUMENT", "mission.edn tenure is malformed", { field: "tenure" });
+		}
 	}
-	if (
-		mission["contract-line"] !== null &&
-		mission["contract-line"] !== undefined &&
-		!isText(mission["contract-line"])
-	) {
-		return failure(":CONTRACT_HASH_MISMATCH", "mission.edn contract-line is malformed", {
-			reason: "contract-line",
-		});
+	if (mission.attach !== undefined && mission.attach !== null && !isPlainObject(mission.attach)) {
+		return failure(":INVALID_ARGUMENT", "mission.edn attach must be a map", { field: "attach" });
+	}
+	if (mission.barrier !== undefined && mission.barrier !== null && !isPlainObject(mission.barrier)) {
+		return failure(":INVALID_ARGUMENT", "mission.edn barrier must be a map or null", { field: "barrier" });
 	}
 	if (stage === "completed") {
 		const approval = normalizeApproval(mission.approval);
 		if (!approval) {
 			return failure(":APPROVAL_REQUIRED", "completed mission has no verifiable approval record", {
 				reason: "completed-without-approval",
-			});
-		}
-		if (!isText(mission["contract-line"])) {
-			return failure(":APPROVAL_REQUIRED", "completed mission has no frozen contract line", {
-				reason: "completed-without-contract",
 			});
 		}
 		if (approval.revision !== mission.revision) {
@@ -1173,9 +921,8 @@ function missionShapeProblem(mission) {
 }
 
 /**
- * Structural mission check. Approval presence is checked; the approval token
- * and the frozen documents are checked by `verifyApproval` and
- * `verifyContract`.
+ * Structural mission check. Approval presence is checked here; the token and
+ * the report binding are checked by `verifyApproval`.
  */
 export function validateMission(mission) {
 	const problem = missionShapeProblem(mission);
@@ -1198,546 +945,32 @@ function missionPrecondition(current, slug) {
 	return { ok: true };
 }
 
-function recordReceipt(mission, key, payloadHash, receipt) {
-	if (key === undefined) return;
-	mission.receipts = isPlainObject(mission.receipts) ? mission.receipts : {};
-	mission.receipts[key] = { "payload-hash": payloadHash, receipt: clone(receipt) };
-}
+const PROTECTED_MISSION_KEYS = Object.freeze([
+	"mission-id",
+	"slug",
+	"revision",
+	"created-at",
+	"stage",
+	"tenure",
+	"attach",
+	"barrier",
+	"approval",
+]);
 
-function replayReceipt(mission, key, payloadHash, callId = key) {
-	if (key === undefined) return undefined;
-	const entry = isPlainObject(mission.receipts) ? mission.receipts[key] : undefined;
-	if (!isPlainObject(entry)) return undefined;
-	if (entry["payload-hash"] !== payloadHash) {
-		return failure(":CALL_REPLAY_MISMATCH", "call-id was already used with a different payload", {
-			"call-id": callId,
-			"receipt-key": key,
-			expected: entry["payload-hash"],
-			actual: payloadHash,
-		});
-	}
-	const receipt = clone(entry.receipt);
-	if (isPlainObject(receipt)) receipt.replayed = true;
-	return receipt;
-}
-
-async function writeReceiptFile(ports, record) {
-	const text = `${printEdn(
-		{
-			"call-id": record.callId,
-			op: record.op,
-			"payload-hash": record.payloadHash,
-			receipt: record.receipt,
-		},
-		{ indent: " " },
-	)}\n`;
-	try {
-		await ports.documents.writeText(receiptPath(ports.root, ports.slug, record.key), text);
-	} catch {
-		// The mission receipt map is authoritative; the per-call file is a
-		// human-readable mirror. A mirror failure must not turn a committed
-		// gate into a reported failure.
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Structure snapshots and realignment hints
-// ---------------------------------------------------------------------------
-
-function normalizeStructure(input) {
-	if (input === undefined || input === null) return { ok: true, structure: null };
-	if (!isPlainObject(input)) {
-		return invalidArgument("structure must be an object of {cases, modules, slices}", { field: "structure" });
-	}
-	const result = { cases: [], modules: [], slices: [], supplied: [] };
-	for (const category of ["cases", "modules", "slices"]) {
-		const raw = input[category];
-		if (raw === undefined) continue;
-		if (!Array.isArray(raw)) {
-			return invalidArgument(`structure.${category} must be an array`, { field: `structure.${category}` });
-		}
-		result.supplied.push(category);
-		const seen = new Set();
-		for (const entry of raw) {
-			let id;
-			if (typeof entry === "string") id = entry;
-			else if (isPlainObject(entry)) {
-				if (category === "cases") {
-					if (Object.hasOwn(entry, "case_id") && Object.hasOwn(entry, "case-id")) {
-						return invalidArgument("structure.cases entry cannot carry both case_id and case-id", {
-							field: "structure.cases",
-						});
-					}
-					id = entry.case_id ?? entry["case-id"];
-				} else if (category === "modules") id = entry.path;
-				else {
-					if (Object.hasOwn(entry, "slice_id") && Object.hasOwn(entry, "slice-id")) {
-						return invalidArgument("structure.slices entry cannot carry both slice_id and slice-id", {
-							field: "structure.slices",
-						});
-					}
-					id = entry.slice_id ?? entry["slice-id"];
-				}
+function applyMissionPatch(current, patch, timestamp) {
+	const next = clone(current);
+	for (const [key, value] of Object.entries(patch)) {
+		if (value === undefined) {
+			if (PROTECTED_MISSION_KEYS.includes(key)) {
+				return invalidArgument(`mission field ${key} cannot be removed`, { field: key });
 			}
-			if (!isText(id)) {
-				return invalidArgument(`structure.${category} entries need a non-empty id`, {
-					field: `structure.${category}`,
-				});
-			}
-			const text = id.trim();
-			if (seen.has(text)) continue;
-			seen.add(text);
-			result[category].push(text);
-		}
-	}
-	return { ok: true, structure: result };
-}
-
-function fenceState(line, fence) {
-	if (fence) {
-		const closing = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
-		if (closing && closing[1][0] === fence.char && closing[1].length >= fence.length) return undefined;
-		return fence;
-	}
-	const opening = /^ {0,3}(`{3,}|~{3,})/.exec(line);
-	if (!opening) return null;
-	return { char: opening[1][0], length: opening[1].length };
-}
-
-function escapeRegExp(text) {
-	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function scanStructure(markdown, declared) {
-	const lines = markdown.split(/\r?\n/);
-	const sections = [];
-	const lineSections = [];
-	const fenceFlags = [];
-	const stack = [];
-	const seenPaths = new Map();
-	let fence;
-	let current = { path: "<preamble>", line: 1, content: [] };
-	sections.push(current);
-
-	for (let index = 0; index < lines.length; index += 1) {
-		const raw = lines[index];
-		const nextFence = fenceState(raw, fence);
-		fenceFlags[index] = Boolean(fence) || Boolean(nextFence);
-		if (fence) {
-			current.content.push(raw);
-			lineSections[index] = current.path;
-			fence = nextFence;
+			delete next[key];
 			continue;
 		}
-		if (nextFence) {
-			current.content.push(raw);
-			lineSections[index] = current.path;
-			fence = nextFence;
-			continue;
-		}
-		const heading = /^ {0,3}(#{1,6})[ \t]+(.*)$/.exec(raw);
-		if (!heading) {
-			current.content.push(raw);
-			lineSections[index] = current.path;
-			continue;
-		}
-		const level = heading[1].length;
-		const text = heading[2].trim().replace(/[ \t]+#+[ \t]*$/, "");
-		while (stack.length > 0 && stack[stack.length - 1].level >= level) stack.pop();
-		stack.push({ level, text });
-		const base = stack.map((entry) => entry.text).join(" > ");
-		const count = (seenPaths.get(base) ?? 0) + 1;
-		seenPaths.set(base, count);
-		current = { path: count === 1 ? base : `${base} [${count}]`, line: index + 1, content: [] };
-		sections.push(current);
-		lineSections[index] = current.path;
+		next[key] = clone(value);
 	}
-
-	const sectionRows = sections.map((section) => ({
-		path: section.path,
-		line: section.line,
-		sha256: sha256(section.content.join("\n")),
-	}));
-
-	const ids = { cases: new Map(), modules: new Map(), slices: new Map() };
-	const add = (category, id, section) => {
-		if (!isText(id)) return;
-		const text = id.trim();
-		if (text.length === 0 || text.length > 256) return;
-		const byId = ids[category];
-		const set = byId.get(text) ?? new Set();
-		set.add(section);
-		byId.set(text, set);
-	};
-	const declaredIds = declared ?? { cases: [], modules: [], slices: [], supplied: [] };
-	const mention = (category, id) => {
-		const pattern = new RegExp(`\\b${escapeRegExp(id)}\\b`);
-		const found = new Set();
-		for (let index = 0; index < lines.length; index += 1) {
-			if (fenceFlags[index]) continue;
-			if (pattern.test(lines[index])) found.add(lineSections[index] ?? "<preamble>");
-		}
-		if (found.size === 0) add(category, id, "<undeclared>");
-		else for (const section of found) add(category, id, section);
-	};
-
-	let scanFence;
-	for (let index = 0; index < lines.length; index += 1) {
-		const raw = lines[index];
-		const nextFence = fenceState(raw, scanFence);
-		if (scanFence) {
-			scanFence = nextFence;
-			continue;
-		}
-		if (nextFence) {
-			scanFence = nextFence;
-			continue;
-		}
-		const section = lineSections[index] ?? "<preamble>";
-		for (const match of raw.matchAll(/CASE-[A-Za-z0-9_-]+/g)) add("cases", match[0], section);
-		for (const match of raw.matchAll(/`([^`\n]+)`/g)) {
-			const value = match[1].trim();
-			if (value.includes("://") || value.includes("<") || value.includes(" ")) continue;
-			if (/^[A-Za-z0-9_.@-]+(?:\/[A-Za-z0-9_.@-]+)+$/.test(value)) add("modules", value, section);
-		}
-		for (const match of raw.matchAll(/\bslice[ _-]?id\b\s*[:=]\s*[`|]?\s*([a-z0-9][a-z0-9_-]{0,63})\b/gi)) {
-			add("slices", match[1], section);
-		}
-		if (/^ {0,3}#{1,6}[ \t]+/.test(raw)) {
-			for (const match of raw.matchAll(/\bSlice\s+([a-z0-9][a-z0-9_-]{0,63})\b/g)) {
-				add("slices", match[1], section);
-			}
-		}
-	}
-
-	for (const category of ["cases", "modules", "slices"]) {
-		for (const id of declaredIds[category] ?? []) mention(category, id);
-	}
-
-	const sortedIds = {};
-	const declaredSnapshot = {};
-	const supplied = new Set(declaredIds.supplied ?? []);
-	for (const category of ["cases", "modules", "slices"]) {
-		const declaredOrder = declaredIds[category] ?? [];
-		if (supplied.has(category)) {
-			declaredSnapshot[category] = [...declaredOrder];
-			sortedIds[category] = declaredOrder
-				.map((id) => {
-					const sectionSet = ids[category].get(id);
-					return sectionSet ? { id, sections: [...sectionSet].sort() } : undefined;
-				})
-				.filter(Boolean);
-			continue;
-		}
-		const declaredSet = new Set(declaredOrder);
-		const entries = [];
-		for (const id of declaredOrder) {
-			const sectionSet = ids[category].get(id);
-			if (sectionSet) entries.push({ id, sections: [...sectionSet].sort() });
-		}
-		const extras = [...ids[category].entries()]
-			.filter(([id]) => !declaredSet.has(id))
-			.map(([id, sectionSet]) => ({ id, sections: [...sectionSet].sort() }));
-		// CASE order is the S2 document order; the map already follows the first
-		// mention in the document. Module and Slice ids are unordered sets, so
-		// sorting them keeps receipts deterministic.
-		if (category !== "cases") {
-			extras.sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
-		}
-		sortedIds[category] = [...entries, ...extras];
-	}
-	return { sections: sectionRows, ids: sortedIds, declared: declaredSnapshot };
-}
-
-function affectedIds(previous, next, changedPaths) {
-	const oldMap = new Map((previous ?? []).map((entry) => [entry.id, entry.sections]));
-	const newMap = new Map((next ?? []).map((entry) => [entry.id, entry.sections]));
-	const result = [];
-	for (const id of new Set([...oldMap.keys(), ...newMap.keys()])) {
-		const before = oldMap.get(id) ?? [];
-		const after = newMap.get(id) ?? [];
-		const added = !oldMap.has(id) || !newMap.has(id);
-		const moved = before.length !== after.length || before.some((section, index) => section !== after[index]);
-		const touched =
-			before.some((section) => changedPaths.has(section)) || after.some((section) => changedPaths.has(section));
-		const unseen = (before.length === 0 || after.length === 0) && changedPaths.size > 0;
-		if (added || moved || touched || unseen) result.push(id);
-	}
-	return result.sort();
-}
-
-function diffStructure(previous, next, stage, structureSupplied) {
-	if (!isPlainObject(previous) || !Array.isArray(previous.sections)) {
-		const affected = {};
-		for (const category of ["cases", "modules", "slices"]) {
-			affected[category] = (next.ids[category] ?? []).map((entry) => entry.id);
-		}
-		return { changedSections: [], affected, unknown: ["all"] };
-	}
-	const before = new Map(previous.sections.map((section) => [section.path, section.sha256]));
-	const after = new Map(next.sections.map((section) => [section.path, section.sha256]));
-	const changedSections = [];
-	const changedPaths = new Set();
-	for (const [path, hash] of after) {
-		if (!before.has(path)) {
-			changedSections.push({ path, change: "added" });
-			changedPaths.add(path);
-		} else if (before.get(path) !== hash) {
-			changedSections.push({ path, change: "modified" });
-			changedPaths.add(path);
-		}
-	}
-	for (const path of before.keys()) {
-		if (!after.has(path)) {
-			changedSections.push({ path, change: "removed" });
-			changedPaths.add(path);
-		}
-	}
-	const affected = {
-		cases: affectedIds(previous.ids?.cases, next.ids.cases, changedPaths),
-		modules: affectedIds(previous.ids?.modules, next.ids.modules, changedPaths),
-		slices: affectedIds(previous.ids?.slices, next.ids.slices, changedPaths),
-	};
-	const unknown = [];
-	if (!structureSupplied) {
-		if (stage === "s3") unknown.push("modules");
-		if (stage === "s4") unknown.push("slices");
-	}
-	return { changedSections, affected, unknown };
-}
-
-// ---------------------------------------------------------------------------
-// Contract verification
-// ---------------------------------------------------------------------------
-
-function allFrozen(frozen) {
-	return FROZEN_KEYS.every((key) => {
-		const entry = frozen?.[key];
-		if (!isPlainObject(entry) || normalizeHash(entry.sha256) === undefined) return false;
-		if (key === "s3-modules") return entry.path === undefined || entry.path === null;
-		return isText(entry.path);
-	});
-}
-
-async function verifyFrozenEntry(mission, ports, key) {
-	const frozen = mission.frozen;
-	const entry = isPlainObject(frozen) ? frozen[key] : undefined;
-	if (!isPlainObject(entry) || normalizeHash(entry.sha256) === undefined) {
-		return {
-			ok: false,
-			code: ":STAGE_MISMATCH",
-			message: `the contract is incomplete: ${key} is missing`,
-			data: { reason: "contract-incomplete", key, slug: mission.slug },
-		};
-	}
-	const expected = normalizeHash(entry.sha256);
-	if (key === "s3-modules") {
-		if (entry.path !== undefined && entry.path !== null) {
-			return {
-				ok: false,
-				code: ":CONTRACT_HASH_MISMATCH",
-				message: "frozen s3-modules must be inline",
-				data: { reason: "contract-path", key },
-			};
-		}
-		if (!Array.isArray(mission["s3-modules"])) {
-			return {
-				ok: false,
-				code: ":CONTRACT_HASH_MISMATCH",
-				message: "mission s3-modules is missing",
-				data: { reason: "inline-missing", key },
-			};
-		}
-		const actual = sha256(canonicalInlineBytes(mission["s3-modules"]));
-		if (actual !== expected) {
-			return {
-				ok: false,
-				code: ":CONTRACT_HASH_MISMATCH",
-				message: "frozen s3-modules changed after freezing",
-				data: { reason: "hash", key, expected, actual },
-			};
-		}
-		return { ok: true, key, path: null, sha256: actual };
-	}
-	const relative = controlRelativePath(mission.slug, key);
-	if (entry.path !== relative) {
-		return {
-			ok: false,
-			code: ":CONTRACT_HASH_MISMATCH",
-			message: `frozen ${key} path is not canonical`,
-			data: { reason: "contract-path", key, expected: relative, actual: entry.path },
-		};
-	}
-	const read = await readTextFile(ports.documents, controlPath(ports.root, mission.slug, key));
-	if (!read.ok) {
-		return {
-			ok: false,
-			code: ":CONTRACT_HASH_MISMATCH",
-			message: `frozen ${key} cannot be read: ${read.message}`,
-			data: { reason: read.kind, key, path: relative, "system-code": read.systemCode },
-		};
-	}
-	const actual = sha256(read.text);
-	if (actual !== expected) {
-		return {
-			ok: false,
-			code: ":CONTRACT_HASH_MISMATCH",
-			message: `frozen ${key} changed after freezing`,
-			data: { reason: "hash", key, path: relative, expected, actual },
-		};
-	}
-	return { ok: true, key, path: relative, sha256: actual };
-}
-
-async function verifyFrozenKeys(mission, ports, keys) {
-	const entries = {};
-	const hashes = {};
-	const errors = [];
-	for (const key of keys) {
-		const result = await verifyFrozenEntry(mission, ports, key);
-		entries[key] = result.ok ? { path: result.path, sha256: result.sha256 } : { error: result };
-		if (result.ok) hashes[key] = result.sha256;
-		else errors.push(result);
-	}
-	return { ok: errors.length === 0, entries, hashes, errors };
-}
-
-export async function verifyFrozenPrefix(root, slug, options = {}) {
-	const rootPath = resolveRoot(root);
-	if (typeof slug !== "string" || !SLUG_RE.test(slug)) {
-		return invalidArgument("invalid mission slug", { field: "slug" });
-	}
-	const opts = isPlainObject(options) ? options : {};
-	const keys = opts.keys === undefined ? [...FROZEN_KEYS] : opts.keys;
-	if (!Array.isArray(keys) || keys.some((key) => !FROZEN_KEYS.includes(key))) {
-		return invalidArgument("keys must be a subset of the seven frozen entries", { field: "keys" });
-	}
-	const ports = portsFor(rootPath, slug, opts);
-	return runTransaction(ports, async (current) => {
-		const ready = missionPrecondition(current, slug);
-		if (!ready.ok) return { response: ready, commit: false };
-		const verified = await verifyFrozenKeys(current, ports, keys);
-		let expectedContractLine;
-		let contractLineStale = false;
-		if (allFrozen(current.frozen)) {
-			expectedContractLine = buildContractLine(slug, current.frozen);
-			contractLineStale = current["contract-line"] !== expectedContractLine;
-		}
-		const response = {
-			ok: verified.ok,
-			frozen: clone(current.frozen ?? {}),
-			hashes: verified.hashes,
-			entries: verified.entries,
-			expectedContractLine,
-			contractLineStale,
-			warning: contractLineStale ? { code: ":CONTRACT_LINE_STALE" } : null,
-		};
-		if (!verified.ok) {
-			response.error = {
-				code: verified.errors[0].code,
-				message: verified.errors[0].message,
-				data: { ...verified.errors[0].data, errors: verified.errors.map((entry) => entry.data) },
-			};
-		}
-		return { response, commit: false };
-	});
-}
-
-async function verifyContractAgainst(mission, ports) {
-	const invalid = missionShapeProblem(mission);
-	if (invalid) return invalid;
-	const verified = await verifyFrozenKeys(mission, ports, FROZEN_KEYS);
-	if (!verified.ok) {
-		const first = verified.errors[0];
-		return failure(first.code, first.message, first.data);
-	}
-	let expectedContractLine;
-	try {
-		expectedContractLine = buildContractLine(mission.slug, mission.frozen);
-	} catch (error) {
-		return failure(":CONTRACT_HASH_MISMATCH", `contract-line cannot be rebuilt: ${messageOf(error)}`, {
-			reason: "contract-line",
-			slug: mission.slug,
-		});
-	}
-	const contractLineStale = mission["contract-line"] !== expectedContractLine;
-	return {
-		ok: true,
-		contract: {
-			slug: mission.slug,
-			missionId: mission["mission-id"],
-			revision: mission.revision,
-			contractLine: expectedContractLine,
-			savedContractLine: mission["contract-line"] ?? null,
-			contractLineStale,
-			warning: contractLineStale ? { code: ":CONTRACT_LINE_STALE" } : null,
-			hashes: verified.hashes,
-			frozen: clone(mission.frozen),
-		},
-	};
-}
-
-async function verifyApprovalAgainst(mission, ports, options = {}) {
-	if (normalizeStage(mission.stage) !== "completed") {
-		return failure(":APPROVAL_REQUIRED", "mission is not completed", {
-			reason: "not-completed",
-			stage: mission.stage,
-		});
-	}
-	const approval = normalizeApproval(mission.approval);
-	if (!approval) {
-		return failure(":APPROVAL_REQUIRED", "mission has no valid approval record", {
-			reason: "missing-approval",
-		});
-	}
-	if (approval.revision !== mission.revision) {
-		return failure(":APPROVAL_REQUIRED", "approval revision does not match the mission revision", {
-			reason: "revision",
-			expected: mission.revision,
-			actual: approval.revision,
-		});
-	}
-	const contract = await verifyContractAgainst(mission, ports);
-	if (!contract.ok) return contract;
-	const keyRead = await readApprovalKey(ports.documents, approvalKeyPath(ports.root, mission.slug));
-	if (!keyRead.ok) {
-		return failure(":APPROVAL_REQUIRED", `the protected approval key cannot be read: ${keyRead.message}`, {
-			reason: keyRead.reason === "missing" ? "key-missing" : "key-invalid",
-		});
-	}
-	const expected = approvalToken(mission, approval.reportSha256, keyRead.key, contract.contract.contractLine);
-	if (approval.token !== expected) {
-		return failure(":APPROVAL_REQUIRED", "approval token does not match the protected key and mission binding", {
-			reason: "token",
-		});
-	}
-	if (options.verifyReport !== false) {
-		const path = reportPath(ports.root, mission.slug, options);
-		const read = await readTextFile(ports.documents, path);
-		if (!read.ok) {
-			return failure(":APPROVAL_REQUIRED", `s5 report cannot be read: ${read.message}`, {
-				reason: read.kind === "missing" ? "report-missing" : "report-unreadable",
-				path,
-			});
-		}
-		const actual = sha256(read.text);
-		if (actual !== approval.reportSha256) {
-			return failure(":APPROVAL_REQUIRED", "s5 report changed after approval", {
-				reason: "report-changed",
-				expected: approval.reportSha256,
-				actual,
-			});
-		}
-	}
-	return {
-		ok: true,
-		authorized: true,
-		approval: approvalView(approval, mission["mission-id"]),
-		missionId: mission["mission-id"],
-		slug: mission.slug,
-		revision: mission.revision,
-		contractLine: mission["contract-line"],
-	};
+	next["updated-at"] = isText(patch["updated-at"]) ? patch["updated-at"] : timestamp;
+	return { ok: true, mission: next };
 }
 
 // ---------------------------------------------------------------------------
@@ -1747,14 +980,14 @@ async function verifyApprovalAgainst(mission, ports, options = {}) {
 /**
  * Create one mission in stage S1 with revision 0.
  *
- * `options` may carry `missionId`, `seed`, `limits`, `settings`, and the
- * injected `store`, `documents`, and `now` ports.
+ * `options` may carry `missionId`, `seed`, `limits`, `settings`, `tenure`,
+ * `attach`, and the injected `store`, `documents`, and `now` ports.
  */
 export async function createMission(root, options = {}) {
 	const rootPath = resolveRoot(root);
 	const opts = isPlainObject(options) ? options : {};
 	const slug = opts.slug;
-	if (typeof slug !== "string" || !SLUG_RE.test(slug)) {
+	if (!isSlug(slug)) {
 		return invalidArgument("slug must be 1-64 lowercase letters, digits, or hyphens, starting with a letter or digit", {
 			field: "slug",
 		});
@@ -1785,10 +1018,12 @@ export async function createMission(root, options = {}) {
 			"updated-at": timestamp,
 			stage: stageValue("s1"),
 			revision: 0,
-			"contract-line": null,
-			frozen: {},
+			tenure: isPlainObject(opts.tenure)
+				? clone(opts.tenure)
+				: { "tenure-id": randomUUID(), index: 1, "started-at": timestamp, "ended-at": null },
+			attach: isPlainObject(opts.attach) ? clone(opts.attach) : {},
+			barrier: null,
 			approval: null,
-			receipts: {},
 			limits: opts.limits ?? {},
 			settings: opts.settings ?? {},
 		};
@@ -1802,13 +1037,12 @@ export async function createMission(root, options = {}) {
  * Returns `{ok:true, mission, valid, authorized}`. A missing mission returns
  * `mission:null`; a malformed mission returns `valid:false` with the
  * structural error. A completed mission is `authorized:true` only when its
- * approval token recomputes from the mission, revision, contract line, report
- * bytes, and the persisted `approval.key`, and the live contract still
- * matches.
+ * approval token recomputes from the mission, revision, report bytes, and the
+ * persisted `approval.key`.
  */
 export async function readMission(root, slug, options = {}) {
 	const rootPath = resolveRoot(root);
-	if (typeof slug !== "string" || !SLUG_RE.test(slug)) {
+	if (!isSlug(slug)) {
 		return invalidArgument("invalid mission slug", { field: "slug" });
 	}
 	const ports = portsFor(rootPath, slug, options);
@@ -1835,7 +1069,7 @@ export async function readMission(root, slug, options = {}) {
 		if (normalizeStage(mission.stage) !== "completed") {
 			return { ok: true, mission, valid: true, authorized: true, error: null };
 		}
-		const verified = await verifyApprovalAgainst(mission, ports, options);
+		const verified = await verifyApprovalAgainst(mission, ports);
 		return {
 			ok: true,
 			mission,
@@ -1892,18 +1126,12 @@ function normalizeDevopsSessionRef(ref, mission) {
 /**
  * Persist the one Plan DevOps child used by this mission tenure.
  *
- * The entry is deliberately minimal: the registry id, the artifacts
- * directory, the display name, the resolved @task model patterns, and the
- * mission revision at registration. It does not copy the AgentDefinition.
  * Re-registering the same id is idempotent; replacing it with a different id
  * is refused so a restart cannot silently create a second investigator.
- *
- * A concurrent mission writer can return the existing store's retryable
- * `:STAGE_MISMATCH` / `mission-busy` response; retry after the lock clears.
  */
 export async function writeDevopsSessionRef(root, slug, ref, options = {}) {
 	const rootPath = resolveRoot(root);
-	if (typeof slug !== "string" || !SLUG_RE.test(slug)) {
+	if (!isSlug(slug)) {
 		return invalidArgument("invalid mission slug", { field: "slug" });
 	}
 	const ports = portsFor(rootPath, slug, options);
@@ -1987,287 +1215,151 @@ export async function listMissions(root, options = {}) {
 }
 
 /**
- * Save an S1-S4 document without freezing it. `advance_s1` uses this before
- * the human-approval wait; S2-S4 callers use `freezeStage` directly.
+ * The single mission write path for the attach layer.
+ *
+ * `update` is a plain patch map or a function that receives a cloned mission
+ * and returns a patch (or null for no change). The patch is applied with
+ * shallow merge semantics: an absent key keeps its current value, a present
+ * key replaces it, and `undefined` deletes an optional key. The protected
+ * control fields (`mission-id`, `slug`, `revision`, `created-at`, `stage`,
+ * `tenure`, `attach`, `barrier`, `approval`) cannot be removed, so an attach
+ * tool cannot accidentally drop the approval record or the tenure identity.
+ *
+ * The read, patch, structural validation, and atomic `mission.edn` write run
+ * in one store transaction. `updated-at` is refreshed unless the patch names
+ * it explicitly.
  */
-export async function saveStageDocument(root, slug, stageInput, markdown, options = {}) {
+export async function updateMission(root, slug, update, options = {}) {
 	const rootPath = resolveRoot(root);
-	if (typeof slug !== "string" || !SLUG_RE.test(slug)) {
+	if (!isSlug(slug)) {
 		return invalidArgument("invalid mission slug", { field: "slug" });
 	}
-	const stage = normalizeStage(stageInput);
-	if (!STAGE_IDS.includes(stage)) {
-		return failure(":STAGE_MISMATCH", "stage must be s1, s2, s3, or s4", { stage: stageInput });
-	}
-	if (typeof markdown !== "string" || markdown.trim().length === 0) {
-		return invalidArgument("markdown must be a non-empty string", { field: "markdown", stage: stageValue(stage) });
-	}
-	const opts = isPlainObject(options) ? options : {};
-	const callId = callIdFrom(opts);
-	if (callId === null) return invalidArgument("call-id is malformed", { field: "call_id" });
-	const ports = portsFor(rootPath, slug, opts);
-	const op = "saveStageDocument";
-	const key = receiptKey(callId);
-	const payloadHash = sha256(canonicalJson({ op, stage, markdown: sha256(markdown) }));
-	let receiptRecord;
-	const response = await runTransaction(ports, async (current) => {
-		const ready = missionPrecondition(current, slug);
-		if (!ready.ok) return { response: ready, commit: false };
-		const replay = replayReceipt(current, key, payloadHash, callId);
-		if (replay) return { response: replay, commit: false };
-		if (normalizeStage(current.stage) !== stage || current.frozen?.[stage]) {
-			return {
-				response: failure(":STAGE_MISMATCH", `cannot save ${stage} while the mission is at ${current.stage}`, {
-					stage: stageValue(stage),
-					"mission-stage": current.stage,
-					frozen: Boolean(current.frozen?.[stage]),
-				}),
-				commit: false,
-			};
-		}
-		const path = documentPath(rootPath, slug, stage);
-		const written = await writeTextFile(ports.documents, path, markdown);
-		if (!written.ok) return { response: written, commit: false };
-		const read = await readTextFile(ports.documents, path);
-		if (!read.ok) {
-			return {
-				response: invalidArgument(`saved ${stage} document cannot be read back: ${read.message}`, {
-					stage: stageValue(stage),
-					path: stageDocumentPath(slug, stage),
-					reason: read.kind,
-					"system-code": read.systemCode,
-				}),
-				commit: false,
-			};
-		}
-		const hash = sha256(read.text);
-		const next = clone(current);
-		next["updated-at"] = ports.now();
-		const receipt = {
-			ok: true,
-			stage,
-			path: stageDocumentPath(slug, stage),
-			sha256: hash,
-			revision: next.revision,
-			missionStage: stage,
-		};
-		recordReceipt(next, key, payloadHash, receipt);
-		if (key !== undefined) receiptRecord = { callId, op, key, payloadHash, receipt };
-		return { mission: next, response: receipt, commit: true };
-	});
-	if (response?.ok && receiptRecord) await writeReceiptFile(ports, receiptRecord);
-	return response;
-}
-
-async function saveControlFile(root, slug, key, text, op, options = {}, behavior = {}) {
-	const rootPath = resolveRoot(root);
-	if (typeof slug !== "string" || !SLUG_RE.test(slug)) {
-		return invalidArgument("invalid mission slug", { field: "slug" });
-	}
-	const opts = isPlainObject(options) ? options : {};
-	const callId = callIdFrom(opts);
-	if (callId === null) return invalidArgument("call-id is malformed", { field: "call_id" });
-	const ports = portsFor(rootPath, slug, opts);
-	const relative = controlRelativePath(slug, key);
-	const absolute = controlPath(rootPath, slug, key);
-	const payloadHash = sha256(canonicalJson({ op, key, sha256: sha256(text) }));
-	let receiptRecord;
-	const response = await runTransaction(ports, async (current) => {
-		const ready = missionPrecondition(current, slug);
-		if (!ready.ok) return { response: ready, commit: false };
-		const replay = replayReceipt(current, receiptKey(callId), payloadHash, callId);
-		if (replay) return { response: replay, commit: false };
-		const existing = await readTextFile(ports.documents, absolute);
-		if (existing.ok && existing.text === text) {
-			const hash = sha256(existing.text);
-			const receipt = { ok: true, path: relative, sha256: hash, replayed: true };
-			if (callId === undefined) return { response: receipt, commit: false };
-			const next = clone(current);
-			next["updated-at"] = ports.now();
-			recordReceipt(next, receiptKey(callId), payloadHash, receipt);
-			receiptRecord = { callId, op, key: receiptKey(callId), payloadHash, receipt };
-			return { mission: next, response: receipt, commit: true };
-		}
-		if (existing.ok) {
-			const canReplace =
-				behavior.allowReplace === true && current.frozen?.[key] === undefined && current.frozen?.s1 === undefined;
-			if (!canReplace) {
-				return {
-					response: failure(":FILE_CONFLICT", `${relative} already contains different bytes`, {
-						path: relative,
-						expected: sha256(text),
-						actual: sha256(existing.text),
-					}),
-					commit: false,
-				};
-			}
-		}
-		const written = await writeTextFile(ports.documents, absolute, text);
-		if (!written.ok) return { response: written, commit: false };
-		const read = await readTextFile(ports.documents, absolute);
-		if (!read.ok) {
-			return {
-				response: invalidArgument(`saved ${relative} cannot be read back: ${read.message}`, {
-					path: relative,
-					reason: read.kind,
-				}),
-				commit: false,
-			};
-		}
-		const hash = sha256(read.text);
-		const next = clone(current);
-		next["updated-at"] = ports.now();
-		const receipt = { ok: true, path: relative, sha256: hash, replayed: false };
-		recordReceipt(next, receiptKey(callId), payloadHash, receipt);
-		if (callId !== undefined) receiptRecord = { callId, op, key: receiptKey(callId), payloadHash, receipt };
-		return { mission: next, response: receipt, commit: true };
-	});
-	if (response?.ok && receiptRecord) await writeReceiptFile(ports, receiptRecord);
-	return response;
-}
-
-export async function saveS1Summary(root, slug, summary, options = {}) {
-	if (typeof summary !== "string" || summary.trim().length === 0) {
-		return invalidArgument("summary must be a non-empty string", { field: "summary" });
-	}
-	return saveControlFile(root, slug, "s1-summary", summary, "saveS1Summary", options, { allowReplace: true });
-}
-
-export async function saveS2Cases(root, slug, cases, options = {}) {
-	if (!Array.isArray(cases) || cases.length === 0) {
-		return invalidArgument("cases must be a non-empty array", { field: "cases" });
-	}
-	let bytes;
-	try {
-		cases = canonicalCases(cases);
-		bytes = canonicalEdnFile(cases);
-	} catch (error) {
-		return failure(codeOf(error), messageOf(error), dataOf(error));
-	}
-	return saveControlFile(root, slug, "s2-cases", bytes, "saveS2Cases", options);
-}
-
-async function readControlFile(root, slug, key, options = {}) {
-	const rootPath = resolveRoot(root);
-	if (typeof slug !== "string" || !SLUG_RE.test(slug)) {
-		return invalidArgument("invalid mission slug", { field: "slug" });
-	}
-	const opts = isPlainObject(options) ? options : {};
-	const ports = portsFor(rootPath, slug, opts);
-	const relative = controlRelativePath(slug, key);
-	const absolute = controlPath(rootPath, slug, key);
-	return runTransaction(ports, async (current) => {
-		const ready = missionPrecondition(current, slug);
-		if (!ready.ok) return { response: ready, commit: false };
-		const entry = current.frozen?.[key];
-		if (opts.verifyFrozen !== false) {
-			if (!isPlainObject(entry) || normalizeHash(entry.sha256) === undefined) {
-				return {
-					response: failure(":STAGE_MISMATCH", `${key} is not frozen`, {
-						key,
-						path: relative,
-					}),
-					commit: false,
-				};
-			}
-			if (entry.path !== relative) {
-				return {
-					response: failure(":CONTRACT_HASH_MISMATCH", `${key} frozen path is not canonical`, {
-						expected: relative,
-						actual: entry.path,
-					}),
-					commit: false,
-				};
-			}
-		}
-		const raw = await readTextFile(ports.documents, absolute);
-		if (!raw.ok) {
-			return {
-				response: invalidArgument(`cannot read ${relative}: ${raw.message}`, {
-					path: relative,
-					reason: raw.kind,
-					"system-code": raw.systemCode,
-				}),
-				commit: false,
-			};
-		}
-		const hash = sha256(raw.text);
-		if (opts.verifyFrozen !== false && hash !== normalizeHash(entry.sha256)) {
-			return {
-				response: failure(":CONTRACT_HASH_MISMATCH", `${key} bytes do not match the frozen hash`, {
-					path: relative,
-					expected: normalizeHash(entry.sha256),
-					actual: hash,
-				}),
-				commit: false,
-			};
-		}
-		return {
-			response: { ok: true, path: relative, bytes: Buffer.from(raw.text, "utf8"), text: raw.text, sha256: hash },
-			commit: false,
-		};
-	});
-}
-
-export async function readS2Cases(root, slug, options = {}) {
-	const read = await readControlFile(root, slug, "s2-cases", options);
-	if (!read?.ok) return read;
-	try {
-		const cases = parseCasesDocument(read.text);
-		return { ...read, cases, caseIds: caseIdsOf(cases) };
-	} catch (error) {
-		return failure(codeOf(error), messageOf(error), dataOf(error));
-	}
-}
-
-export async function readS1Summary(root, slug, options = {}) {
-	const read = await readControlFile(root, slug, "s1-summary", options);
-	if (!read?.ok) return read;
-	if (read.text.trim().length === 0) {
-		return failure(":INVALID_ARGUMENT", "s1-summary.md is empty", { path: read.path });
-	}
-	return read;
-}
-
-export async function readS4Slices(root, slug, options = {}) {
-	const rootPath = resolveRoot(root);
-	if (typeof slug !== "string" || !SLUG_RE.test(slug)) {
-		return invalidArgument("invalid mission slug", { field: "slug" });
+	if (typeof update !== "function" && !isPlainObject(update)) {
+		return invalidArgument("update must be an object or a function", { field: "update" });
 	}
 	const ports = portsFor(rootPath, slug, isPlainObject(options) ? options : {});
 	return runTransaction(ports, async (current) => {
 		const ready = missionPrecondition(current, slug);
 		if (!ready.ok) return { response: ready, commit: false };
-		const slices = current["s4-slices"];
-		if (!Array.isArray(slices)) {
+		let patch;
+		try {
+			patch = typeof update === "function" ? await update(clone(current)) : update;
+		} catch (error) {
+			return { response: failure(codeOf(error), messageOf(error), dataOf(error)), commit: false };
+		}
+		if (patch === null || patch === undefined) {
+			return { response: { ok: true, mission: clone(current), changed: false }, commit: false };
+		}
+		if (!isPlainObject(patch)) {
 			return {
-				response: failure(":STAGE_MISMATCH", "s4-slices is missing", { key: "s4-slices" }),
+				response: invalidArgument("update function must return an object or null", { field: "update" }),
 				commit: false,
 			};
 		}
-		return { response: { ok: true, slices: clone(slices) }, commit: false };
+		const applied = applyMissionPatch(current, patch, ports.now());
+		if (!applied.ok) return { response: applied, commit: false };
+		const valid = validateMission(applied.mission);
+		if (!valid.ok) return { response: valid, commit: false };
+		return {
+			mission: applied.mission,
+			response: { ok: true, mission: clone(applied.mission), changed: true },
+			commit: true,
+		};
+	});
+}
+
+// ---------------------------------------------------------------------------
+// Stage documents and the S2 dataset
+// ---------------------------------------------------------------------------
+
+/**
+ * Write one stage document from the supplied markdown and return its
+ * repository-relative path.
+ *
+ * The write is atomic, is read back byte-for-byte, and does not advance the
+ * mission stage. The mission must already sit on the document's host stage:
+ * `s4-promela` belongs to S4. Manual edits are allowed; the next write simply
+ * replaces the file.
+ */
+export async function saveDocument(root, slug, stageInput, markdown, options = {}) {
+	const rootPath = resolveRoot(root);
+	if (!isSlug(slug)) {
+		return invalidArgument("invalid mission slug", { field: "slug" });
+	}
+	const stage = normalizeDocumentStage(stageInput);
+	if (!stage) {
+		return failure(":STAGE_MISMATCH", "stage must be s1, s2, s3, s4, or s4-promela", {
+			stage: stageInput,
+		});
+	}
+	if (typeof markdown !== "string" || markdown.trim().length === 0) {
+		return invalidArgument("markdown must be a non-empty string", { field: "markdown", stage: stageValue(stage) });
+	}
+	const ports = portsFor(rootPath, slug, isPlainObject(options) ? options : {});
+	const relative = stageDocumentPath(slug, stage);
+	const absolute = join(rootPath, relative);
+	const host = hostStageOf(stage);
+	return runTransaction(ports, async (current) => {
+		const ready = missionPrecondition(current, slug);
+		if (!ready.ok) return { response: ready, commit: false };
+		if (normalizeStage(current.stage) !== host) {
+			return {
+				response: failure(":STAGE_MISMATCH", `cannot write ${stage} while the mission is at ${current.stage}`, {
+					stage: stageValue(stage),
+					"mission-stage": current.stage,
+				}),
+				commit: false,
+			};
+		}
+		const written = await writeTextFile(ports.documents, absolute, markdown);
+		if (!written.ok) return { response: written, commit: false };
+		const read = await readTextFile(ports.documents, absolute);
+		if (!read.ok || read.text !== markdown) {
+			return {
+				response: invalidArgument(`saved ${relative} cannot be read back unchanged`, {
+					path: relative,
+					reason: read.ok ? "readback-mismatch" : read.kind,
+					"system-code": read.systemCode ?? null,
+				}),
+				commit: false,
+			};
+		}
+		const next = clone(current);
+		next["updated-at"] = ports.now();
+		return {
+			mission: next,
+			response: {
+				ok: true,
+				stage,
+				path: relative,
+				bytes: Buffer.byteLength(markdown, "utf8"),
+			},
+			commit: true,
+		};
 	});
 }
 
 /**
- * Commit S2's two authoritative inputs under one mission-lock transaction:
- * `.herd/missions/<slug>/cases.edn` and `plans/<slug>/s2-manual-tests.md`.
+ * Commit S2's two authoritative inputs atomically enough for a single writer:
+ * `.herd/missions/<slug>/s2-cases.edn` and
+ * `plans/<slug>/s2-manual-tests.md`.
  *
- * Both files are written/reused, read back, and hashed before the mission
- * record advances. A retry with the same call-id is idempotent; a different
- * external byte sequence is never overwritten and fails closed.
+ * Both files are written, read back, and compared before the mission record
+ * advances its `updated-at`. The mission stage is not advanced here; the
+ * attach tool owns the barrier and the successor tenure.
  */
 export async function commitS2(root, slug, params = {}, options = {}) {
 	const rootPath = resolveRoot(root);
-	if (typeof slug !== "string" || !SLUG_RE.test(slug)) {
+	if (!isSlug(slug)) {
 		return invalidArgument("invalid mission slug", { field: "slug" });
 	}
-	const markdown = params.manual_tests_markdown;
+	if (!isPlainObject(params)) {
+		return invalidArgument("S2 params must be an object", { field: "params" });
+	}
+	const markdown = params.markdown ?? params.manual_tests_markdown;
 	const casesInput = params.cases;
 	if (typeof markdown !== "string" || markdown.trim().length === 0) {
-		return invalidArgument("manual_tests_markdown must be a non-empty string", {
-			field: "manual_tests_markdown",
-		});
+		return invalidArgument("markdown must be a non-empty string", { field: "markdown" });
 	}
 	if (!Array.isArray(casesInput) || casesInput.length === 0) {
 		return invalidArgument("cases must be a non-empty array", { field: "cases" });
@@ -2281,60 +1373,14 @@ export async function commitS2(root, slug, params = {}, options = {}) {
 	} catch (error) {
 		return failure(codeOf(error), messageOf(error), dataOf(error));
 	}
-	const opts = isPlainObject(options) ? options : {};
-	const callId = callIdFrom(opts);
-	if (callId === null) return invalidArgument("call-id is malformed", { field: "call_id" });
-	const normalized = normalizeStructure(opts.structure);
-	if (!normalized.ok) return normalized;
-	const structure = normalized.structure;
-	const ports = portsFor(rootPath, slug, opts);
-	const write = opts.write !== false;
+	const ports = portsFor(rootPath, slug, isPlainObject(options) ? options : {});
 	const docRelative = stageDocumentPath(slug, "s2");
-	const casesRelative = controlRelativePath(slug, "s2-cases");
-	const docAbsolute = documentPath(rootPath, slug, "s2");
-	const casesAbsolute = controlPath(rootPath, slug, "s2-cases");
-	const payloadHash = sha256(
-		canonicalJson({
-			op: "commitS2",
-			markdown: sha256(markdown),
-			cases: sha256(casesBytes),
-			structure,
-			write,
-		}),
-	);
-	const key = receiptKey(callId);
-	let receiptRecord;
-	const response = await runTransaction(ports, async (current) => {
+	const casesRelative = s2CasesPath(slug);
+	const docAbsolute = join(rootPath, docRelative);
+	const casesAbsolute = join(rootPath, casesRelative);
+	return runTransaction(ports, async (current) => {
 		const ready = missionPrecondition(current, slug);
 		if (!ready.ok) return { response: ready, commit: false };
-		const replay = replayReceipt(current, key, payloadHash, callId);
-		if (replay) {
-			if (replay.ok === true) {
-				const replayCases = await readTextFile(ports.documents, casesAbsolute);
-				const replayDoc = await readTextFile(ports.documents, docAbsolute);
-				if (!replayCases.ok || replayCases.text !== casesBytes) {
-					return {
-						response: failure(":CASE_HASH_MISMATCH", "cases.edn changed after the recorded S2 commit", {
-							path: casesRelative,
-							expected: sha256(casesBytes),
-							actual: replayCases.ok ? sha256(replayCases.text) : null,
-						}),
-						commit: false,
-					};
-				}
-				if (!replayDoc.ok || replayDoc.text !== markdown) {
-					return {
-						response: failure(":FILE_CONFLICT", "s2-manual-tests.md changed after the recorded S2 commit", {
-							path: docRelative,
-							expected: sha256(markdown),
-							actual: replayDoc.ok ? sha256(replayDoc.text) : null,
-						}),
-						commit: false,
-					};
-				}
-			}
-			return { response: replay, commit: false };
-		}
 		if (normalizeStage(current.stage) !== "s2") {
 			return {
 				response: failure(":STAGE_MISMATCH", `expected stage s2, mission is at ${current.stage}`, {
@@ -2344,682 +1390,84 @@ export async function commitS2(root, slug, params = {}, options = {}) {
 				commit: false,
 			};
 		}
-		if (current.frozen?.s2 || current.frozen?.["s2-cases"]) {
-			return {
-				response: failure(":STAGE_MISMATCH", "s2 is already frozen", {
-					stage: "s2",
-					revision: current.revision,
-				}),
-				commit: false,
-			};
-		}
-		const prefix = await verifyFrozenKeys(current, ports, ["s1", "s1-summary"]);
-		if (!prefix.ok) {
-			const first = prefix.errors[0];
-			return { response: failure(first.code, first.message, first.data), commit: false };
-		}
-		const existingCases = await readTextFile(ports.documents, casesAbsolute);
-		if (existingCases.ok) {
-			if (existingCases.text !== casesBytes) {
-				return {
-					response: failure(":CASE_HASH_MISMATCH", "cases.edn already contains different bytes", {
-						path: casesRelative,
-						expected: sha256(casesBytes),
-						actual: sha256(existingCases.text),
-					}),
-					commit: false,
-				};
-			}
-		} else if (!write) {
-			return {
-				response: failure(":FILE_CONFLICT", "cases.edn is missing for a no-write retry", {
-					path: casesRelative,
-				}),
-				commit: false,
-			};
-		} else {
-			const written = await writeTextFile(ports.documents, casesAbsolute, casesBytes);
-			if (!written.ok) return { response: written, commit: false };
-		}
-		const existingDoc = await readTextFile(ports.documents, docAbsolute);
-		if (existingDoc.ok) {
-			if (existingDoc.text !== markdown) {
-				return {
-					response: failure(":FILE_CONFLICT", "s2-manual-tests.md already contains different bytes", {
-						path: docRelative,
-						expected: sha256(markdown),
-						actual: sha256(existingDoc.text),
-					}),
-					commit: false,
-				};
-			}
-		} else if (!write) {
-			return {
-				response: failure(":FILE_CONFLICT", "s2-manual-tests.md is missing for a no-write retry", {
-					path: docRelative,
-				}),
-				commit: false,
-			};
-		} else {
-			const written = await writeTextFile(ports.documents, docAbsolute, markdown);
-			if (!written.ok) return { response: written, commit: false };
-		}
+		const casesWritten = await writeTextFile(ports.documents, casesAbsolute, casesBytes);
+		if (!casesWritten.ok) return { response: casesWritten, commit: false };
+		const docWritten = await writeTextFile(ports.documents, docAbsolute, markdown);
+		if (!docWritten.ok) return { response: docWritten, commit: false };
 		const casesRead = await readTextFile(ports.documents, casesAbsolute);
 		const docRead = await readTextFile(ports.documents, docAbsolute);
-		if (!casesRead.ok || !docRead.ok) {
+		if (!casesRead.ok || casesRead.text !== casesBytes) {
 			return {
-				response: invalidArgument("S2 inputs cannot be read back after writing", {
-					path: !casesRead.ok ? casesRelative : docRelative,
+				response: invalidArgument("s2-cases.edn cannot be read back unchanged", {
+					path: casesRelative,
+					reason: casesRead.ok ? "readback-mismatch" : casesRead.kind,
 				}),
 				commit: false,
 			};
 		}
-		let readCases;
+		if (!docRead.ok || docRead.text !== markdown) {
+			return {
+				response: invalidArgument("s2-manual-tests.md cannot be read back unchanged", {
+					path: docRelative,
+					reason: docRead.ok ? "readback-mismatch" : docRead.kind,
+				}),
+				commit: false,
+			};
+		}
+		let stored;
 		try {
-			readCases = parseCasesDocument(casesRead.text);
+			stored = parseCasesDocument(casesRead.text);
 		} catch (error) {
 			return { response: failure(codeOf(error), messageOf(error), dataOf(error)), commit: false };
 		}
-		const docHash = sha256(docRead.text);
-		const casesHash = sha256(casesRead.text);
-		const snapshot = scanStructure(docRead.text, structure);
 		const next = clone(current);
-		next.frozen = {
-			...(isPlainObject(next.frozen) ? next.frozen : {}),
-			s2: { path: docRelative, sha256: docHash, "frozen-at": ports.now(), structure: snapshot },
-			"s2-cases": { path: casesRelative, sha256: casesHash, "frozen-at": ports.now() },
-		};
-		next.revision = current.revision + 1;
-		next.stage = stageValue(NEXT_STAGE.s2);
-		if (allFrozen(next.frozen)) next["contract-line"] = buildContractLine(slug, next.frozen);
 		next["updated-at"] = ports.now();
-		const receipt = {
-			ok: true,
-			stage: "s2",
-			path: docRelative,
-			sha256: docHash,
-			casesPath: casesRelative,
-			casesSha256: casesHash,
-			caseIds: caseIdsOf(readCases),
-			revision: next.revision,
-			missionStage: "s3",
-			advanced: true,
-			contractLine: next["contract-line"] ?? null,
-		};
-		recordReceipt(next, key, payloadHash, receipt);
-		if (key !== undefined) receiptRecord = { callId, op: "commitS2", key, payloadHash, receipt };
-		return { mission: next, response: receipt, commit: true };
-	});
-	if (response?.ok && receiptRecord) await writeReceiptFile(ports, receiptRecord);
-	return response;
-}
-
-/**
- * Freeze one stage from the bytes actually on disk and advance the mission.
- *
- * S1 never writes the supplied markdown when the file exists: approval must
- * use the latest human-edited bytes. S2-S4 write the submitted markdown, read
- * it back, hash the read-back text, then update `mission.edn` in the same
- * transaction.
- *
- * `meta` may carry `callId`, `structure` (`{cases, modules, slices}` for the
- * realignment hint), and `write:false` to require a previous crash-recovery
- * save.
- */
-export async function freezeStage(root, slug, stageInput, markdown, meta = {}) {
-	const rootPath = resolveRoot(root);
-	if (typeof slug !== "string" || !SLUG_RE.test(slug)) {
-		return invalidArgument("invalid mission slug", { field: "slug" });
-	}
-	const stage = normalizeStage(stageInput);
-	if (!STAGE_IDS.includes(stage)) {
-		return failure(":STAGE_MISMATCH", "stage must be s1, s2, s3, or s4", { stage: stageInput });
-	}
-	if (markdown !== undefined && markdown !== null && typeof markdown !== "string") {
-		return invalidArgument("markdown must be a string when supplied", {
-			field: "markdown",
-			stage: stageValue(stage),
-		});
-	}
-	const opts = isPlainObject(meta) ? meta : {};
-	const callId = callIdFrom(opts);
-	if (callId === null) return invalidArgument("call-id is malformed", { field: "call_id" });
-	const normalized = normalizeStructure(opts.structure);
-	if (!normalized.ok) return normalized;
-	const structure = normalized.structure;
-	const ports = portsFor(rootPath, slug, opts);
-	const write = opts.write !== false;
-	const markdownHash = typeof markdown === "string" ? sha256(markdown) : "<disk>";
-	const op = "freezeStage";
-	const key = receiptKey(callId);
-	const payloadHash = sha256(canonicalJson({ op, stage, markdown: markdownHash, write, structure }));
-	let receiptRecord;
-	const response = await runTransaction(ports, async (current) => {
-		const ready = missionPrecondition(current, slug);
-		if (!ready.ok) return { response: ready, commit: false };
-		const replay = replayReceipt(current, key, payloadHash, callId);
-		if (replay) return { response: replay, commit: false };
-		if (current.frozen?.[stage]) {
-			return {
-				response: failure(":STAGE_MISMATCH", `${stage} is already frozen`, {
-					stage: stageValue(stage),
-					revision: current.revision,
-				}),
-				commit: false,
-			};
-		}
-		if (normalizeStage(current.stage) !== stage) {
-			return {
-				response: failure(":STAGE_MISMATCH", `expected stage ${stage}, mission is at ${current.stage}`, {
-					stage: stageValue(stage),
-					"mission-stage": current.stage,
-				}),
-				commit: false,
-			};
-		}
-
-		const path = documentPath(rootPath, slug, stage);
-		let mustWrite = write && stage !== "s1" && typeof markdown === "string";
-		if (stage === "s1" && typeof markdown === "string") {
-			const existing = await ports.documents.readText(path);
-			mustWrite = existing?.ok !== true;
-		}
-		if (mustWrite) {
-			const written = await writeTextFile(ports.documents, path, markdown);
-			if (!written.ok) return { response: written, commit: false };
-		}
-
-		const read = await readTextFile(ports.documents, path);
-		if (!read.ok) {
-			return {
-				response: invalidArgument(`cannot freeze ${stage}: ${read.message}`, {
-					stage: stageValue(stage),
-					path: stageDocumentPath(slug, stage),
-					reason: read.kind,
-					"system-code": read.systemCode,
-				}),
-				commit: false,
-			};
-		}
-		const hash = sha256(read.text);
-		const frozenAt = ports.now();
-		let summaryHash;
-		let casesHash;
-		let modules;
-		let slices;
-		if (stage === "s1") {
-			const summary = await readTextFile(ports.documents, controlPath(rootPath, slug, "s1-summary"));
-			if (!summary.ok) {
-				return {
-					response: failure(":FILE_CONFLICT", "s1-summary.md is missing; save the submitted summary before approval", {
-						path: controlRelativePath(slug, "s1-summary"),
-						reason: summary.kind,
-					}),
-					commit: false,
-				};
-			}
-			summaryHash = sha256(summary.text);
-		}
-		if (stage === "s2") {
-			const casesRead = await readTextFile(ports.documents, controlPath(rootPath, slug, "s2-cases"));
-			if (!casesRead.ok) {
-				return {
-					response: failure(":FILE_CONFLICT", "cases.edn is missing; save the submitted CASE vector before freezing", {
-						path: controlRelativePath(slug, "s2-cases"),
-						reason: casesRead.kind,
-					}),
-					commit: false,
-				};
-			}
-			try {
-				parseCasesDocument(casesRead.text);
-			} catch (error) {
-				return { response: failure(codeOf(error), messageOf(error), dataOf(error)), commit: false };
-			}
-			casesHash = sha256(casesRead.text);
-		}
-		if (stage === "s3") {
-			if (Array.isArray(opts.modules)) modules = clone(opts.modules.map(normalizeModuleRecord));
-			else if (Array.isArray(current["s3-modules"])) modules = clone(current["s3-modules"]);
-			else {
-				return {
-					response: invalidArgument("s3 freeze requires the complete modules array", { field: "modules" }),
-					commit: false,
-				};
-			}
-			if (modules.length === 0) {
-				return { response: invalidArgument("modules must not be empty", { field: "modules" }), commit: false };
-			}
-			if (
-				Array.isArray(current["s3-modules"]) &&
-				Array.isArray(opts.modules) &&
-				canonicalInlineBytes(current["s3-modules"]) !== canonicalInlineBytes(modules)
-			) {
-				return {
-					response: failure(":FILE_CONFLICT", "s3-modules already staged with different content", {
-						field: "s3-modules",
-					}),
-					commit: false,
-				};
-			}
-		}
-		if (stage === "s4" && Array.isArray(opts.slices)) slices = clone(opts.slices.map(normalizeSliceRecord));
-		const snapshot = scanStructure(read.text, structure);
-		const next = clone(current);
-		const frozen = {
-			...(isPlainObject(next.frozen) ? next.frozen : {}),
-			[stage]: {
-				path: stageDocumentPath(slug, stage),
-				sha256: hash,
-				"frozen-at": frozenAt,
-				structure: snapshot,
+		return {
+			mission: next,
+			response: {
+				ok: true,
+				stage: "s2",
+				path: docRelative,
+				casesPath: casesRelative,
+				caseIds: caseIdsOf(stored),
+				cases: clone(stored),
 			},
+			commit: true,
 		};
-		if (stage === "s1") {
-			frozen["s1-summary"] = {
-				path: controlRelativePath(slug, "s1-summary"),
-				sha256: summaryHash,
-				"frozen-at": frozenAt,
-			};
-		}
-		if (stage === "s2") {
-			frozen["s2-cases"] = {
-				path: controlRelativePath(slug, "s2-cases"),
-				sha256: casesHash,
-				"frozen-at": frozenAt,
-			};
-		}
-		if (stage === "s3") {
-			next["s3-modules"] = modules;
-			frozen["s3-modules"] = {
-				sha256: sha256(canonicalInlineBytes(modules)),
-				"frozen-at": frozenAt,
-			};
-		}
-		if (slices !== undefined) next["s4-slices"] = slices;
-		next.frozen = frozen;
-		next.revision = current.revision + 1;
-		const nextStage = NEXT_STAGE[stage];
-		next.stage = stageValue(nextStage);
-		if (nextStage === "s5" && allFrozen(next.frozen)) {
-			next["contract-line"] = buildContractLine(slug, next.frozen);
-		}
-		next["updated-at"] = ports.now();
-		const receipt = {
-			ok: true,
-			stage,
-			path: stageDocumentPath(slug, stage),
-			sha256: hash,
-			revision: next.revision,
-			missionStage: nextStage,
-			advanced: true,
-			contractLine: next["contract-line"] ?? null,
-		};
-		recordReceipt(next, key, payloadHash, receipt);
-		if (key !== undefined) receiptRecord = { callId, op, key, payloadHash, receipt };
-		return { mission: next, response: receipt, commit: true };
 	});
-	if (response?.ok && receiptRecord) await writeReceiptFile(ports, receiptRecord);
-	if (response?.ok && stage === "s1") {
-		// The mission commit is already durable. A crash between the commit and
-		// this removal leaves only a stale pending-gate record, which the gate
-		// service safely clears on the next resume; the old order lost the
-		// pending record on a failed commit instead.
-		const removed = await removeFile(ports.documents, pendingPath(rootPath, slug));
-		response.pendingCleared = removed.ok;
-		if (!removed.ok) {
-			response.warning =
-				"the mission advanced to s2, but pending-gate.edn could not be removed; the next resume will clear it";
-		}
-	}
-	return response;
 }
 
 /**
- * Recompute the seven frozen control-state hashes from current disk/inline
- * bytes. A missing entry, unreadable file, non-canonical path, or digest
- * mismatch rejects the whole check. A stale contract-line is reported as a
- * warning; frozen entries remain authoritative.
+ * Read the S2 CASE dataset. Returns the parsed cases and their ids; no hash or
+ * byte mirror is exposed because the dataset is authoritative on its own.
  */
-export async function verifyContract(root, slug, options = {}) {
+export async function readS2Cases(root, slug, options = {}) {
 	const rootPath = resolveRoot(root);
-	if (typeof slug !== "string" || !SLUG_RE.test(slug)) {
+	if (!isSlug(slug)) {
 		return invalidArgument("invalid mission slug", { field: "slug" });
-	}
-	const ports = portsFor(rootPath, slug, options);
-	const response = await runTransaction(ports, async (current) => {
-		const ready = missionPrecondition(current, slug);
-		if (!ready.ok) return { response: ready, commit: false };
-		const verified = await verifyContractAgainst(current, ports);
-		return { response: verified, commit: false };
-	});
-	return response;
-}
-
-/**
- * Recompute one frozen stage after a human edit, update its hash, and bump the
- * revision. When a previous structural snapshot exists, the result names the
- * changed sections and the CASE/module/Slice ids touched. The old hash is
- * never retained.
- *
- * `options.structure` may carry the gate's structured `{cases, modules,
- * slices}` list to make module/Slice impact exact; without it those categories
- * are reported as unknown for S3/S4.
- */
-const CONTROL_TARGETS = Object.freeze(["s1-summary", "s2-cases", "s3-modules", "s4-slices"]);
-
-async function realignControl(rootPath, slug, target, opts, ports) {
-	const key = receiptKey(callIdFrom(opts));
-	return runTransaction(ports, async (current) => {
-		const ready = missionPrecondition(current, slug);
-		if (!ready.ok) return { response: ready, commit: false };
-		if (normalizeStage(current.stage) === "completed") {
-			return {
-				response: failure(":APPROVAL_REQUIRED", "a completed mission cannot be realigned", {
-					reason: "completed",
-					slug,
-				}),
-				commit: false,
-			};
-		}
-		let cases;
-		const modules = Array.isArray(opts.modules) ? clone(opts.modules) : undefined;
-		const slices = Array.isArray(opts.slices) ? clone(opts.slices) : undefined;
-		let hash;
-		let path = null;
-		if (target === "s1-summary") {
-			const read = await readTextFile(ports.documents, controlPath(rootPath, slug, "s1-summary"));
-			if (!read.ok) {
-				return {
-					response: invalidArgument(`cannot realign s1-summary: ${read.message}`, {
-						path: controlRelativePath(slug, "s1-summary"),
-						reason: read.kind,
-					}),
-					commit: false,
-				};
-			}
-			if (read.text.trim().length === 0) {
-				return {
-					response: invalidArgument("s1-summary.md must not be empty", {
-						path: controlRelativePath(slug, "s1-summary"),
-					}),
-					commit: false,
-				};
-			}
-			hash = sha256(read.text);
-			path = controlRelativePath(slug, "s1-summary");
-		} else {
-			const casesRead = await readTextFile(ports.documents, controlPath(rootPath, slug, "s2-cases"));
-			if (!casesRead.ok) {
-				return {
-					response: invalidArgument(`cannot realign ${target}: cases.edn is unavailable`, {
-						path: controlRelativePath(slug, "s2-cases"),
-						reason: casesRead.kind,
-					}),
-					commit: false,
-				};
-			}
-			try {
-				cases = parseCasesDocument(casesRead.text);
-			} catch (error) {
-				return { response: failure(codeOf(error), messageOf(error), dataOf(error)), commit: false };
-			}
-			if (target === "s3-modules" && modules === undefined) {
-				return {
-					response: invalidArgument("s3-modules realign requires the complete modules array", {
-						field: "modules",
-					}),
-					commit: false,
-				};
-			}
-			if (target === "s4-slices" && slices === undefined) {
-				return {
-					response: invalidArgument("s4-slices realign requires the complete slices array", {
-						field: "slices",
-					}),
-					commit: false,
-				};
-			}
-			const effectiveModules = modules ?? current["s3-modules"];
-			const effectiveSlices = slices ?? current["s4-slices"];
-			const mapping = mappingProblem(cases, effectiveModules, effectiveSlices);
-			if (mapping) {
-				return {
-					response: failure(":MAPPING_REALIGN_REQUIRED", "CASE IDs require a structured mapping realign", mapping),
-					commit: false,
-				};
-			}
-			hash = target === "s2-cases" ? sha256(casesRead.text) : undefined;
-			path = target === "s2-cases" ? controlRelativePath(slug, "s2-cases") : null;
-		}
-		const next = clone(current);
-		const frozen = { ...(isPlainObject(next.frozen) ? next.frozen : {}) };
-		if (target === "s1-summary") {
-			const before = frozen["s1-summary"];
-			if (!isPlainObject(before)) {
-				return {
-					response: failure(":STAGE_MISMATCH", "s1-summary is not frozen", { key: "s1-summary" }),
-					commit: false,
-				};
-			}
-			frozen["s1-summary"] = { ...before, sha256: hash, "realigned-at": ports.now() };
-		}
-		if (target === "s2-cases") {
-			const before = frozen["s2-cases"];
-			if (!isPlainObject(before)) {
-				return {
-					response: failure(":STAGE_MISMATCH", "s2-cases is not frozen", { key: "s2-cases" }),
-					commit: false,
-				};
-			}
-			if (hash === normalizeHash(before.sha256) && modules === undefined && slices === undefined) {
-				return {
-					response: { ok: true, status: "unchanged", target, path, sha256: hash, revision: current.revision },
-					commit: false,
-				};
-			}
-			frozen["s2-cases"] = { ...before, sha256: hash, "realigned-at": ports.now() };
-		}
-		if (modules !== undefined) {
-			next["s3-modules"] = modules;
-			frozen["s3-modules"] = {
-				...(isPlainObject(frozen["s3-modules"]) ? frozen["s3-modules"] : {}),
-				sha256: sha256(canonicalInlineBytes(modules)),
-				"realigned-at": ports.now(),
-			};
-		}
-		if (slices !== undefined) next["s4-slices"] = slices;
-		next.frozen = frozen;
-		next.revision = current.revision + 1;
-		if (allFrozen(next.frozen)) next["contract-line"] = buildContractLine(slug, next.frozen);
-		next["updated-at"] = ports.now();
-		const receipt = {
-			ok: true,
-			status: "realigned",
-			target,
-			path,
-			sha256: hash ?? (modules !== undefined ? sha256(canonicalInlineBytes(modules)) : null),
-			revision: next.revision,
-			affected: {
-				cases: caseIdsOf(cases ?? []),
-				modules: modules?.map((entry) => entry.path) ?? [],
-				slices: slices?.map((entry) => entry.slice_id ?? entry.sliceId) ?? [],
-			},
-			frozen: clone(next.frozen),
-			contractLine: next["contract-line"] ?? null,
-			caseIds: cases === undefined ? undefined : caseIdsOf(cases),
-			unknown: [],
-		};
-		if (key !== undefined) recordReceipt(next, key, sha256(canonicalJson({ op: "realign", target, hash })), receipt);
-		return { mission: next, response: receipt, commit: true };
-	});
-}
-
-export async function realign(root, slug, stageInput, options = {}) {
-	const rootPath = resolveRoot(root);
-	if (typeof slug !== "string" || !SLUG_RE.test(slug)) {
-		return invalidArgument("invalid mission slug", { field: "slug" });
-	}
-	const target = CONTROL_TARGETS.includes(stageInput) ? stageInput : normalizeStage(stageInput);
-	if (!STAGE_IDS.includes(target) && !CONTROL_TARGETS.includes(target)) {
-		return failure(":STAGE_MISMATCH", "target must be s1, s1-summary, s2, s2-cases, s3, s3-modules, s4, or s4-slices", {
-			target: stageInput,
-		});
 	}
 	const opts = isPlainObject(options) ? options : {};
-	const callId = callIdFrom(opts);
-	if (callId === null) return invalidArgument("call-id is malformed", { field: "call_id" });
-	const ports = portsFor(rootPath, slug, opts);
-	if (CONTROL_TARGETS.includes(target)) return realignControl(rootPath, slug, target, opts, ports);
-	const stage = target;
-	const normalized = normalizeStructure(opts.structure);
-	if (!normalized.ok) return normalized;
-	const structure = normalized.structure;
-	const op = "realign";
-	const key = receiptKey(callId);
-	let receiptRecord;
-	const response = await runTransaction(ports, async (current) => {
-		const ready = missionPrecondition(current, slug);
-		if (!ready.ok) return { response: ready, commit: false };
-		if (normalizeStage(current.stage) === "completed") {
-			return {
-				response: failure(":APPROVAL_REQUIRED", "a completed mission cannot be realigned", {
-					reason: "completed",
-					slug,
-				}),
-				commit: false,
-			};
-		}
-		const before = current.frozen?.[stage];
-		if (!isPlainObject(before) || !isText(before.path) || !normalizeHash(before.sha256)) {
-			return {
-				response: failure(":STAGE_MISMATCH", `${stage} is not frozen`, {
-					stage: stageValue(stage),
-					reason: "not-frozen",
-				}),
-				commit: false,
-			};
-		}
-		if (before.path !== stageDocumentPath(slug, stage)) {
-			return {
-				response: failure(":CONTRACT_HASH_MISMATCH", `${stage} frozen path is not canonical`, {
-					reason: "contract-path",
-					stage: stageValue(stage),
-					expected: stageDocumentPath(slug, stage),
-					actual: before.path,
-				}),
-				commit: false,
-			};
-		}
-		const path = documentPath(rootPath, slug, stage);
-		const read = await readTextFile(ports.documents, path);
-		if (!read.ok) {
-			return {
-				response: invalidArgument(`cannot realign ${stage}: ${read.message}`, {
-					stage: stageValue(stage),
-					path: stageDocumentPath(slug, stage),
-					reason: read.kind,
-					"system-code": read.systemCode,
-				}),
-				commit: false,
-			};
-		}
-		const hash = sha256(read.text);
-		const payloadHash = sha256(canonicalJson({ op, stage, sha256: hash, structure }));
-		const replay = replayReceipt(current, key, payloadHash, callId);
-		if (replay) return { response: replay, commit: false };
-
-		if (hash === normalizeHash(before.sha256)) {
-			const receipt = {
-				ok: true,
-				status: "unchanged",
-				stage,
-				path: stageDocumentPath(slug, stage),
-				sha256: hash,
-				revision: current.revision,
-				changedSections: [],
-				affected: { cases: [], modules: [], slices: [] },
-				unknown: [],
-			};
-			if (key === undefined) return { response: receipt, commit: false };
-			const next = clone(current);
-			next["updated-at"] = ports.now();
-			recordReceipt(next, key, payloadHash, receipt);
-			receiptRecord = { callId, op, key, payloadHash, receipt };
-			return { mission: next, response: receipt, commit: true };
-		}
-
-		const snapshot = scanStructure(read.text, structure);
-		const supplied = structure !== null && structure.supplied.length > 0;
-		const change = diffStructure(before.structure, snapshot, stage, supplied);
-		const next = clone(current);
-		next.frozen = {
-			...next.frozen,
-			[stage]: {
-				...before,
-				sha256: hash,
-				"realigned-at": ports.now(),
-				structure: snapshot,
-			},
-		};
-		if (stage === "s3" && Array.isArray(opts.modules)) {
-			const normalizedModules = opts.modules.map(normalizeModuleRecord);
-			const casesRead = await readTextFile(ports.documents, controlPath(rootPath, slug, "s2-cases"));
-			if (!casesRead.ok) {
-				return {
-					response: invalidArgument("cannot update s3-modules without cases.edn", {
-						path: controlRelativePath(slug, "s2-cases"),
-					}),
-					commit: false,
-				};
-			}
-			let cases;
-			try {
-				cases = parseCasesDocument(casesRead.text);
-			} catch (error) {
-				return { response: failure(codeOf(error), messageOf(error), dataOf(error)), commit: false };
-			}
-			const mapping = mappingProblem(cases, normalizedModules, current["s4-slices"]);
-			if (mapping) {
-				return {
-					response: failure(":MAPPING_REALIGN_REQUIRED", "S3 modules do not cover the frozen CASE IDs", mapping),
-					commit: false,
-				};
-			}
-			next["s3-modules"] = clone(normalizedModules);
-			next.frozen["s3-modules"] = {
-				...(isPlainObject(next.frozen["s3-modules"]) ? next.frozen["s3-modules"] : {}),
-				sha256: sha256(canonicalInlineBytes(normalizedModules)),
-				"realigned-at": ports.now(),
-			};
-		}
-		if (stage === "s4" && Array.isArray(opts.slices)) next["s4-slices"] = clone(opts.slices.map(normalizeSliceRecord));
-		next.revision = current.revision + 1;
-		if (allFrozen(next.frozen)) {
-			next["contract-line"] = buildContractLine(slug, next.frozen);
-		}
-		next["updated-at"] = ports.now();
-		const receipt = {
-			ok: true,
-			status: "realigned",
-			stage,
-			path: stageDocumentPath(slug, stage),
-			sha256: hash,
-			revision: next.revision,
-			changedSections: change.changedSections,
-			affected: change.affected,
-			frozen: clone(next.frozen),
-			contractLine: next["contract-line"] ?? null,
-			unknown: change.unknown,
-			"structure-supplied": supplied,
-		};
-		recordReceipt(next, key, payloadHash, receipt);
-		if (key !== undefined) receiptRecord = { callId, op, key, payloadHash, receipt };
-		return { mission: next, response: receipt, commit: true };
-	});
-	if (response?.ok && receiptRecord) await writeReceiptFile(ports, receiptRecord);
-	return response;
+	const documents = opts.documents ?? createDiskDocuments();
+	const relative = s2CasesPath(slug);
+	const read = await readTextFile(documents, join(rootPath, relative));
+	if (!read.ok) {
+		return invalidArgument(`cannot read ${relative}: ${read.message}`, {
+			path: relative,
+			reason: read.kind,
+			"system-code": read.systemCode,
+		});
+	}
+	try {
+		const cases = parseCasesDocument(read.text);
+		return { ok: true, path: relative, cases, caseIds: caseIdsOf(cases) };
+	} catch (error) {
+		return failure(codeOf(error), messageOf(error), dataOf(error));
+	}
 }
+
+// ---------------------------------------------------------------------------
+// Asynchronous S1 gate record
+// ---------------------------------------------------------------------------
 
 /**
  * Read the asynchronous S1 gate record. A missing or empty file means no gate
@@ -3027,7 +1475,7 @@ export async function realign(root, slug, stageInput, options = {}) {
  */
 export async function readPendingGate(root, slug, options = {}) {
 	const rootPath = resolveRoot(root);
-	if (typeof slug !== "string" || !SLUG_RE.test(slug)) {
+	if (!isSlug(slug)) {
 		return invalidArgument("invalid mission slug", { field: "slug" });
 	}
 	const ports = portsFor(rootPath, slug, options);
@@ -3064,12 +1512,13 @@ export async function readPendingGate(root, slug, options = {}) {
 /**
  * Persist the asynchronous S1 gate record, or remove it with `null`.
  *
- * The write runs inside the mission transaction, so it cannot interleave with
- * a freeze that clears the same file.
+ * The record is a single atomic document write; it does not touch
+ * `mission.edn`, so an attach tool can clear it without racing the mission
+ * transaction.
  */
 export async function writePendingGate(root, slug, pending, options = {}) {
 	const rootPath = resolveRoot(root);
-	if (typeof slug !== "string" || !SLUG_RE.test(slug)) {
+	if (!isSlug(slug)) {
 		return invalidArgument("invalid mission slug", { field: "slug" });
 	}
 	if (pending !== null && pending !== undefined && !isPlainObject(pending)) {
@@ -3077,24 +1526,26 @@ export async function writePendingGate(root, slug, pending, options = {}) {
 	}
 	const opts = isPlainObject(options) ? options : {};
 	const ports = portsFor(rootPath, slug, opts);
+	const current = await ports.store.read();
+	const ready = missionPrecondition(current, slug);
+	if (!ready.ok) return ready;
 	const path = pendingPath(rootPath, slug);
-	const response = await runTransaction(ports, async (current) => {
-		const ready = missionPrecondition(current, slug);
-		if (!ready.ok) return { response: ready, commit: false };
-		if (pending === null || pending === undefined) {
-			const removed = await removeFile(ports.documents, path);
-			return { response: removed.ok ? { ok: true, pending: null } : removed, commit: false };
-		}
-		const text = `${printEdn(pending, { indent: " " })}\n`;
-		const written = await writeTextFile(ports.documents, path, text);
-		return { response: written.ok ? { ok: true, pending: clone(pending) } : written, commit: false };
-	});
-	return response;
+	if (pending === null || pending === undefined) {
+		const removed = await removeFile(ports.documents, path);
+		return removed.ok ? { ok: true, pending: null } : removed;
+	}
+	const text = `${printEdn(pending, { indent: " " })}\n`;
+	const written = await writeTextFile(ports.documents, path, text);
+	return written.ok ? { ok: true, pending: clone(pending) } : written;
 }
 
-function approvalToken(mission, reportSha256, key, contractLine = mission["contract-line"]) {
+// ---------------------------------------------------------------------------
+// One-time approval
+// ---------------------------------------------------------------------------
+
+function approvalToken(mission, reportSha256, key) {
 	return createHmac("sha256", key)
-		.update(`${mission["mission-id"]}:${mission.revision}:${contractLine}:${reportSha256}`, "utf8")
+		.update(`${mission["mission-id"]}:${mission.revision}:${reportSha256}`, "utf8")
 		.digest("hex");
 }
 
@@ -3104,9 +1555,9 @@ function approvalRefusal(message, data = {}) {
 
 /**
  * The minimal audit gate. T4 already proved full CASE reconciliation, scores,
- * evidence, and snapshot cleanliness before it calls the approval port; this
+ * evidence, and workspace cleanliness before it calls the approval port; this
  * only proves that the call came from a PASS aggregation with a bound second
- * recheck. Re-checking those facts here would duplicate T4's work.
+ * recheck.
  */
 function validateCompletionEvidence(evidence, mission, reportSha256) {
 	if (!isPlainObject(evidence)) {
@@ -3130,7 +1581,9 @@ function validateCompletionEvidence(evidence, mission, reportSha256) {
 	if (
 		recheck.missionId !== mission["mission-id"] ||
 		recheck.revision !== mission.revision ||
-		normalizeHash(recheck.reportSha256) !== reportSha256
+		typeof recheck.reportSha256 !== "string" ||
+		!HEX64_RE.test(recheck.reportSha256) ||
+		recheck.reportSha256 !== reportSha256
 	) {
 		return approvalRefusal("the second recheck is not bound to this mission, revision, and report", {
 			reason: "recheck-binding",
@@ -3171,7 +1624,7 @@ function asApprovalPortResult(result) {
 
 function createApprovalPort(rootInput, slug, options = {}) {
 	const root = resolveRoot(rootInput);
-	if (typeof slug !== "string" || !SLUG_RE.test(slug)) {
+	if (!isSlug(slug)) {
 		throw new TypeError("approval port needs a valid mission slug");
 	}
 	const opts = isPlainObject(options) ? options : {};
@@ -3183,8 +1636,8 @@ function createApprovalPort(rootInput, slug, options = {}) {
 		 * aggregate that reached PASS plus the bound second-recheck result.
 		 */
 		async issue(missionId, revision, reportSha256Input, evidence) {
-			const reportSha256 = normalizeHash(reportSha256Input);
-			if (!reportSha256) {
+			const reportSha256 = typeof reportSha256Input === "string" ? reportSha256Input.trim().toLowerCase() : "";
+			if (!HEX64_RE.test(reportSha256)) {
 				return asApprovalPortResult(
 					invalidArgument("reportSha256 must be 64 hex characters", { field: "reportSha256" }),
 				);
@@ -3243,18 +1696,11 @@ function createApprovalPort(rootInput, slug, options = {}) {
 
 async function completeAfterAudit({ root, slug, missionId, revision, reportSha256, evidence, options }) {
 	const ports = portsFor(root, slug, options);
-	const op = "auditApproval";
-	const callId = `audit:${missionId}:${revision}:${reportSha256}`;
-	const key = receiptKey(callId);
-	const payloadHash = sha256(canonicalJson({ op, missionId, revision, reportSha256 }));
-	let receiptRecord;
 	const response = await runTransaction(ports, async (current) => {
 		const ready = missionPrecondition(current, slug);
 		if (!ready.ok) return { response: ready, commit: false };
-		const replay = replayReceipt(current, key, payloadHash, callId);
-		if (replay) return { response: replay, commit: false };
 		if (normalizeStage(current.stage) === "completed") {
-			const verified = await verifyApprovalAgainst(current, ports, options);
+			const verified = await verifyApprovalAgainst(current, ports);
 			if (verified.ok && verified.approval.reportSha256 === reportSha256) {
 				return { response: { ok: true, alreadyIssued: true, ...verified }, commit: false };
 			}
@@ -3294,10 +1740,7 @@ async function completeAfterAudit({ root, slug, missionId, revision, reportSha25
 				commit: false,
 			};
 		}
-		const contract = await verifyContractAgainst(current, ports);
-		if (!contract.ok) return { response: contract, commit: false };
-		const path = reportPath(root, slug, options);
-		const report = await readTextFile(ports.documents, path);
+		const report = await readTextFile(ports.documents, reportPath(root, slug, options));
 		if (!report.ok) {
 			return {
 				response: approvalRefusal(`s5 report cannot be read: ${report.message}`, {
@@ -3323,9 +1766,8 @@ async function completeAfterAudit({ root, slug, missionId, revision, reportSha25
 		const approvalKey = randomBytes(32).toString("hex");
 		const keyWritten = await writeTextFile(ports.documents, approvalKeyPath(root, slug), `${approvalKey}\n`);
 		if (!keyWritten.ok) return { response: keyWritten, commit: false };
-		const token = approvalToken(current, reportSha256, approvalKey, contract.contract.contractLine);
+		const token = approvalToken(current, reportSha256, approvalKey);
 		const next = clone(current);
-		next["contract-line"] = contract.contract.contractLine;
 		next.approval = {
 			revision: current.revision,
 			token,
@@ -3334,42 +1776,78 @@ async function completeAfterAudit({ root, slug, missionId, revision, reportSha25
 		};
 		next.stage = stageValue("completed");
 		next["updated-at"] = ports.now();
-		const receipt = {
-			ok: true,
-			completed: true,
-			missionId: next["mission-id"],
-			slug,
-			revision: next.revision,
-			contractLine: next["contract-line"],
-			approval: approvalView(next.approval, next["mission-id"]),
+		return {
+			mission: next,
+			response: {
+				ok: true,
+				completed: true,
+				missionId: next["mission-id"],
+				slug,
+				revision: next.revision,
+				approval: approvalView(normalizeApproval(next.approval), next["mission-id"]),
+			},
+			commit: true,
 		};
-		recordReceipt(next, key, payloadHash, receipt);
-		receiptRecord = { callId, op, key, payloadHash, receipt };
-		return { mission: next, response: receipt, commit: true };
 	});
-	if (response?.ok && receiptRecord) await writeReceiptFile(ports, receiptRecord);
 	return response;
 }
 
 /**
- * Verify that a completed mission's approval still binds
- * `(mission-id, revision)` and the current contract and report bytes. The
- * token is recomputed from disk state and the persisted `approval.key`, so
- * this works in a fresh process after a restart.
+ * Verify that a completed mission's approval still binds `(mission-id,
+ * revision)` and the current report bytes. The token is recomputed from disk
+ * state and the persisted `approval.key`, so this works in a fresh process
+ * after a restart.
  */
 export async function verifyApproval(root, slug, options = {}) {
 	const rootPath = resolveRoot(root);
-	if (typeof slug !== "string" || !SLUG_RE.test(slug)) {
+	if (!isSlug(slug)) {
 		return invalidArgument("invalid mission slug", { field: "slug" });
 	}
 	const ports = portsFor(rootPath, slug, options);
 	const response = await runTransaction(ports, async (current) => {
 		const ready = missionPrecondition(current, slug);
 		if (!ready.ok) return { response: ready, commit: false };
-		const verified = await verifyApprovalAgainst(current, ports, options);
+		const verified = await verifyApprovalAgainst(current, ports);
 		return { response: verified, commit: false };
 	});
 	return response;
+}
+
+async function verifyApprovalAgainst(mission, ports) {
+	const approval = normalizeApproval(mission.approval);
+	if (!approval) {
+		return approvalRefusal("mission has no verifiable approval record", { reason: "approval-missing" });
+	}
+	if (approval.revision !== mission.revision) {
+		return approvalRefusal("approval revision does not match the mission revision", {
+			reason: "revision",
+			expected: mission.revision,
+			actual: approval.revision,
+		});
+	}
+	const keyRead = await readApprovalKey(ports.documents, approvalKeyPath(ports.root, ports.slug));
+	if (!keyRead.ok) {
+		return approvalRefusal(`approval.key is unusable: ${keyRead.message}`, { reason: keyRead.reason });
+	}
+	const expected = approvalToken(mission, approval.reportSha256, keyRead.key);
+	if (expected !== approval.token) {
+		return approvalRefusal("approval token does not recompute", { reason: "token" });
+	}
+	const report = await readTextFile(ports.documents, reportPath(ports.root, ports.slug, ports.options));
+	if (!report.ok) {
+		return approvalRefusal(`s5 report cannot be read: ${report.message}`, {
+			reason: report.kind === "missing" ? "report-missing" : "report-unreadable",
+		});
+	}
+	const actual = sha256(report.text);
+	if (actual !== approval.reportSha256) {
+		return approvalRefusal("s5 report changed after approval", {
+			reason: "report-changed",
+			expected: approval.reportSha256,
+			actual,
+		});
+	}
+	return { ok: true, approval: approvalView(approval, mission["mission-id"]) };
 }
 
 /**
@@ -3378,24 +1856,16 @@ export async function verifyApproval(root, slug, options = {}) {
  */
 export async function beginRework(root, slug, options = {}) {
 	const rootPath = resolveRoot(root);
-	if (typeof slug !== "string" || !SLUG_RE.test(slug)) {
+	if (!isSlug(slug)) {
 		return invalidArgument("invalid mission slug", { field: "slug" });
 	}
 	const opts = isPlainObject(options) ? options : {};
 	const reason = isText(opts.reason) ? opts.reason.trim() : undefined;
 	if (!reason) return invalidArgument("rework reason must be a non-empty string", { field: "reason" });
-	const callId = callIdFrom(opts);
-	if (callId === null) return invalidArgument("call-id is malformed", { field: "call_id" });
 	const ports = portsFor(rootPath, slug, opts);
-	const op = "beginRework";
-	const key = receiptKey(callId);
-	const payloadHash = sha256(canonicalJson({ op, reason }));
-	let receiptRecord;
 	const response = await runTransaction(ports, async (current) => {
 		const ready = missionPrecondition(current, slug);
 		if (!ready.ok) return { response: ready, commit: false };
-		const replay = replayReceipt(current, key, payloadHash, callId);
-		if (replay) return { response: replay, commit: false };
 		if (normalizeStage(current.stage) === "completed") {
 			return {
 				response: failure(":APPROVAL_REQUIRED", "a completed mission cannot enter rework", {
@@ -3428,15 +1898,323 @@ export async function beginRework(root, slug, options = {}) {
 		next["rework-count"] = (Number.isInteger(next["rework-count"]) ? next["rework-count"] : 0) + 1;
 		next["last-rework"] = { reason, revision: next.revision, at: ports.now() };
 		next["updated-at"] = ports.now();
-		const receipt = { ok: true, status: "rework", stage: "s5", revision: next.revision };
-		recordReceipt(next, key, payloadHash, receipt);
-		if (key !== undefined) receiptRecord = { callId, op, key, payloadHash, receipt };
-		return { mission: next, response: receipt, commit: true };
+		return {
+			mission: next,
+			response: { ok: true, status: "rework", stage: "s5", revision: next.revision },
+			commit: true,
+		};
 	});
-	if (response?.ok && receiptRecord) await writeReceiptFile(ports, receiptRecord);
 	return response;
 }
 
 // Exported only so tests can prove the EDN round trip without exposing the
 // reader as a general-purpose API.
 export const __test = Object.freeze({ parseEdn, sha256, canonicalJson });
+
+// ---------------------------------------------------------------------------
+// Plan board and tenure advance ports
+// ---------------------------------------------------------------------------
+
+function boardPathOf(slug) {
+	return `.herd/missions/${slug}/board.edn`;
+}
+
+function boardText(board) {
+	return `${printEdn(board, { indent: " " })}\n`;
+}
+
+function emptyPlanBoard(tenureId) {
+	if (isText(tenureId)) return tenureEmptyBoard(tenureId.trim());
+	return {
+		"board-version": 0,
+		"tenure-id": null,
+		"review-summary": null,
+		tasks: {},
+		"attach-ready": false,
+	};
+}
+
+function nextPlanStage(stage) {
+	const index = STAGE_IDS.indexOf(stage);
+	if (index === -1 || index === STAGE_IDS.length - 1) return "s5";
+	return STAGE_IDS[index + 1];
+}
+
+function tenureSequenceOf(tenureId, fallback) {
+	const match = /\d+$/.exec(typeof tenureId === "string" ? tenureId : "");
+	if (match !== null) return Number(match[0]);
+	return Number.isInteger(fallback) && fallback >= 0 ? fallback + 1 : 1;
+}
+
+function boardTenureId(board, mission) {
+	const fromBoard = isPlainObject(board) && isText(board["tenure-id"]) ? board["tenure-id"].trim() : null;
+	if (fromBoard !== null) return fromBoard;
+	if (isPlainObject(mission?.tenure) && isText(mission.tenure["tenure-id"])) return mission.tenure["tenure-id"].trim();
+	if (isText(mission?.["tenure-id"])) return mission["tenure-id"].trim();
+	return null;
+}
+
+function invalidBoard(message, data = {}) {
+	return failure(":BOARD_CONFLICT", message, data);
+}
+
+/**
+ * Read one Plan tenure's review board from `.herd/missions/<slug>/board.edn`.
+ *
+ * A missing board is not an error: the tenure starts with an empty board whose
+ * tenure id comes from `mission.edn`. A corrupt board is a `:BOARD_CONFLICT`.
+ * `pendingAttach` mirrors the board's optional `pending-attach` map.
+ */
+export async function readBoard(root, slug, options = {}) {
+	const rootPath = resolveRoot(root);
+	if (!isSlug(slug)) return invalidArgument("invalid mission slug", { field: "slug" });
+	const ports = portsFor(rootPath, slug, isPlainObject(options) ? options : {});
+	const relative = boardPathOf(slug);
+	const absolute = join(rootPath, relative);
+	let read;
+	try {
+		read = await ports.documents.readText(absolute);
+	} catch (error) {
+		return invalidBoard(`cannot read ${relative}: ${messageOf(error)}`, {
+			path: relative,
+			"system-code": error?.code ?? null,
+		});
+	}
+	if (read?.ok !== true) {
+		if (read?.code !== "ENOENT") {
+			return invalidBoard(`cannot read ${relative}`, {
+				path: relative,
+				"system-code": typeof read?.code === "string" ? read.code : null,
+			});
+		}
+		let mission;
+		try {
+			mission = await ports.store.read();
+		} catch (error) {
+			return failure(codeOf(error), messageOf(error), dataOf(error));
+		}
+		return { ok: true, board: emptyPlanBoard(boardTenureId(null, mission)), pendingAttach: null, path: relative };
+	}
+	if (typeof read.text !== "string" || read.text.trim().length === 0) {
+		return invalidBoard(`${relative} is empty`, { path: relative, reason: "board-empty" });
+	}
+	let board;
+	try {
+		board = parseEdn(read.text);
+	} catch (error) {
+		return invalidBoard(`${relative} is not valid EDN: ${messageOf(error)}`, { path: relative, reason: "board-edn" });
+	}
+	if (!isPlainObject(board) || !isPlainObject(board.tasks)) {
+		return invalidBoard(`${relative} must hold one EDN map with a tasks map`, {
+			path: relative,
+			reason: "board-shape",
+		});
+	}
+	const pendingAttach = isPlainObject(board["pending-attach"]) ? board["pending-attach"] : null;
+	return { ok: true, board, pendingAttach, path: relative };
+}
+
+/**
+ * Atomically write one Plan tenure's review board and read it back.
+ */
+export async function writeBoard(root, slug, board, options = {}) {
+	const rootPath = resolveRoot(root);
+	if (!isSlug(slug)) return invalidArgument("invalid mission slug", { field: "slug" });
+	if (!isPlainObject(board) || !isPlainObject(board.tasks)) {
+		return invalidArgument("board must be a plain object with a tasks map", { field: "board" });
+	}
+	const ports = portsFor(rootPath, slug, isPlainObject(options) ? options : {});
+	const relative = boardPathOf(slug);
+	const text = boardText(board);
+	const written = await writeTextFile(ports.documents, join(rootPath, relative), text);
+	if (!written.ok) return invalidBoard(written.error.message, { ...written.error.data, path: relative });
+	const read = await readTextFile(ports.documents, join(rootPath, relative));
+	if (!read.ok || read.text !== text) {
+		return invalidBoard(`saved ${relative} cannot be read back unchanged`, {
+			path: relative,
+			reason: read.ok ? "readback-mismatch" : read.kind,
+			"system-code": read.systemCode ?? null,
+		});
+	}
+	return { ok: true, board: clone(board), path: relative };
+}
+
+/**
+ * Archive one retired tenure's board at `.herd/boards/<tenure-id>.edn`.
+ */
+export async function archiveBoard(root, slug, board, options = {}) {
+	const rootPath = resolveRoot(root);
+	if (!isSlug(slug)) return invalidArgument("invalid mission slug", { field: "slug" });
+	if (!isPlainObject(board) || !isPlainObject(board.tasks)) {
+		return invalidArgument("board must be a plain object with a tasks map", { field: "board" });
+	}
+	const ports = portsFor(rootPath, slug, isPlainObject(options) ? options : {});
+	let tenureId = boardTenureId(board, null);
+	if (tenureId === null) {
+		let mission;
+		try {
+			mission = await ports.store.read();
+		} catch (error) {
+			return failure(codeOf(error), messageOf(error), dataOf(error));
+		}
+		tenureId = boardTenureId(null, mission);
+	}
+	if (tenureId === null) return invalidBoard("board has no tenure-id", { slug, reason: "tenure-missing" });
+	const relative = tenureArchiveBoardPath(tenureId);
+	const text = boardText(board);
+	const written = await writeTextFile(ports.documents, join(rootPath, relative), text);
+	if (!written.ok) return invalidBoard(written.error.message, { ...written.error.data, path: relative });
+	return { ok: true, path: relative };
+}
+
+/**
+ * Retire the current tenure: write the stage deliverables, archive the board,
+ * open the successor board, and move `mission.edn` to the next stage.
+ *
+ * `attach` is the gate payload: `{stage, tool, board, barrier, successor,
+ * markdown, cases, promela, call_id, digest}`. The mission lock is not taken;
+ * every document is an atomic write, and `mission.edn` moves in one store
+ * transaction after the documents land.
+ */
+export async function advanceTenure(root, slug, attach = {}, options = {}) {
+	const rootPath = resolveRoot(root);
+	if (!isSlug(slug)) return invalidArgument("invalid mission slug", { field: "slug" });
+	if (!isPlainObject(attach)) return invalidArgument("attach must be an object", { field: "attach" });
+	const stage = normalizeStage(attach.stage);
+	if (stage === undefined || stage === "s5" || stage === "completed") {
+		return failure(":STAGE_MISMATCH", "advanceTenure needs one Plan stage: s1, s2, s3, or s4", {
+			stage: attach.stage ?? null,
+		});
+	}
+	const tool = isText(attach.tool) ? attach.tool.trim() : null;
+	if (tool === null) {
+		return invalidArgument("tool must be a non-empty string", { field: "tool", stage: stageValue(stage) });
+	}
+	if (typeof attach.markdown !== "string" || attach.markdown.trim().length === 0) {
+		return invalidArgument("markdown must be a non-empty string", { field: "markdown", stage: stageValue(stage) });
+	}
+	const board = attach.board;
+	if (!isPlainObject(board) || !isPlainObject(board.tasks)) {
+		return invalidArgument("board must be a plain object with a tasks map", { field: "board" });
+	}
+	let casesText = null;
+	if (stage === "s2") {
+		if (!Array.isArray(attach.cases) || attach.cases.length === 0) {
+			return invalidArgument("cases must be a non-empty array", { field: "cases" });
+		}
+		try {
+			casesText = canonicalEdnFile(canonicalCases(attach.cases));
+		} catch (error) {
+			return failure(codeOf(error), messageOf(error), dataOf(error));
+		}
+	}
+	if (stage === "s4" && (typeof attach.promela !== "string" || attach.promela.trim().length === 0)) {
+		return invalidArgument("promela must be a non-empty string", { field: "promela" });
+	}
+	const ports = portsFor(rootPath, slug, isPlainObject(options) ? options : {});
+	const now = ports.now();
+	const successorIdFromAttach =
+		isPlainObject(attach.successor) && isText(attach.successor["tenure-id"])
+			? attach.successor["tenure-id"].trim()
+			: null;
+	return runTransaction(ports, async (current) => {
+		const ready = missionPrecondition(current, slug);
+		if (!ready.ok) return { response: ready, commit: false };
+		if (normalizeStage(current.stage) !== stage) {
+			return {
+				response: failure(":STAGE_MISMATCH", `cannot advance ${stage} while the mission is at ${current.stage}`, {
+					stage: stageValue(stage),
+					"mission-stage": current.stage,
+				}),
+				commit: false,
+			};
+		}
+		const tenureId = boardTenureId(board, current);
+		if (tenureId === null) {
+			return { response: invalidBoard("board has no tenure-id", { slug, reason: "tenure-missing" }), commit: false };
+		}
+		const successorId = successorIdFromAttach ?? successorTenureId(current, board);
+		const nextStage = nextPlanStage(stage);
+		const archiveRelative = tenureArchiveBoardPath(tenureId);
+		const writes = [[stageDocumentPath(slug, stage), attach.markdown]];
+		if (stage === "s2") writes.push([s2CasesPath(slug), casesText]);
+		if (stage === "s4") writes.push([stageDocumentPath(slug, "s4-promela"), attach.promela]);
+		for (const [relative, text] of writes) {
+			const absolute = join(rootPath, relative);
+			const written = await writeTextFile(ports.documents, absolute, text);
+			if (!written.ok) return { response: written, commit: false };
+			const read = await readTextFile(ports.documents, absolute);
+			if (!read.ok || read.text !== text) {
+				return {
+					response: invalidArgument(`saved ${relative} cannot be read back unchanged`, {
+						path: relative,
+						reason: read.ok ? "readback-mismatch" : read.kind,
+						"system-code": read.systemCode ?? null,
+					}),
+					commit: false,
+				};
+			}
+		}
+		const archived = await writeTextFile(ports.documents, join(rootPath, archiveRelative), boardText(board));
+		if (!archived.ok) return { response: archived, commit: false };
+		const successorBoard = tenureEmptyBoard(successorId);
+		const successorWritten = await writeTextFile(
+			ports.documents,
+			join(rootPath, boardPathOf(slug)),
+			boardText(successorBoard),
+		);
+		if (!successorWritten.ok) return { response: successorWritten, commit: false };
+		const barrier = isPlainObject(attach.barrier)
+			? clone(attach.barrier)
+			: {
+					from: stage,
+					to: nextStage,
+					"retired-tenure": tenureId,
+					"successor-tenure": successorId,
+					"board-archive": archiveRelative,
+					"review-summary": board["review-summary"] ?? null,
+					"attach-tool": tool,
+					at: now,
+				};
+		const attached = {
+			stage,
+			tool,
+			"call-id": attach.call_id ?? null,
+			digest: attach.digest ?? null,
+			"board-archive": archiveRelative,
+			at: now,
+		};
+		const sequence = tenureSequenceOf(
+			successorId,
+			Number.isInteger(current["tenure-seq"]) ? current["tenure-seq"] : current.tenure?.index,
+		);
+		const next = clone(current);
+		next.stage = stageValue(nextStage);
+		next.tenure = { "tenure-id": successorId, index: sequence, "started-at": now, "ended-at": null };
+		next.attach = { ...(isPlainObject(current.attach) ? current.attach : {}), [stage]: attached };
+		next.barrier = barrier;
+		next["tenure-seq"] = sequence;
+		next.board = successorBoard;
+		next["updated-at"] = now;
+		if (isText(attach.call_id)) {
+			next.receipts = { ...(isPlainObject(current.receipts) ? current.receipts : {}) };
+			next.receipts[attach.call_id] = { digest: attach.digest ?? null, tool, stage, at: now };
+		}
+		const successor = {
+			stage: nextStage,
+			"tenure-id": successorId,
+			"tenure-seq": sequence,
+			"attach-ready": false,
+			"attach-tool": nextStage === "s5" ? null : attachToolForStage(nextStage),
+			"attached-tool": tool,
+			"updated-at": now,
+			board: successorBoard,
+		};
+		return {
+			mission: next,
+			response: { ok: true, stage: nextStage, successor, attached, barrier, archive: archiveRelative },
+			commit: true,
+		};
+	});
+}
+

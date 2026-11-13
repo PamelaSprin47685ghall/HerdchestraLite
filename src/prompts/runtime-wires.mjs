@@ -51,7 +51,7 @@ export function buildUnattendedNudge({ stage, expectedTool, openItems = [], park
 		`[UNATTENDED NUDGE — STAGE ${stage}]`,
 		"思考过程与全部对外输出，一律用简体中文。",
 		`当前阶段尚未到达合法出口，严禁以纯聊天正文自然停止！所有结构化推进与长文档保存必须调用专用工具（当前应调用：\`${expectedTool}\`）。`,
-		"系统处于常授权无人值守模式（仅 S1 的 `advance_s1` 手工批准、`ask_user` 澄清与 S5 初任空账的一次性询问例外）：禁止等待用户决策或授权，禁止半途而废，禁止退回舒适区！",
+		"系统处于常授权无人值守模式（仅 S1 的 `attach_brainstorm` 手工批准、`ask_user` 澄清与 S5 初任空账的一次性询问例外）：禁止等待用户决策或授权，禁止半途而废，禁止退回舒适区！",
 	];
 	if (openItems.length > 0) {
 		lines.push(`未结义务台账（立刻逐项销账）：\n${openItems.map((item) => `- ${item}`).join("\n")}`);

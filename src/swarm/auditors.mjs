@@ -3,27 +3,31 @@
  *
  * The module has four responsibilities and no others:
  *
- * 1. `snapshotWorkspace` records the protected part of the main workspace so a
- *    later comparison can prove the auditors did not change product source,
- *    tests, configuration, documents, the frozen plans, or `.herd` control
- *    state. Evidence, transcripts, audit receipts, worktrees, and caches are
- *    outside the protected set, because an auditor is expected to write them.
+ * 1. `snapshotWorkspace` records the protected part of the one main workspace
+ *    so a later comparison can prove the auditors did not change product
+ *    source, tests, configuration, documents, or `.herd` control state.
+ *    Evidence, transcripts, and audit receipts are outside the protected set,
+ *    because an auditor is expected to write them.
  * 2. `startAuditBatch` starts one visible `Manual Auditor` per CASE at the same
- *    time, each with its own tmux namespace, `/tmp` copy, evidence directory,
- *    transcript directory, abort controller, and timeout. Every auditor sees
- *    only its own CASE. The batch never serializes the CASEs and never skips
- *    one because another is simpler.
- * 3. `validateSubmissions` performs the per-submission checks only: known
- *    CASE id, finite scores in 0..100, non-empty report, evidence paths that
- *    exist and stay inside `plans/<slug>/evidence/<case_id>/`, and an unchanged
+ *    time. Each auditor receives only its own CASE record and observes the
+ *    main workspace read-only: there is no worktree, no temporary copy, and
+ *    no second workspace. The batch never serializes the CASEs and never
+ *    skips one because another is simpler.
+ * 3. `validateSubmissions` performs the per-submission checks only: known CASE
+ *    id, finite scores in 0..100, non-empty report, evidence paths that exist
+ *    and stay inside `plans/<slug>/evidence/<case_id>/`, and an unchanged
  *    protected workspace. Cross-submission reconciliation, thresholds, the
- *    final report, and the approval belong to the caller and to T4.
- * 4. `deriveRepairSlices` turns a T4 `RepairSpec` into runtime repair Slice
- *    proposals. It never edits the frozen S4 document and never collapses an
- *    audit anomaly into a code repair; a timeout or missing submission is a
- *    retry, not a defect the swarm can fix.
+ *    final report, and the approval belong to the caller.
+ * 4. `deriveRepairSlices` turns failed audit rows into runtime repair
+ *    proposals. It never edits a stage document and never collapses an audit
+ *    anomaly into a code repair; a timeout or missing submission is a retry,
+ *    not a defect the swarm can fix.
  *
- * Every host, sandbox, settings, event-bus, prompt, and submission-collection
+ * The CASE records come from `.herd/missions/<slug>/s2-cases.edn`; the caller
+ * parses that file and passes the array. This module never reads a stage
+ * document, never hashes a dataset, and never checks a contract line.
+ *
+ * Every host, settings, event-bus, prompt, and submission-collection
  * dependency is injected through `deps`. This module imports no host module,
  * no sandbox module, and no scoring module, so the owners of those modules can
  * change them without creating an import cycle here.
@@ -54,7 +58,6 @@ import {
 	statSync,
 	writeSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { __test as contractCodec } from "../stages/contract.mjs";
 import { writeEdnAtomic } from "../util/atomic-write.mjs";
@@ -66,15 +69,7 @@ const EXIT_CONFIRM_GRACE_MS = 250;
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const CASE_ID_PATTERN = /^CASE-[A-Za-z0-9_-]+$/;
 const BATCH_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const SHA256_PATTERN = /^[0-9a-f]{64}$/i;
 const NONCE_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
-const STAGE_FILES = Object.freeze({
-	s1: "s1-brainstorm.md",
-	s2: "s2-manual-tests.md",
-	s3: "s3-dev-guide.md",
-	s4: "s4-coordination.md",
-});
-const STAGES = Object.freeze(Object.keys(STAGE_FILES));
 const CASE_SPEC_FIELDS = Object.freeze(["case_id", "path", "threshold", "steps", "expected", "rubric"]);
 const CASE_SPEC_FIELD_SET = new Set(CASE_SPEC_FIELDS);
 
@@ -569,112 +564,6 @@ function publicCaseSpec(spec) {
 	};
 }
 
-function normalizeCaseEdn(value, errors) {
-	if (!isPlainObject(value)) {
-		errors.push(
-			failure("INVALID_ARGUMENT", "caseEdn must be {bytes, sha256} from the frozen cases.edn", { field: "caseEdn" }),
-		);
-		return null;
-	}
-	const bytes = value.bytes;
-	if (!(bytes instanceof Uint8Array) || bytes.length === 0) {
-		errors.push(
-			failure("INVALID_ARGUMENT", "caseEdn.bytes must be the non-empty raw cases.edn Uint8Array", {
-				field: "caseEdn.bytes",
-			}),
-		);
-		return null;
-	}
-	const sha256 = normalizeHash(value.sha256);
-	if (sha256 === null) {
-		errors.push(failure("INVALID_ARGUMENT", "caseEdn.sha256 must be a 64-hex sha256", { field: "caseEdn.sha256" }));
-		return null;
-	}
-	const actual = sha256Bytes(bytes);
-	if (actual !== sha256) {
-		errors.push(
-			failure("CONTRACT_HASH_MISMATCH", "caseEdn.bytes changed after the frozen dataset hash was taken", {
-				field: "caseEdn.sha256",
-				expected: sha256,
-				actual,
-			}),
-		);
-		return null;
-	}
-	return { bytes, sha256 };
-}
-
-function normalizeS1Summary(root, slug, value, errors) {
-	if (!isPlainObject(value)) {
-		errors.push(
-			failure("INVALID_ARGUMENT", "s1Summary must be {path, bytes, sha256} from the frozen s1-summary.md", {
-				field: "s1Summary",
-			}),
-		);
-		return null;
-	}
-	if (!isText(value.path)) {
-		errors.push(failure("INVALID_ARGUMENT", "s1Summary.path must be a non-empty string", { field: "s1Summary.path" }));
-		return null;
-	}
-	const expectedPath = join(root, ".herd", "missions", slug, "s1-summary.md");
-	const providedPath = isAbsolute(value.path) ? resolve(value.path) : resolve(root, value.path);
-	if (providedPath !== expectedPath) {
-		errors.push(
-			failure("INVALID_ARGUMENT", `s1Summary.path must be ${expectedPath}`, {
-				field: "s1Summary.path",
-				expected: expectedPath,
-				actual: providedPath,
-			}),
-		);
-		return null;
-	}
-	const bytes = value.bytes;
-	if (!(bytes instanceof Uint8Array) || bytes.length === 0) {
-		errors.push(
-			failure("INVALID_ARGUMENT", "s1Summary.bytes must be the non-empty raw summary Uint8Array", {
-				field: "s1Summary.bytes",
-			}),
-		);
-		return null;
-	}
-	const sha256 = normalizeHash(value.sha256);
-	if (sha256 === null) {
-		errors.push(failure("INVALID_ARGUMENT", "s1Summary.sha256 must be a 64-hex sha256", { field: "s1Summary.sha256" }));
-		return null;
-	}
-	const actual = sha256Bytes(bytes);
-	if (actual !== sha256) {
-		errors.push(
-			failure("CONTRACT_HASH_MISMATCH", "s1Summary.bytes changed after the frozen summary hash was taken", {
-				field: "s1Summary.sha256",
-				expected: sha256,
-				actual,
-			}),
-		);
-		return null;
-	}
-	let text;
-	try {
-		text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-	} catch (error) {
-		errors.push(
-			failure("INVALID_ARGUMENT", `s1Summary.bytes is not valid UTF-8: ${messageOf(error)}`, {
-				field: "s1Summary.bytes",
-			}),
-		);
-		return null;
-	}
-	if (text.trim() === "") {
-		errors.push(
-			failure("INVALID_ARGUMENT", "s1Summary.bytes must contain a non-empty approved summary", {
-				field: "s1Summary.bytes",
-			}),
-		);
-		return null;
-	}
-	return { path: expectedPath, bytes, sha256, text };
-}
 
 function validateScoreValue(value, field, caseId, errors) {
 	if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -710,9 +599,9 @@ function isInside(parent, child) {
  *
  * Paths may be relative to the repository root or absolute. Every path must
  * describe `plans/<slug>/evidence/<case_id>/...`; when `slug` is absent, any
- * one-segment slug is accepted so the frozen four-argument signature still
- * works. Existence is checked under `root`. A symlink whose real target leaves
- * the evidence directory is rejected even when its lexical path looks valid.
+ * one-segment slug is accepted so the four-argument call still works.
+ * Existence is checked under `root`. A symlink whose real target leaves the
+ * evidence directory is rejected even when its lexical path looks valid.
  */
 function verifyEvidencePaths({ root, slug, caseId, paths }) {
 	const errors = [];
@@ -1100,12 +989,12 @@ export function writeSubmissionOnce({ root, slug, batchId, caseId, submission, d
  * Validate every submission on its own.
  *
  * Inputs:
- * - `caseSpecs`: the validated six-field CASE records in `cases.edn` order.
+ * - `caseSpecs`: the validated six-field CASE records in `s2-cases.edn` order.
  * - `submissions`: raw `{case_id, user_score, developer_score,
  *   report_markdown, evidence_paths}` objects collected from the auditors.
  * - `snapshotBefore`, `snapshotAfter`: snapshots from `snapshotWorkspace`.
  * - `root`, `slug`: optional but required for evidence existence checks. The
- *   frozen four-argument call still performs structural containment; a missing
+ *   four-argument call still performs structural containment; a missing
  *   root fails closed rather than pretending existence was checked.
  *
  * Output: `{ok, errors, workspaceMutated, snapshotChecked, submissions,
@@ -1163,7 +1052,7 @@ export function validateSubmissions({ caseSpecs, submissions, snapshotBefore, sn
 				entry.case_id = caseId;
 				if (!specById.has(caseId)) {
 					submissionErrors.push(
-						failure("AUDIT_UNKNOWN_CASE", `${caseId}: no such CASE in the S2 contract`, {
+						failure("AUDIT_UNKNOWN_CASE", `${caseId}: no such CASE in s2-cases.edn`, {
 							caseId,
 							index,
 						}),
@@ -1233,116 +1122,6 @@ export function validateSubmissions({ caseSpecs, submissions, snapshotBefore, sn
 	};
 }
 
-function normalizeHash(value) {
-	if (typeof value === "string" && SHA256_PATTERN.test(value)) return value.toLowerCase();
-	if (isPlainObject(value)) {
-		if (typeof value.sha256 === "string" && SHA256_PATTERN.test(value.sha256)) {
-			return value.sha256.toLowerCase();
-		}
-		if (typeof value.hash === "string" && SHA256_PATTERN.test(value.hash)) return value.hash.toLowerCase();
-	}
-	return null;
-}
-
-/**
- * Recompute the four frozen stage hashes before any auditor starts.
- *
- * The contract is never trusted through its own `verified` flag. The four files
- * under `plans/<slug>/` are read from disk, empty files are refused, and each
- * hash must equal the contract value. The optional contract port performs an
- * owner-specific check after this local one; both must agree.
- */
-function contractMetadataProblems(contract) {
-	const errors = [];
-	if (!isPlainObject(contract)) {
-		errors.push(
-			failure("CONTRACT_HASH_MISMATCH", "contract must be an object with missionId, revision and frozen hashes", {
-				field: "contract",
-			}),
-		);
-		return errors;
-	}
-	if (!isText(contract.missionId)) {
-		errors.push(
-			failure("CONTRACT_HASH_MISMATCH", "contract.missionId must be a non-empty string", {
-				field: "contract.missionId",
-			}),
-		);
-	}
-	if (!Number.isInteger(contract.revision) || contract.revision < 0) {
-		errors.push(
-			failure("CONTRACT_HASH_MISMATCH", "contract.revision must be a non-negative integer", {
-				field: "contract.revision",
-			}),
-		);
-	}
-	if (!isText(contract.contractLine)) {
-		errors.push(
-			failure("INVALID_ARGUMENT", "contract.contractLine must be a non-empty string", {
-				field: "contract.contractLine",
-			}),
-		);
-	}
-	if (!isPlainObject(contract.frozen) && !Array.isArray(contract.frozen)) {
-		errors.push(
-			failure("CONTRACT_HASH_MISMATCH", "contract.frozen must carry the frozen control-state hashes", {
-				field: "contract.frozen",
-			}),
-		);
-	}
-	return errors;
-}
-
-async function runContractPort(port, contract, context) {
-	if (port === undefined) return { ok: true, errors: [] };
-	if (typeof port !== "function") {
-		return {
-			ok: false,
-			errors: [failure("INVALID_ARGUMENT", "contractPort must be a function", { field: "deps.verifyContract" })],
-		};
-	}
-	try {
-		const value = await port(contract, context);
-		if (value === true || (isPlainObject(value) && value.ok === true)) {
-			return { ok: true, errors: [], value };
-		}
-		if (isPlainObject(value) && Array.isArray(value.errors) && value.errors.length > 0) {
-			return { ok: false, errors: value.errors };
-		}
-		if (isPlainObject(value) && value.ok === false && typeof value.code === "string") {
-			return {
-				ok: false,
-				errors: [normalizeError(value, "CONTRACT_HASH_MISMATCH", "the contract port rejected the frozen contract")],
-			};
-		}
-		if (isPlainObject(value) && value.error !== undefined) {
-			return {
-				ok: false,
-				errors: [
-					normalizeError(value.error, "CONTRACT_HASH_MISMATCH", "the contract port rejected the frozen contract"),
-				],
-			};
-		}
-		return {
-			ok: false,
-			errors: [
-				failure("CONTRACT_HASH_MISMATCH", "the injected contract port rejected the frozen contract", {
-					field: "contract",
-				}),
-			],
-		};
-	} catch (error) {
-		return {
-			ok: false,
-			errors: [
-				failure("CONTRACT_HASH_MISMATCH", `the contract port failed: ${messageOf(error)}`, {
-					field: "contract",
-					cause: messageOf(error),
-				}),
-			],
-		};
-	}
-}
 
 function submissionSchemaFor(caseId) {
 	return {
@@ -1369,9 +1148,12 @@ function defaultSystemPrompt() {
 		"You are an independent Manual Auditor in the Herdchestra S5 terminal audit.",
 		"You audit exactly one CASE and nothing else.",
 		"You never accept an executor's summary, commit message, task count, or completion claim as evidence.",
-		"You observe the real host, capture real screens, and create destructive conditions only in your own isolated temporary copy.",
-		"You never spawn subagents and never modify the main workspace product surface.",
-		'When you finish, call submit_case_audit exactly once and then yield a minimal confirmation such as {"ok": true}. Do not repeat the submission in the yield.',
+		"You observe the real host and capture real screens.",
+		"The main workspace is shared and read-only for you: never create, edit, delete, or move anything there.",
+		"There is no worktree and no temporary copy of the project; do not look for one and do not create one.",
+		"You write only your evidence directory and your own artifacts directory.",
+		"You never spawn subagents.",
+		`When you finish, call submit_case_audit exactly once and then yield a minimal confirmation such as {"ok": true}. Do not repeat the submission in the yield.`,
 	].join("\n");
 }
 
@@ -1392,34 +1174,22 @@ function ensureYieldConfirmation(prompt) {
 function ensureIsolationPaths(prompt, isolation) {
 	const text = typeof prompt === "string" ? prompt : "";
 	const missing = [];
-	if (!text.includes(isolation.tmpDir)) missing.push(`- Use this exact temporary copy: ${isolation.tmpDir}`);
-	if (!text.includes(isolation.evidenceDir)) missing.push(`- Write evidence here: ${isolation.evidenceDir}/`);
-	if (!text.includes(isolation.tmuxSession)) {
-		missing.push(`- Private tmux session name: ${isolation.tmuxSession}`);
+	if (!text.includes(isolation.evidenceDir)) {
+		missing.push(`- Write evidence here: ${isolation.evidenceDir}/`);
 	}
-	if (isolation.tmuxSocket && !text.includes(isolation.tmuxSocket)) {
-		missing.push(`- Use this exact private tmux socket: ${isolation.tmuxSocket}; never use the host tmux server.`);
+	if (!text.includes(isolation.artifactsDir)) {
+		missing.push(`- Write your transcript and receipts here: ${isolation.artifactsDir}/`);
 	}
-	if (isolation.tmuxSocket && !text.includes("fixed provider relay")) {
+	if (!text.includes("read-only")) {
 		missing.push(
-			"- The session host reaches only the current model provider through the framework's fixed provider relay in the private audit socket directory. No host TCP service or host Unix socket is reachable; the framework relay is reachable by design and only forwards to the pinned provider.",
-		);
-	}
-	if (isolation.tmuxSocket && !text.includes("framework-provided model seed")) {
-		missing.push(
-			"- Run `omp` from PATH; the framework-provided model seed and host relay serve the current model without exposing credentials inside the sandbox. Never copy host `~/.omp`, never print or store keys in evidence or logs.",
-		);
-	}
-	if (isolation.landlockPathname === false) {
-		missing.push(
-			"- Landlock pathname-UNIX hardening is unavailable on this kernel (ABI < 9); the mount namespace remains the pathname boundary. Record this degradation in the report.",
+			"- The main workspace is read-only for you: observe it, never write it. There is no worktree and no temporary copy.",
 		);
 	}
 	if (!text.includes("Do not spawn subagents")) {
 		missing.push("- Do not spawn subagents.");
 	}
 	if (missing.length === 0) return text;
-	return [text.trim(), "", "## Framework isolation paths", "", ...missing].join("\n").trim();
+	return [text.trim(), "", "## Framework placement", "", ...missing].join("\n").trim();
 }
 
 function buildIsolation({ root, slug, batchId, caseId, timeoutMs, tools }) {
@@ -1429,13 +1199,9 @@ function buildIsolation({ root, slug, batchId, caseId, timeoutMs, tools }) {
 	const relativeArtifacts = relative(root, artifactsDir).split(sep).join("/");
 	return {
 		mainWorkspace: root,
-		tmuxSession: `herd-${slug}-${caseId}`,
-		tmuxSocket: null,
-		sandboxAvailable: false,
-		tmpDir: null,
+		readOnlyWorkspace: true,
 		evidenceDir: relativeEvidence,
 		artifactsDir: relativeArtifacts,
-		allowedWrites: [`${relativeEvidence}/`, null],
 		tools: [...tools],
 		timeoutMs,
 	};
@@ -1509,7 +1275,7 @@ function toolDataContainers(outcome) {
 /**
  * Collect every successful `submit_case_audit` receipt in the result graph.
  *
- * The audit contract forbids a second write for the same CASE. Returning only
+ * The audit rule forbids a second write for the same CASE. Returning only
  * the last receipt would hide exactly that violation, so the receipt count, not
  * the count of parseable payloads, decides whether the auditor submitted twice.
  */
@@ -1680,8 +1446,6 @@ function publicAuditorRecord(record) {
 		name: record.name,
 		agentId: record.agentId,
 		status: record.status,
-		tmuxSession: record.tmuxSession,
-		tmpDir: record.tmpDir,
 		evidenceDir: record.evidenceDir,
 		artifactsDir: record.artifactsDir,
 		startedAt: record.startedAt,
@@ -1695,8 +1459,6 @@ function auditorOutputRecord(record) {
 		name: record.name,
 		agentId: record.agentId,
 		status: record.status,
-		tmuxSession: record.tmuxSession,
-		tmpDir: record.tmpDir,
 		evidenceDir: record.evidenceDir,
 		artifactsDir: record.artifactsDir,
 		startedAt: record.startedAt,
@@ -1725,7 +1487,6 @@ function abortAuditRecord(record, reason, timedOut = false) {
 	else record.cancelled = true;
 	record.controller.abort(reason);
 	record.handle?.abort?.(reason);
-	void record.sandbox?.stop?.();
 	record.resolveAbort?.({ kind: record.timedOut ? "timeout" : "aborted" });
 }
 
@@ -1836,65 +1597,45 @@ function auditorName(slug, caseId) {
 /**
  * Start one visible Manual Auditor per CASE and collect their submissions.
  *
- * Inputs: repository `root`, mission `slug`, the already validated
- * `caseSpecs` array (`{case_id,path,threshold,steps,expected,rubric}` in
- * `cases.edn` order), the same frozen `cases.edn` bytes in
- * `caseEdn:{bytes,sha256}`, the frozen summary in
- * `s1Summary:{path,bytes,sha256}`, the frozen `contract`, and explicit `deps`.
- * `caseEdn` and `s1Summary` bytes are hashed once by the caller and verified
- * here against the supplied sha256; this function never reads Markdown or the
- * CASE dataset from disk.
+ * Inputs: repository `root`, mission `slug`, and the already validated
+ * `caseSpecs` array (`{case_id,path,threshold,steps,expected,rubric}`) in
+ * `.herd/missions/<slug>/s2-cases.edn` order. Each auditor receives only its
+ * own public CASE record; no S1 summary, stage document, contract, or dataset
+ * hash is copied into the prompt.
+ *
+ * There is one main workspace. The auditor observes it read-only and writes
+ * only `plans/<slug>/evidence/<case_id>/` and its own artifacts directory.
+ * There is no worktree and no temporary project copy.
  *
  * Required `deps` port: `runtime.start(options) -> {handle, done}` (the host
  * `createAgentRuntime()` object), or `start`, or promise-only `spawnAgent`.
- * The runtime must be built with the host's live `Settings` port; B3 also
- * forwards `deps.settings` as the request's live Settings instance.
- * Production also passes `eventBus`, `modelRegistry`, `capabilities`
- * (`{hasSetActiveTools: true, hasCtxAgent: true}` from the host probe), the
- * parent model pattern in `model`, and `preloadedExtensionPaths` (or an explicit
- * `allowExtensionDiscovery`); the host fails closed when any of them is
- * missing. `restrictToolNames` stays false because it would drop the sandbox
- * extension; the child narrows extension tools with `setActiveTools`.
- * `parentHandle` (or `parent`), `parentSessionFile` (or `sessionFile`), `model`,
- * `parentActiveModelPattern`, `systemPrompt`, `buildPrompt`, `collectSubmission`
- * or `readSubmission`, `verifyContract` (required:
- * `(contract,{root,slug,caseSpecs,caseEdn,s1Summary})`), `signal`, `timeoutMs`,
- * `maxRuntimeMs`, `now`, `randomUUID`, and `baseTmpDir`.
- * `collectSubmission` (or `readSubmission`) is the durable receipt reader. When
- * it is absent, only the real `submit_case_audit` tool input/arguments count;
- * yield data and output artifacts are never accepted as the submission.
+ * The runtime must be built with the host's live `Settings` port; the caller
+ * also forwards `deps.settings` as the request's live Settings instance.
+ * Production also passes `eventBus`, `modelRegistry`, `capabilities`, the
+ * parent model pattern in `model`, and `preloadedExtensionPaths`.
+ * `parentHandle` (or `parent`), `parentSessionFile` (or `sessionFile`),
+ * `systemPrompt`, `buildPrompt`, `collectSubmission` or `readSubmission`,
+ * `signal`, `timeoutMs`, `maxRuntimeMs`, `now`, `randomUUID`, and
+ * `submissionDirectory` are optional. When no collection port is injected,
+ * only the real `submit_case_audit` tool input/arguments count; yield data and
+ * output artifacts are never accepted as the submission.
  *
  * Output: `{ok, state, uncertain, closureBlocked, uncertainCases,
- * exitConfirmed, batchId, slug, contract, caseSpecs, auditors, submissions,
+ * exitConfirmed, batchId, slug, caseSpecs, auditors, submissions,
  * missingCases, unknownCases, duplicateCases, duplicateSubmissionCases,
  * validation, snapshotBefore, snapshotAfter, workspaceMutated, retryRequired,
  * aggregateInput, errors, ...}`. `aggregateInput` is
- * `{caseSpecs,submissions,contract,snapshotBefore,snapshotAfter}` with the
- * public six-field CASE records in input order. Each auditor records every raw structured
- * receipt in `receipts`, every parseable payload in `submissions`, the accepted
- * one in `submission`, `submissionSource` as `port` or `tool`, and
- * `exitConfirmed`. More than one `submit_case_audit` receipt for
- * one auditor is a hard
- * `:AUDIT_DUPLICATE_CASE`; no later write may overwrite an earlier one.
+ * `{caseSpecs,submissions,snapshotBefore,snapshotAfter}`.
  *
- * A timeout or cancel asks the adapter to stop. If the runtime does not
- * confirm exit, `uncertain` is true, `closureBlocked` is true,
- * `snapshotAfter` is null, and `aggregateInput` is null. No after snapshot is
- * taken in that case, so no caller can treat the batch as complete. When the
- * runtime does confirm exit, the after snapshot is still taken, but missing or
- * invalid CASEs leave the batch non-PASS for T4.
- * `closureBlocked` is true for every batch that B3 cannot hand to T4 as clean.
- *
- * `ok` means every auditor started, submitted,
- * passed B3's evidence/snapshot validation, and the protected workspace stayed
- * unchanged. It does not mean the CASE scores reached their thresholds; T4 owns
- * that decision.
+ * `ok` means every auditor started, submitted, passed the evidence/snapshot
+ * validation, and the protected workspace stayed unchanged. It does not mean
+ * the CASE scores reached their thresholds; the caller owns that decision.
  *
  * The function starts all K auditors before awaiting any one of them. It does
  * not serialize, skip, or downgrade a CASE. A timeout or abort is an audit
  * anomaly, not a pass and not a code defect.
  */
-export async function startAuditBatch({ root, slug, caseSpecs, caseEdn, s1Summary, contract, deps } = {}) {
+export async function startAuditBatch({ root, slug, caseSpecs, deps } = {}) {
 	const globalErrors = [];
 	const depsSet = isPlainObject(deps) ? deps : {};
 	const now = typeof depsSet.now === "function" ? depsSet.now : Date.now;
@@ -1922,19 +1663,6 @@ export async function startAuditBatch({ root, slug, caseSpecs, caseEdn, s1Summar
 	const absoluteRoot = isText(root) ? resolve(root) : null;
 	const specsResult = normalizeCaseSpecs(caseSpecs);
 	if (!specsResult.ok) globalErrors.push(...specsResult.errors);
-	const caseEdnResult = normalizeCaseEdn(caseEdn, globalErrors);
-	const s1SummaryResult =
-		absoluteRoot !== null && isText(slug) && SLUG_PATTERN.test(slug)
-			? normalizeS1Summary(absoluteRoot, slug, s1Summary, globalErrors)
-			: null;
-	if (typeof depsSet.verifyContract !== "function") {
-		globalErrors.push(
-			failure("INVALID_ARGUMENT", "deps.verifyContract must verify the frozen precondition contract", {
-				field: "deps.verifyContract",
-				next: "pass the contract owner's verifyContract(root, slug, contract, context) wrapper",
-			}),
-		);
-	}
 	if (typeof depsSet.buildPrompt !== "function") {
 		globalErrors.push(
 			failure("INVALID_ARGUMENT", "deps.buildPrompt must inject the role prompt builder", {
@@ -1945,7 +1673,6 @@ export async function startAuditBatch({ root, slug, caseSpecs, caseEdn, s1Summar
 	}
 	const refuse = ({
 		errors = [],
-		contractVerification = null,
 		snapshotBefore = null,
 		root: rootPath = isText(root) ? resolve(root) : null,
 		caseSpecs: refusedSpecs = specsResult.specs,
@@ -1955,8 +1682,6 @@ export async function startAuditBatch({ root, slug, caseSpecs, caseEdn, s1Summar
 		batchId,
 		slug: isText(slug) ? slug : null,
 		root: rootPath,
-		contract: null,
-		contractVerification,
 		caseSpecs: refusedSpecs.map(publicCaseSpec),
 		auditors: [],
 		submissions: [],
@@ -1988,85 +1713,10 @@ export async function startAuditBatch({ root, slug, caseSpecs, caseEdn, s1Summar
 			caseSpecs: specs,
 		});
 	}
-	const metadataErrors = contractMetadataProblems(contract);
-	if (metadataErrors.length > 0) {
-		return refuse({
-			errors: metadataErrors,
-			contractVerification: { ok: false, errors: metadataErrors, hashes: {}, files: [] },
-			snapshotBefore,
-			root: absoluteRoot,
-			caseSpecs: specs,
-		});
-	}
-	const portResult = await runContractPort(depsSet.verifyContract, contract, {
-		root: absoluteRoot,
-		slug,
-		caseSpecs: specs.map(publicCaseSpec),
-		caseEdn: caseEdnResult,
-		s1Summary: s1SummaryResult,
-	});
-	if (!portResult.ok) {
-		return refuse({
-			errors: portResult.errors,
-			contractVerification: { ok: false, errors: portResult.errors, hashes: {}, files: [] },
-			snapshotBefore,
-			root: absoluteRoot,
-			caseSpecs: specs,
-		});
-	}
-	const portHashes = isPlainObject(portResult.value?.hashes)
-		? portResult.value.hashes
-		: isPlainObject(portResult.value?.contract?.hashes)
-			? portResult.value.contract.hashes
-			: {};
-	const liveCaseHash = normalizeHash(portHashes["s2-cases"]);
-	const liveSummaryHash = normalizeHash(portHashes["s1-summary"]);
-	const bindErrors = [];
-	if (liveCaseHash === null) {
-		bindErrors.push(
-			failure("CONTRACT_HASH_MISMATCH", "live frozen hashes do not include s2-cases", {
-				field: "contractVerification.hashes.s2-cases",
-			}),
-		);
-	} else if (liveCaseHash !== caseEdnResult.sha256) {
-		bindErrors.push(
-			failure("CONTRACT_HASH_MISMATCH", "the injected CASE bytes do not match the live frozen s2-cases hash", {
-				field: "caseEdn.sha256",
-				expected: liveCaseHash,
-				actual: caseEdnResult.sha256,
-			}),
-		);
-	}
-	if (liveSummaryHash === null) {
-		bindErrors.push(
-			failure("CONTRACT_HASH_MISMATCH", "live frozen hashes do not include s1-summary", {
-				field: "contractVerification.hashes.s1-summary",
-			}),
-		);
-	} else if (liveSummaryHash !== s1SummaryResult.sha256) {
-		bindErrors.push(
-			failure("CONTRACT_HASH_MISMATCH", "the injected S1 summary bytes do not match the live frozen hash", {
-				field: "s1Summary.sha256",
-				expected: liveSummaryHash,
-				actual: s1SummaryResult.sha256,
-			}),
-		);
-	}
-	if (bindErrors.length > 0) {
-		return refuse({
-			errors: bindErrors,
-			contractVerification: { ok: false, errors: bindErrors, hashes: portHashes, files: [] },
-			snapshotBefore,
-			root: absoluteRoot,
-			caseSpecs: specs,
-		});
-	}
-	const contractVerification = { ok: true, errors: [], hashes: portHashes, files: [] };
 	const starter = resolveStarter(depsSet);
 	if (!starter.ok) {
 		return refuse({
 			errors: starter.errors,
-			contractVerification,
 			snapshotBefore,
 			root: absoluteRoot,
 			caseSpecs: specs,
@@ -2131,46 +1781,11 @@ export async function startAuditBatch({ root, slug, caseSpecs, caseEdn, s1Summar
 				const evidenceDir = join(absoluteRoot, isolation.evidenceDir);
 				const artifactsDir = join(absoluteRoot, isolation.artifactsDir);
 				const setupErrors = [];
-				let sandbox = null;
-				if (typeof depsSet.createAuditorSandbox === "function") {
-					try {
-						sandbox = depsSet.createAuditorSandbox({
-							root: absoluteRoot,
-							slug,
-							batchId,
-							caseId: spec.case_id,
-							evidenceRoot: evidenceDir,
-							model: depsSet.model,
-							modelRegistry: depsSet.modelRegistry,
-						});
-					} catch (error) {
-						setupErrors.push(
-							normalizeError(error, "CAPABILITY_DENIED", `${spec.case_id}: auditor sandbox cannot be created`),
-						);
-					}
-				}
-				const tmpDir =
-					sandbox?.auditTmp ??
-					join(
-						typeof depsSet.baseTmpDir === "string" && depsSet.baseTmpDir !== "" ? depsSet.baseTmpDir : tmpdir(),
-						`herd-audit-${slug}-${spec.case_id}-${freshIdToken(newId)}`,
-					);
-				isolation.tmpDir = tmpDir;
-				isolation.allowedWrites[1] = `${tmpDir}/`;
-				if (sandbox) {
-					isolation.tmuxSocket = sandbox.socketPath;
-					isolation.tmuxSession = sandbox.sessionName ?? isolation.tmuxSession;
-					isolation.sandboxAvailable = sandbox.available === true;
-					isolation.landlockPathname = sandbox.landlockPathnameUnix === true;
-				}
 				const record = {
 					caseId: spec.case_id,
 					name,
 					agentId: null,
 					status: "starting",
-					tmuxSession: isolation.tmuxSession,
-					tmpDir,
-					sandbox,
 					evidenceDir: isolation.evidenceDir,
 					artifactsDir: isolation.artifactsDir,
 					startedAt: now(),
@@ -2195,6 +1810,7 @@ export async function startAuditBatch({ root, slug, caseSpecs, caseEdn, s1Summar
 					cancelled: false,
 					timedOut: false,
 				};
+
 				record.abortPromise = new Promise((resolveAbort) => {
 					record.resolveAbort = resolveAbort;
 				});
@@ -2225,8 +1841,6 @@ export async function startAuditBatch({ root, slug, caseSpecs, caseEdn, s1Summar
 					return;
 				}
 
-				const tmpProblem = prepareDirectory(tmpDir);
-				if (tmpProblem !== null) setupErrors.push(tmpProblem);
 				for (const directory of [evidenceDir, artifactsDir]) {
 					const problem = prepareDirectory(directory, { root: absoluteRoot });
 					if (problem !== null) setupErrors.push(problem);
@@ -2237,23 +1851,11 @@ export async function startAuditBatch({ root, slug, caseSpecs, caseEdn, s1Summar
 						"batch-id": batchId,
 						"case-id": spec.case_id,
 						slug,
-						"mission-id": contract.missionId,
-						revision: contract.revision,
+						"workspace-root": absoluteRoot,
+						"read-only-workspace": true,
 						"submission-path": submissionRelative,
 						"artifacts-dir": artifactsDir,
-						"audit-tmp": tmpDir,
-						...(sandbox
-							? {
-									"sandbox-socket": sandbox.socketPath,
-									"sandbox-session": sandbox.sessionName,
-									"sandbox-available": sandbox.available === true,
-									"sandbox-reason": sandbox.reason ?? null,
-									"sandbox-landlock-abi": sandbox.landlockAbi ?? null,
-									"sandbox-landlock-network": sandbox.landlockNetwork === true,
-									"sandbox-landlock-scopes": sandbox.landlockScopes === true,
-									"sandbox-landlock-pathname": sandbox.landlockPathnameUnix === true,
-								}
-							: {}),
+						"evidence-dir": evidenceDir,
 					});
 				} catch (error) {
 					setupErrors.push(
@@ -2263,48 +1865,22 @@ export async function startAuditBatch({ root, slug, caseSpecs, caseEdn, s1Summar
 						}),
 					);
 				}
-				if (setupErrors.length === 0 && sandbox) {
-					if (sandbox.available !== true) {
-						setupErrors.push(
-							failure(
-								"CAPABILITY_DENIED",
-								`${spec.case_id}: auditor sandbox is unavailable: ${sandbox.reason ?? "bwrap/tmux missing"}`,
-								{
-									caseId: spec.case_id,
-								},
-							),
-						);
-					} else {
-						try {
-							await sandbox.start();
-						} catch (error) {
-							setupErrors.push(
-								normalizeError(error, "CAPABILITY_DENIED", `${spec.case_id}: auditor sandbox cannot start`),
-							);
-							await sandbox.stop?.();
-						}
-					}
-				}
 				if (setupErrors.length > 0) {
 					record.error = setupErrors[0];
 					record.startFailure = setupErrors[0];
 					globalErrors.push(...setupErrors);
-					await sandbox?.stop?.();
 					record.started = Promise.resolve(null);
 					return;
 				}
 
 				const submissionSchema = submissionSchemaFor(spec.case_id);
 				const confirmationSchema = confirmationSchemaFor(spec.case_id);
-				const contractFiles = STAGES.map((stage) => `plans/${slug}/${STAGE_FILES[stage]}`);
 				const promptCaseSpec = publicCaseSpec(spec);
 				let promptCandidate;
 				try {
 					promptCandidate = depsSet.buildPrompt({
 						slug,
 						caseSpec: promptCaseSpec,
-						s1Summary: s1SummaryResult.text,
-						contractFiles,
 						isolation,
 						submissionSchema,
 						auditorName: name,
@@ -2712,11 +2288,6 @@ export async function startAuditBatch({ root, slug, caseSpecs, caseEdn, s1Summar
 			return record;
 		} finally {
 			clearTimeout(record.timer);
-			try {
-				await record.sandbox?.stop?.();
-			} catch {
-				// The sandbox stop is best-effort; the audit result already records the failure.
-			}
 		}
 	}
 
@@ -2811,7 +2382,7 @@ export async function startAuditBatch({ root, slug, caseSpecs, caseEdn, s1Summar
 	}
 	if (unknownCases.length > 0) {
 		for (const caseId of unknownCases) {
-			globalErrors.push(failure("AUDIT_UNKNOWN_CASE", `${caseId}: no such CASE in the S2 contract`, { caseId }));
+			globalErrors.push(failure("AUDIT_UNKNOWN_CASE", `${caseId}: no such CASE in s2-cases.edn`, { caseId }));
 		}
 	}
 	if (duplicateCases.length > 0) {
@@ -2873,13 +2444,11 @@ export async function startAuditBatch({ root, slug, caseSpecs, caseEdn, s1Summar
 		finished.length === specs.length &&
 		finished.every((record) => record.status === "submitted" && record.validation?.ok === true);
 	const errors = [...new Set([...globalErrors, ...validation.errors])];
-	const contractForAggregate = { ...contract, verified: contractVerification.ok };
 	const aggregateInput = uncertain
 		? null
 		: {
 				caseSpecs: specs.map(publicCaseSpec),
 				submissions: validation.submissions,
-				contract: contractForAggregate,
 				snapshotBefore,
 				snapshotAfter: snapshotAfter.ok ? snapshotAfter : null,
 			};
@@ -2894,12 +2463,6 @@ export async function startAuditBatch({ root, slug, caseSpecs, caseEdn, s1Summar
 		batchId,
 		slug,
 		root: absoluteRoot,
-		contract: {
-			missionId: contract.missionId,
-			revision: contract.revision,
-			verified: contractVerification.ok,
-		},
-		contractVerification,
 		caseSpecs: specs.map(publicCaseSpec),
 		auditors: finished.map(auditorOutputRecord),
 		submissions: validation.submissions,
@@ -2980,18 +2543,18 @@ function repairSliceId(caseId, revision, used) {
  *
  * Input: the T4 `aggregate` result. Output:
  * `{ok, retryRequired, revision, nextRevision, repairSpec, repairSlices,
- * mappedCases, frozenS4Modified: false, errors}`.
+ * mappedCases, errors}`.
  *
  * - PASS returns no slices.
  * - INCOMPLETE, a contaminated snapshot, a missing submission, or any
  *   `retryRequired` flag returns `retryRequired: true` and no repair slices.
  *   An audit anomaly is not a code defect and must not be sent to builders.
- * - FAIL returns one repair Slice per failed CASE. Every Slice maps only that
- *   CASE, carries the defects, and depends on nothing, so the repairs can run
- *   in parallel. The frozen S4 document is never modified; these Slice objects
- *   are runtime-derived proposals for B1/B2. T4's RepairSpec is accepted in its
- *   snake_case form (`case_id`, `next_revision`, `failed_cases`) and in the
- *   equivalent camelCase form.
+ * - FAIL returns one repair proposal per failed CASE. Every proposal maps only
+ *   that CASE, carries the defects, and depends on nothing, so the repairs can
+ *   run in parallel. No stage document is modified; these objects are runtime
+ *   repair proposals. The caller's RepairSpec is accepted in its snake_case
+ *   form (`case_id`, `next_revision`, `failed_cases`) and in the equivalent
+ *   camelCase form.
  *
  * The function never throws and never writes a file.
  */
@@ -3006,7 +2569,6 @@ export function deriveRepairSlices({ aggregateResult } = {}) {
 			repairSpec: null,
 			repairSlices: [],
 			mappedCases: [],
-			frozenS4Modified: false,
 			errors: [
 				failure("INVALID_ARGUMENT", "aggregateResult must be an aggregate result object", {
 					field: "aggregateResult",
@@ -3015,14 +2577,9 @@ export function deriveRepairSlices({ aggregateResult } = {}) {
 		};
 	}
 	const result = aggregateResult;
-	const contract = isPlainObject(result.contract) ? result.contract : {};
 	const repairSpec = isPlainObject(result.repairSpec) ? result.repairSpec : null;
 	const revision =
-		Number.isInteger(contract.revision) && contract.revision >= 0
-			? contract.revision
-			: Number.isInteger(repairSpec?.revision) && repairSpec.revision >= 0
-				? repairSpec.revision
-				: null;
+		Number.isInteger(repairSpec?.revision) && repairSpec.revision >= 0 ? repairSpec.revision : null;
 	const rawNextRevision = repairSpec?.nextRevision ?? repairSpec?.next_revision;
 	const nextRevision =
 		Number.isInteger(rawNextRevision) && rawNextRevision >= 0
@@ -3040,7 +2597,6 @@ export function deriveRepairSlices({ aggregateResult } = {}) {
 			repairSpec: null,
 			repairSlices: [],
 			mappedCases: [],
-			frozenS4Modified: false,
 			errors: [],
 		};
 	}
@@ -3059,7 +2615,6 @@ export function deriveRepairSlices({ aggregateResult } = {}) {
 			repairSpec: null,
 			repairSlices: [],
 			mappedCases: [],
-			frozenS4Modified: false,
 			errors: retryErrors,
 		};
 	}
@@ -3072,7 +2627,6 @@ export function deriveRepairSlices({ aggregateResult } = {}) {
 			repairSpec: null,
 			repairSlices: [],
 			mappedCases: [],
-			frozenS4Modified: false,
 			errors: [
 				failure("INVALID_ARGUMENT", `aggregateResult.verdict ${describe(result.verdict)} cannot derive repairs`, {
 					field: "aggregateResult.verdict",
@@ -3126,7 +2680,6 @@ export function deriveRepairSlices({ aggregateResult } = {}) {
 			repairSpec: null,
 			repairSlices: [],
 			mappedCases: [],
-			frozenS4Modified: false,
 			errors: [
 				failure("INVALID_ARGUMENT", "aggregateResult is FAIL but carries no failed CASE detail", {
 					field: "aggregateResult.repairSpec",
@@ -3135,9 +2688,20 @@ export function deriveRepairSlices({ aggregateResult } = {}) {
 		};
 	}
 
+	const missionSlug =
+		typeof repairSpec?.slug === "string" && repairSpec.slug.trim() !== ""
+			? repairSpec.slug.trim()
+			: typeof result.slug === "string" && result.slug.trim() !== ""
+				? result.slug.trim()
+				: null;
 	const usedIds = new Set();
 	const repairSlices = cases.map((entry) => {
-		const inputs = entry.evidencePaths.length > 0 ? entry.evidencePaths : [STAGE_FILES.s2];
+		const inputs =
+			entry.evidencePaths.length > 0
+				? entry.evidencePaths
+				: missionSlug === null
+					? []
+					: [`.herd/missions/${missionSlug}/s2-cases.edn`];
 		const defectText = entry.defects.join("; ");
 		return {
 			slice_id: repairSliceId(entry.caseId, nextRevision, usedIds),
@@ -3166,8 +2730,8 @@ export function deriveRepairSlices({ aggregateResult } = {}) {
 			? repairSpec.missionId
 			: typeof repairSpec?.mission_id === "string"
 				? repairSpec.mission_id
-				: typeof contract.missionId === "string"
-					? contract.missionId
+				: typeof result.missionId === "string"
+					? result.missionId
 					: null;
 	const normalizedRepairSpec = {
 		...(repairSpec ?? {}),
@@ -3191,7 +2755,6 @@ export function deriveRepairSlices({ aggregateResult } = {}) {
 		repairSpec: normalizedRepairSpec,
 		repairSlices,
 		mappedCases,
-		frozenS4Modified: false,
 		errors,
 	};
 }

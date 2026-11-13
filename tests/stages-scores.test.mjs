@@ -7,32 +7,9 @@ import { aggregate, writeS5Report } from "../src/stages/scores.mjs";
 
 const hash = (character) => character.repeat(64);
 
-const FROZEN = {
-	s1: { sha256: hash("a") },
-	"s1-summary": { sha256: hash("b") },
-	s2: { sha256: hash("c") },
-	"s2-cases": { sha256: hash("d") },
-	s3: { sha256: hash("e") },
-	s4: { sha256: hash("f") },
-	"s3-modules": { sha256: hash("0") },
-};
-
-const CONTRACT = {
-	missionId: "mission-clean-break",
-	revision: 4,
-	contractLine:
-		"Verification contract: MANUAL ACCEPTANCE — " +
-		`s1: plans/demo/s1-brainstorm.md sha256=${FROZEN.s1.sha256}; ` +
-		`s1-summary: .herd/missions/demo/s1-summary.md sha256=${FROZEN["s1-summary"].sha256}; ` +
-		`s2: plans/demo/s2-manual-tests.md sha256=${FROZEN.s2.sha256}; ` +
-		`s2-cases: .herd/missions/demo/cases.edn sha256=${FROZEN["s2-cases"].sha256}; ` +
-		`s3: plans/demo/s3-dev-guide.md sha256=${FROZEN.s3.sha256}; ` +
-		`s4: plans/demo/s4-coordination.md sha256=${FROZEN.s4.sha256}; ` +
-		`s3-modules: inline sha256=${FROZEN["s3-modules"].sha256}; ` +
-		"execute every CASE and score min(user_score, developer_score) out of 100; " +
-		"automated tests are NOT acceptance evidence.",
-	frozen: FROZEN,
-};
+// The contract is exactly `{missionId, revision}`. There is no contract line and
+// no frozen hash: approval binds to these two fields plus the report sha256.
+const CONTRACT = { missionId: "mission-clean-break", revision: 4 };
 
 const AUDIT = {
 	environment: "omp 18.16.0 / linux x64 / tmux 会话 herd-demo-CASE-01",
@@ -45,24 +22,21 @@ const SNAPSHOT = {
 	files: [{ path: "src/main.mjs", sha256: hash("e"), stamp: { mtimeSec: 1n, mtimeNsec: 2n, size: 3n } }],
 };
 
-const SPECS = [
-	{
-		case_id: "CASE-01",
+// These records stand in for `.herd/missions/demo/s2-cases.edn`. Their order is
+// the order of the audit, the reconciled rows, and the final report.
+function spec(caseId, overrides = {}) {
+	return {
+		case_id: caseId,
 		threshold: 80,
 		path: "正常",
-		steps: ["Exercise the normal path."],
-		expected: "The normal path is observable.",
-		rubric: "score the normal path",
-	},
-	{
-		case_id: "CASE-02",
-		threshold: 70,
-		path: "错误",
-		steps: ["Exercise the error path."],
-		expected: "The error path is observable.",
-		rubric: "score the error path",
-	},
-];
+		steps: [`Exercise ${caseId}.`],
+		expected: `${caseId} is observable.`,
+		rubric: `score ${caseId}`,
+		...overrides,
+	};
+}
+
+const SPECS = [spec("CASE-01"), spec("CASE-02", { threshold: 70, path: "错误" })];
 
 function submission(caseId, overrides = {}) {
 	return {
@@ -88,7 +62,7 @@ function baseInput(overrides = {}) {
 		snapshotBefore: SNAPSHOT,
 		snapshotAfter: SNAPSHOT,
 		audit: AUDIT,
-		ports: { verifyContract: () => ({ ok: true }), ...(ports ?? {}) },
+		ports: ports ?? {},
 		...rest,
 	};
 }
@@ -115,7 +89,7 @@ async function withTempRoot(work) {
 }
 
 describe("aggregate", () => {
-	it("passes only when every CASE reaches min(user_score, developer_score), in S2 order", () => {
+	it("passes only when every CASE reaches min(user_score, developer_score), in s2-cases order", () => {
 		const result = aggregate(
 			baseInput({
 				submissions: [
@@ -134,6 +108,7 @@ describe("aggregate", () => {
 			["CASE-02", 70, 95, 70, 70, true],
 		]);
 		expect(result.caseIds).toEqual(["CASE-01", "CASE-02"]);
+		expect(result.contract).toEqual({ missionId: CONTRACT.missionId, revision: CONTRACT.revision });
 		expect(result.invalid).toEqual([]);
 		expect(result.repairSpec).toBeNull();
 		expect(result.retryRequired).toBe(false);
@@ -159,16 +134,7 @@ describe("aggregate", () => {
 	it("accepts the inclusive 0 and 100 boundaries", () => {
 		const zero = aggregate(
 			baseInput({
-				caseSpecs: [
-					{
-						case_id: "CASE-01",
-						threshold: 0,
-						path: "边界",
-						steps: ["Exercise the boundary."],
-						expected: "The boundary is observable.",
-						rubric: "score the boundary",
-					},
-				],
+				caseSpecs: [spec("CASE-01", { threshold: 0, path: "边界" })],
 				submissions: [submission("CASE-01", { user_score: 0, developer_score: 100 })],
 			}),
 		);
@@ -177,16 +143,7 @@ describe("aggregate", () => {
 
 		const hundred = aggregate(
 			baseInput({
-				caseSpecs: [
-					{
-						case_id: "CASE-01",
-						threshold: 100,
-						path: "边界",
-						steps: ["Exercise the boundary."],
-						expected: "The boundary is observable.",
-						rubric: "score the boundary",
-					},
-				],
+				caseSpecs: [spec("CASE-01", { threshold: 100, path: "边界" })],
 				submissions: [submission("CASE-01", { user_score: 100, developer_score: 100 })],
 			}),
 		);
@@ -194,7 +151,7 @@ describe("aggregate", () => {
 		expect(hundred.rows[0].score).toBe(100);
 	});
 
-	it("fails a CASE below the threshold and produces the frozen RepairSpec shape", () => {
+	it("fails a CASE below the threshold and produces the repair spec shape", () => {
 		const result = aggregate(
 			baseInput({
 				submissions: [submission("CASE-01", { user_score: 60, developer_score: 100 }), submission("CASE-02")],
@@ -209,8 +166,8 @@ describe("aggregate", () => {
 			goal: expect.stringContaining("CASE-01"),
 			done_when: expect.any(String),
 			mapped_cases: ["CASE-01"],
-			revision: 4,
-			next_revision: 5,
+			revision: CONTRACT.revision,
+			next_revision: CONTRACT.revision + 1,
 		});
 		expect(result.repairSpec.inputs).toContain("plans/demo/evidence/CASE-01/screen.txt");
 		expect(result.repairSpec.cases[0]).toMatchObject({
@@ -392,35 +349,47 @@ describe("aggregate", () => {
 		expect(aggregate(baseInput({ snapshotBefore: before, snapshotAfter: after })).ok).toBe(true);
 	});
 
-	it("requires the injected T2 verification port and propagates its refusal", () => {
-		const noPort = aggregate(baseInput({ ports: { verifyContract: undefined } }));
-		expect(noPort.ok).toBe(false);
-		expect(noPort.invalid.some((entry) => entry.field === "contract.verification")).toBe(true);
-
-		const refused = aggregate(
+	it("ignores a legacy verifyContract port because contract hashes are gone", () => {
+		const result = aggregate(
 			baseInput({
-				ports: { verifyContract: () => ({ ok: false, message: "s2 hash differs from mission.edn" }) },
+				ports: {
+					verifyContract: () => {
+						throw new Error("contract hashes are gone");
+					},
+				},
 			}),
 		);
-		expect(refused.ok).toBe(false);
-		expect(codesOf(refused)).toContain(":CONTRACT_HASH_MISMATCH");
+
+		expect(result.ok).toBe(true);
+		expect(result.verdict).toBe("PASS");
+		expect(result.invalid).toEqual([]);
+	});
+
+	it("rejects a contract without a missionId or an integer revision", () => {
+		const cases = [
+			undefined,
+			{ missionId: "demo" },
+			{ missionId: "demo", revision: -1 },
+			{ missionId: "", revision: 1 },
+			{ missionId: "demo", revision: 1.5 },
+		];
+
+		for (const contract of cases) {
+			const result = aggregate(baseInput({ contract }));
+			expect(result.ok).toBe(false);
+			expect(result.verdict).toBe("INCOMPLETE");
+			expect(result.contract).toBeNull();
+			expect(result.repairSpec).toBeNull();
+			expect(result.invalid.some((entry) => entry.field?.startsWith("contract"))).toBe(true);
+		}
+
+		const zero = aggregate(baseInput({ contract: { missionId: "demo", revision: 0 } }));
+		expect(zero.ok).toBe(true);
+		expect(zero.contract).toEqual({ missionId: "demo", revision: 0 });
 	});
 
 	it("rejects invalid specs and malformed submissions without throwing", () => {
-		const badThreshold = aggregate(
-			baseInput({
-				caseSpecs: [
-					{
-						case_id: "CASE-01",
-						threshold: Number.NaN,
-						path: "正常",
-						steps: ["Exercise it."],
-						expected: "It is observable.",
-						rubric: "score it",
-					},
-				],
-			}),
-		);
+		const badThreshold = aggregate(baseInput({ caseSpecs: [spec("CASE-01", { threshold: Number.NaN })] }));
 		expect(badThreshold.ok).toBe(false);
 		expect(badThreshold.rows).toEqual([]);
 
@@ -432,28 +401,7 @@ describe("aggregate", () => {
 		expect(legacy.ok).toBe(false);
 		expect(legacy.invalid.some((entry) => Array.isArray(entry.unknown) && entry.unknown.includes("id"))).toBe(true);
 
-		const duplicateSpecs = aggregate(
-			baseInput({
-				caseSpecs: [
-					{
-						case_id: "CASE-01",
-						threshold: 80,
-						path: "正常",
-						steps: ["Exercise it."],
-						expected: "It is observable.",
-						rubric: "score it",
-					},
-					{
-						case_id: "CASE-01",
-						threshold: 80,
-						path: "正常",
-						steps: ["Exercise it."],
-						expected: "It is observable.",
-						rubric: "score it",
-					},
-				],
-			}),
-		);
+		const duplicateSpecs = aggregate(baseInput({ caseSpecs: [spec("CASE-01"), spec("CASE-01")] }));
 		expect(duplicateSpecs.ok).toBe(false);
 
 		const malformed = aggregate(
@@ -483,17 +431,24 @@ describe("aggregate", () => {
 });
 
 describe("writeS5Report", () => {
-	it("writes the report, rechecks it, then sends only the compact audit evidence to the approval port", async () => {
+	it("writes s2-cases-ordered report, rechecks it, then binds the approval to mission, revision, and report sha", async () => {
 		await withTempRoot(async (root) => {
-			const result = aggregate(baseInput());
+			const result = aggregate(
+				baseInput({
+					submissions: [
+						submission("CASE-02", { user_score: 70, developer_score: 95 }),
+						submission("CASE-01", { user_score: 90, developer_score: 80 }),
+					],
+				}),
+			);
 			const order = [];
 			let observedRecheck = null;
 			let observedApproval = null;
 			const outcome = await writeS5Report(root, "demo", result, {
-				recheckPort: ({ reportPath, reportSha256, snapshotBefore }) => {
+				recheckPort: ({ reportPath, reportSha256, snapshotBefore, contract, missionId, revision }) => {
 					const markdown = readFileSync(reportPath, "utf8");
 					const fileSha = createHash("sha256").update(markdown, "utf8").digest("hex");
-					observedRecheck = { fileSha, reportSha256, snapshotBefore };
+					observedRecheck = { fileSha, reportSha256, snapshotBefore, contract, missionId, revision };
 					order.push("recheck");
 					return fileSha === reportSha256
 						? { ok: true, snapshotDigest: "digest-after-report" }
@@ -513,6 +468,9 @@ describe("writeS5Report", () => {
 			expect(order).toEqual(["recheck", "approval"]);
 			expect(observedRecheck.fileSha).toBe(observedRecheck.reportSha256);
 			expect(observedRecheck.snapshotBefore).toEqual(result.snapshotBefore);
+			expect(observedRecheck.contract).toEqual({ missionId: CONTRACT.missionId, revision: CONTRACT.revision });
+			expect(observedRecheck.missionId).toBe(CONTRACT.missionId);
+			expect(observedRecheck.revision).toBe(CONTRACT.revision);
 			expect(observedApproval.missionId).toBe(CONTRACT.missionId);
 			expect(observedApproval.revision).toBe(CONTRACT.revision);
 			expect(observedApproval.reportSha256).toBe(outcome.sha256);
@@ -527,13 +485,30 @@ describe("writeS5Report", () => {
 					snapshotDigest: "digest-after-report",
 				},
 			});
+			expect(outcome.recheck).toMatchObject({
+				ok: true,
+				missionId: CONTRACT.missionId,
+				revision: CONTRACT.revision,
+				reportSha256: outcome.sha256,
+			});
+			expect(outcome.approval).toEqual({
+				token: "approval-token",
+				missionId: CONTRACT.missionId,
+				revision: CONTRACT.revision,
+				reportSha256: outcome.sha256,
+			});
 
 			const file = join(root, "plans", "demo", "s5-report.md");
 			const markdown = readFileSync(file, "utf8");
 			expect(markdown).toBe(outcome.markdown);
-			expect(markdown).toContain(CONTRACT.contractLine);
+			expect(markdown).toContain(".herd/missions/demo/s2-cases.edn");
+			expect(markdown).toContain(`- 使命：${CONTRACT.missionId}`);
+			expect(markdown).toContain(`- 修订：${CONTRACT.revision}`);
+			expect(markdown).not.toContain("Verification contract");
+			expect(markdown).not.toContain("sha256=");
 			expect(markdown).toContain("| CASE-01 | 正常 | 90 | 80 | 80 | 80 | PASS |");
 			expect(markdown).toContain("| CASE-02 | 错误 | 70 | 95 | 70 | 70 | PASS |");
+			expect(markdown.indexOf("| CASE-01 |")).toBeLessThan(markdown.indexOf("| CASE-02 |"));
 			expect(markdown).toContain("## 证据路径");
 			expect(markdown).toContain("## 审计员报告");
 			expect(markdown).toContain("## 限制与教训");
@@ -541,29 +516,31 @@ describe("writeS5Report", () => {
 		});
 	});
 
-	it("fails closed when the mandatory recheck port is missing", async () => {
+	it("treats recheckPort as optional and still issues the approval", async () => {
 		await withTempRoot(async (root) => {
 			const result = aggregate(baseInput());
-			const approvalCalls = [];
+			let observed = null;
 			const outcome = await writeS5Report(root, "demo", result, {
 				approvalPort: {
-					issue: (...args) => {
-						approvalCalls.push(args);
-						return boundApproval(...args);
+					issue: (missionId, revision, reportSha256, evidence) => {
+						observed = { missionId, revision, reportSha256, evidence };
+						return boundApproval(missionId, revision, reportSha256);
 					},
 				},
 			});
 
-			expect(outcome.ok).toBe(false);
-			expect(outcome.code).toBe(":INVALID_ARGUMENT");
-			expect(outcome.errors[0].field).toBe("recheckPort");
-			expect(outcome.approval).toBeNull();
-			expect(approvalCalls).toHaveLength(0);
-			expect(existsSync(outcome.path)).toBe(true);
+			expect(outcome.ok).toBe(true);
+			expect(outcome.completed).toBe(false);
+			expect(outcome.recheck).toBeNull();
+			expect(observed.evidence.recheck).toBeNull();
+			expect(observed.missionId).toBe(CONTRACT.missionId);
+			expect(observed.revision).toBe(CONTRACT.revision);
+			expect(observed.reportSha256).toBe(outcome.sha256);
+			expect(existsSync(join(root, "plans", "demo", "s5-report.md"))).toBe(true);
 		});
 	});
 
-	it("fails closed when the post-report recheck fails or throws", async () => {
+	it("fails closed when the optional post-report recheck fails or throws", async () => {
 		await withTempRoot(async (root) => {
 			const result = aggregate(baseInput());
 			const approvalCalls = [];
@@ -607,7 +584,7 @@ describe("writeS5Report", () => {
 	it("writes the report but does not approve when no ApprovalPort is injected", async () => {
 		await withTempRoot(async (root) => {
 			const result = aggregate(baseInput());
-			const outcome = await writeS5Report(root, "demo", result, { recheckPort: okRecheck });
+			const outcome = await writeS5Report(root, "demo", result, {});
 
 			expect(outcome.ok).toBe(false);
 			expect(outcome.code).toBe(":APPROVAL_REQUIRED");
@@ -636,7 +613,6 @@ describe("writeS5Report", () => {
 		await withTempRoot(async (root) => {
 			const result = aggregate(baseInput());
 			const outcome = await writeS5Report(root, "demo", result, {
-				recheckPort: okRecheck,
 				approvalPort: { issue: () => ({ ok: true, approval: {} }) },
 			});
 
@@ -648,12 +624,29 @@ describe("writeS5Report", () => {
 
 	it("refuses a non-PASS result before writing anything", async () => {
 		await withTempRoot(async (root) => {
-			const result = aggregate(
+			const failed = aggregate(
 				baseInput({
 					submissions: [submission("CASE-01", { user_score: 10, developer_score: 10 }), submission("CASE-02")],
 				}),
 			);
-			const outcome = await writeS5Report(root, "demo", result, { recheckPort: okRecheck });
+			const outcome = await writeS5Report(root, "demo", failed, { recheckPort: okRecheck });
+
+			expect(outcome.ok).toBe(false);
+			expect(outcome.code).toBe(":APPROVAL_REQUIRED");
+			expect(existsSync(join(root, "plans", "demo", "s5-report.md"))).toBe(false);
+
+			const incomplete = aggregate(baseInput({ submissions: [submission("CASE-01")] }));
+			const retried = await writeS5Report(root, "demo", incomplete, {});
+			expect(retried.ok).toBe(false);
+			expect(retried.code).toBe(":APPROVAL_REQUIRED");
+			expect(existsSync(join(root, "plans", "demo", "s5-report.md"))).toBe(false);
+		});
+	});
+
+	it("refuses a PASS result whose contract is missing", async () => {
+		await withTempRoot(async (root) => {
+			const result = aggregate(baseInput());
+			const outcome = await writeS5Report(root, "demo", { ...result, contract: null }, {});
 
 			expect(outcome.ok).toBe(false);
 			expect(outcome.code).toBe(":APPROVAL_REQUIRED");

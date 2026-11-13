@@ -5,15 +5,18 @@ import { join } from "node:path";
 import {
 	addTasks,
 	apply,
+	applyReview,
 	createFileBoardStore,
 	createMemoryBoardStore,
 	createWriteGateControl,
 	initialBoard,
+	isAttachReady,
 	openBoard,
 	progressableSet,
 	readBoard,
 	registerActor,
 	responsibilitySet,
+	reviewLedger,
 	TAKE_OR_DIE_CONFIRMATION,
 	validateDependencyPaths,
 	wakeAll,
@@ -39,6 +42,12 @@ function tempRoot() {
 async function seededFileBoard(root, slug, sliceId, options = {}) {
 	const handle = openBoard(root, slug, sliceId, options);
 	await handle.store.initialize(initialBoard());
+	return handle;
+}
+
+async function seededPlanBoard(root, slug, options = {}) {
+	const handle = openBoard(root, slug, { mode: "plan", ...options });
+	await handle.store.initialize(initialBoard({ mode: "plan" }));
 	return handle;
 }
 
@@ -2283,6 +2292,238 @@ describe("board kernel: actions, write gate and storage boundary", () => {
 	});
 });
 
+describe("board kernel: plan review ledger", () => {
+	it("starts a plan board attach-ready and review-quiescent", () => {
+		const board = initialBoard({ mode: "plan" });
+		expect(board.mode).toBe("plan");
+		expect(board.tasks).toEqual({});
+		expect(board["attach-ready"]).toBe(true);
+		expect(board["review-summary"]).toBeNull();
+		expect(board.tenure).toEqual({ term: 0, phase: "plan" });
+		expect(isAttachReady(board)).toBe(true);
+		expect(reviewLedger(board)).toEqual({
+			summary: null,
+			findings: [],
+			empty: true,
+			attachReady: true,
+		});
+	});
+
+	it("upserts findings and preserves plan structure keys", () => {
+		const started = initialBoard({ mode: "plan" });
+		const parent = applyReview(started, {
+			findings: [{ key: "gate", value: "the gate closes" }],
+		});
+		expect(parent.ok).toBe(true);
+		expect(parent.changed).toBe(true);
+		expect(parent.receipt.outcome).toBe("review-recorded");
+		expect(parent.receipt["board-version"]).toBe(1);
+		expect(parent.board.tasks.gate).toEqual({
+			key: "gate",
+			value: "the gate closes",
+			"parent-key": null,
+			"child-keys": [],
+			"wait-for": [],
+			waiting: false,
+		});
+		expect(isAttachReady(parent.board)).toBe(false);
+
+		const child = applyReview(parent.board, {
+			findings: [
+				{
+					key: "parser",
+					value: "parse the new syntax",
+					parentKey: "gate",
+					waitFor: ["gate"],
+					waiting: true,
+				},
+			],
+		});
+		expect(child.ok).toBe(true);
+		expect(child.board.tasks.gate["child-keys"]).toEqual(["parser"]);
+		expect(child.board.tasks.parser).toEqual({
+			key: "parser",
+			value: "parse the new syntax",
+			"parent-key": "gate",
+			"child-keys": [],
+			"wait-for": ["gate"],
+			waiting: true,
+		});
+
+		const updated = applyReview(child.board, {
+			findings: [{ key: "parser", value: "parse the new syntax and the old one" }],
+		});
+		expect(updated.ok).toBe(true);
+		expect(updated.board.tasks.parser).toEqual({
+			key: "parser",
+			value: "parse the new syntax and the old one",
+			"parent-key": "gate",
+			"child-keys": [],
+			"wait-for": ["gate"],
+			waiting: true,
+		});
+		expect(updated.board.tasks.gate["child-keys"]).toEqual(["parser"]);
+	});
+
+	it("deletes on nil, skips an array value and leaves empty findings alone", () => {
+		const board = initialBoard({ mode: "plan" });
+		const seeded = applyReview(board, {
+			summary_markdown: "first round",
+			findings: [
+				{ key: "one", value: "first" },
+				{ key: "two", value: "second" },
+			],
+		});
+		expect(seeded.ok).toBe(true);
+		expect(seeded.board["review-summary"]).toBe("first round");
+
+		const skipped = applyReview(seeded.board, {
+			findings: [{ key: "one", value: [] }],
+		});
+		expect(skipped.ok).toBe(true);
+		expect(skipped.changed).toBe(false);
+		expect(skipped.receipt.outcome).toBe("review-unchanged");
+		expect(skipped.board.tasks).toEqual(seeded.board.tasks);
+
+		const untouched = applyReview(seeded.board, { findings: [] });
+		expect(untouched.ok).toBe(true);
+		expect(untouched.changed).toBe(false);
+		expect(untouched.receipt.outcome).toBe("review-unchanged");
+		expect(untouched.board.tasks).toEqual(seeded.board.tasks);
+
+		const removed = applyReview(seeded.board, {
+			findings: [{ key: "one", value: null }],
+		});
+		expect(removed.ok).toBe(true);
+		expect(removed.changed).toBe(true);
+		expect(removed.board.tasks.one).toBeUndefined();
+		expect(removed.board.tasks.two.value).toBe("second");
+		expect(removed.board["review-summary"]).toBe("first round");
+	});
+
+	it("writes and clears the review summary without touching tasks", () => {
+		const board = initialBoard({ mode: "plan" });
+		const withFinding = applyReview(board, {
+			findings: [{ key: "one", value: "first" }],
+		});
+		const written = applyReview(withFinding.board, {
+			summary_markdown: "round one",
+		});
+		expect(written.ok).toBe(true);
+		expect(written.board["review-summary"]).toBe("round one");
+		expect(written.board.tasks).toEqual(withFinding.board.tasks);
+		expect(written.receipt["board-version"]).toBe(2);
+
+		const cleared = applyReview(written.board, { summary_markdown: null });
+		expect(cleared.ok).toBe(true);
+		expect(cleared.board["review-summary"]).toBeNull();
+		expect(cleared.board.tasks).toEqual(written.board.tasks);
+		expect(cleared.receipt.outcome).toBe("review-recorded");
+	});
+
+	it("returns to attach-ready only when the ledger is empty", () => {
+		const board = initialBoard({ mode: "plan" });
+		const seeded = applyReview(board, {
+			findings: [
+				{ key: "one", value: "first" },
+				{ key: "two", value: "second", parentKey: "one" },
+			],
+		});
+		expect(isAttachReady(seeded.board)).toBe(false);
+		expect(reviewLedger(seeded.board)).toMatchObject({ empty: false, attachReady: false });
+
+		const emptied = applyReview(seeded.board, {
+			findings: [
+				{ key: "one", value: null },
+				{ key: "two", value: null },
+			],
+		});
+		expect(emptied.ok).toBe(true);
+		expect(emptied.board.tasks).toEqual({});
+		expect(emptied.board["attach-ready"]).toBe(true);
+		expect(isAttachReady(emptied.board)).toBe(true);
+		expect(reviewLedger(emptied.board)).toEqual({
+			summary: null,
+			findings: [],
+			empty: true,
+			attachReady: true,
+		});
+
+		const quiet = applyReview(emptied.board, { findings: [] });
+		expect(quiet.changed).toBe(false);
+		expect(quiet.receipt.outcome).toBe("review-unchanged");
+	});
+
+	it("opens plan mode at the mission root with no board lock", () => {
+		const root = tempRoot();
+		const handle = openBoard(root, "demo");
+		expect(handle.mode).toBe("plan");
+		expect(handle.sliceId).toBeNull();
+		expect(handle.boardPath).toBe(join(root, ".herd", "missions", "demo", "board.edn"));
+		expect(handle.eventsPath).toBe(join(root, ".herd", "missions", "demo", "events.jsonl"));
+		expect(handle.checkpointPath).toBe(join(root, ".herd", "missions", "demo", "checkpoint.edn"));
+		expect(handle.lockPath).toBeNull();
+		expect(handle.durable).toBe(true);
+
+		const explicit = openBoard(root, "demo", { mode: "plan" });
+		expect(explicit.mode).toBe("plan");
+		expect(explicit.boardPath).toBe(handle.boardPath);
+		expect(explicit.lockPath).toBeNull();
+	});
+
+	it("persists a review through the file store without a request or turn", async () => {
+		const root = tempRoot();
+		const handle = await seededPlanBoard(root, "demo");
+
+		const result = await apply({
+			board: handle,
+			command: {
+				type: "review",
+				summary_markdown: "attach after findings close",
+				findings: [
+					{ key: "gate", value: "the gate closes" },
+					{ key: "parser", value: "parse the new syntax", parentKey: "gate" },
+				],
+			},
+		});
+		expect(result.ok).toBe(true);
+		expect(result.receipt.outcome).toBe("review-recorded");
+
+		const reopened = openBoard(root, "demo");
+		const persisted = await readBoard(reopened);
+		expect(persisted.mode).toBe("plan");
+		expect(persisted["review-summary"]).toBe("attach after findings close");
+		expect(persisted.tasks.gate["child-keys"]).toEqual(["parser"]);
+		expect(persisted.tasks.parser["parent-key"]).toBe("gate");
+		expect(persisted["attach-ready"]).toBe(false);
+		expect(persisted.tenure).toEqual({ term: 0, phase: "plan" });
+
+		const eventTypes = readFileSync(handle.eventsPath, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line)["event-type"]);
+		expect(eventTypes).toContain("review");
+
+		const closed = await apply({
+			board: reopened,
+			command: {
+				type: "review",
+				findings: [
+					{ key: "gate", value: null },
+					{ key: "parser", value: null },
+				],
+			},
+		});
+		expect(closed.ok).toBe(true);
+		expect(closed.board["attach-ready"]).toBe(true);
+		expect(closed.board.tenure).toEqual({ term: 0, phase: "plan" });
+
+		const reread = await readBoard(openBoard(root, "demo"));
+		expect(reread.tasks).toEqual({});
+		expect(reread.tenure.phase).toBe("plan");
+	});
+});
+
 describe("board kernel: durable file store", () => {
 	it("never silently creates a missing production board", async () => {
 		const root = tempRoot();
@@ -2366,30 +2607,33 @@ describe("board kernel: durable file store", () => {
 		expect(await readBoard(reopened)).toEqual(state);
 	});
 
-	it("preserves an uppercase slice id through paths, locking and reads", async () => {
+	it("preserves an uppercase plan slug through paths and reads", async () => {
 		const root = tempRoot();
-		const slug = "demo";
-		const sliceId = "SLICE-01";
-		const handle = await seededFileBoard(root, slug, sliceId);
-		expect(handle.sliceId).toBe(sliceId);
-		expect(handle.boardPath).toBe(join(root, ".herd", "missions", slug, "slices", sliceId, "board.edn"));
-		expect(handle.eventsPath).toContain(join("slices", sliceId, "events.jsonl"));
-		expect(handle.checkpointPath).toContain(join("slices", sliceId, "checkpoint.edn"));
-		expect(handle.lockPath.endsWith(`${sliceId}.board.lock`)).toBe(true);
+		const slug = "DEMO-01";
+		const handle = await seededPlanBoard(root, slug);
+		expect(handle.slug).toBe(slug);
+		expect(handle.mode).toBe("plan");
+		expect(handle.sliceId).toBeNull();
+		expect(handle.boardPath).toBe(join(root, ".herd", "missions", slug, "board.edn"));
+		expect(handle.eventsPath).toBe(join(root, ".herd", "missions", slug, "events.jsonl"));
+		expect(handle.checkpointPath).toBe(join(root, ".herd", "missions", slug, "checkpoint.edn"));
+		expect(handle.lockPath).toBeNull();
 
-		const registered = await apply({
+		const reviewed = await apply({
 			board: handle,
-			command: { type: "registerActor", agentId: "A", slotId: "slot-A" },
-			turnId: "turn-upper",
-			requestId: "upper-register",
+			command: {
+				type: "review",
+				findings: [{ key: "gate", value: "the gate closes" }],
+			},
 		});
-		expect(registered.ok).toBe(true);
+		expect(reviewed.ok).toBe(true);
 
-		const reopened = openBoard(root, slug, sliceId);
+		const reopened = openBoard(root, slug);
 		const state = await readBoard(reopened);
 		expect(state["board-version"]).toBe(1);
-		expect(state.actors.A["life-state"]).toBe("alive");
-		expect(openBoard(root, slug, sliceId.toLowerCase()).boardPath).not.toBe(handle.boardPath);
+		expect(state.tasks.gate.value).toBe("the gate closes");
+		expect(state.tenure.phase).toBe("plan");
+		expect(openBoard(root, slug.toLowerCase()).boardPath).not.toBe(handle.boardPath);
 	});
 
 	it("serializes concurrent token races through the real board lock", async () => {

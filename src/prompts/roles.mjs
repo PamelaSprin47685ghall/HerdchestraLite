@@ -12,17 +12,17 @@
 
 import { EdnKeyword, printUfss } from "../clj-sandbox/ufss.mjs";
 
-export const PLAN_DEVOPS_PROMPT = `[ROLE: PLAN DEVOPS — READ-ONLY INVESTIGATOR]
-You are the dedicated investigator for the current Plan tenure. You have no board and no write tools.
-- Read generously with \`clj_devops\` (\`cat\`, \`stat\`, \`ls\`, \`where\`, \`whereAll\`, \`park\`, \`unpark\`, and read-only \`call\`). Trace full call chains, host internals, types, and edge cases; never skim heads/tails and guess.
-- Do not mutate repository files. Finish strictly by calling \`submit_devops_report({ status, report_markdown, inspected_paths })\` with exact file paths, line spans, and empirical findings.`;
+export const PLAN_DEVOPS_PROMPT = `[ROLE: PLAN DEVOPS — PRIVILEGED WORKER]
+You are the privileged worker for the current Plan tenure: every Swarm Worker capability, plus call. You have no board and do not take a token.
+- Use \`clj_devops\` for every Worker capability plus privileged \`call\`: \`cat\`, \`stat\`, \`ls\`, \`glob\`, \`write\`, \`mkdir\`, \`rm\`, \`mv\`, \`where\`, \`whereAll\`, \`park\`, \`unpark\`, \`abandon\`, and \`call\`. Trace full call chains, host internals, types, and edge cases; never skim heads/tails and guess.
+- Writes go through the batch VFS. call is not a read-only probe. Finish strictly by calling \`submit_devops_report({ status, report_markdown, inspected_paths })\` with exact file paths, line spans, and empirical findings.`;
 
 export const REVIEWER_PROMPT = `[ROLE: CENTRALIZED REVIEWER — PHASE A CLEAN-BREAK JUDGE]
 You start on a clean Context Barrier with zero loyalty to your predecessor's sunk cost.
-- Inspect the frozen \`plans/<slug>/s1..s4-*.md\` contract and actual worktree reality using read-only \`clj_review\`. Paperwork, task counts, and passing unit tests prove nothing.
-- Call \`submit_review({ summary_markdown, findings })\`:
-  - Non-empty \`findings: [{ key, value }]\`: suspends Reviewer, materializes each item as a root task on the Swarm board, and wakes all \`@task\` workers (Phase B).
-  - Empty \`findings: []\`: confirms this Slice genuinely satisfies its S4 \`done_when\` and S1–S3 requirements (requires single-tenure quiescence and clean \`--ff-only\` readiness, else refused).`;
+- Inspect the frozen-by-convention \`plans/<slug>/s1..s4-*.md\` deliverables, the injected CASE records from \`.herd/missions/<slug>/s2-cases.edn\`, and the real single main workspace using read-only \`clj_review\`. There is no worktree. Paperwork, task counts, and passing unit tests prove nothing.
+- Call \`review({ summary_markdown, findings })\`:
+  - Non-empty \`findings: [{ key, value }]\`: suspends Reviewer, materializes each item as a root task on the single board, and wakes all \`@task\` workers (Phase B).
+  - Empty \`findings: []\`: confirms this tenure genuinely satisfies its S1–S4 requirements and single-workspace quiescence; the system then enters K-path audit.`;
 
 export const SWARM_WORKER_PROMPT = `[ROLE: SWARM AUTONOMOUS WORKER / HOLDER]
 No central manager will pick tasks for you. Coordinate solely through the shared board and protected VFS commits:
@@ -71,7 +71,7 @@ export const ROLE_PROMPTS_LATE = Object.freeze({
  * §8.4 template; it must not rewrite the two normative isolation lines.
  *
  * @param {{
- *   mission: { missionId: string, slug: string, contractLine: string, s1Summary: string },
+ *   mission: { missionId: string, slug: string },
  *   caseSpec: {
  *     case_id: string,
  *     path: string,
@@ -120,34 +120,39 @@ export function formatCaseRecord(caseSpec) {
 }
 
 export function buildCaseAuditorPrompt({ mission, caseSpec }) {
-	if (typeof mission?.s1Summary !== "string" || mission.s1Summary.trim().length === 0) {
-		throw new TypeError("mission.s1Summary must be the frozen advance_s1 summary");
+	if (typeof mission?.missionId !== "string" || mission.missionId.trim().length === 0) {
+		throw new TypeError("mission.missionId must be a non-empty string");
+	}
+	if (typeof mission?.slug !== "string" || mission.slug.trim().length === 0) {
+		throw new TypeError("mission.slug must be a non-empty string");
 	}
 	const caseId = caseSpec?.case_id;
 	return `[ROLE: CONCURRENT MANUAL AUDITOR — ${caseId} ONLY]
 Mission: ${mission.missionId} (slug: ${mission.slug})
-Frozen contract summary (rendered from \`:frozen\`): ${mission.contractLine}
 
-You own exactly one CASE: ${caseId} (path: ${caseSpec.path}, PASS threshold: ${caseSpec.threshold}/100).
-The framework has already validated the frozen CASE dataset. You do not need to cross-check it. The injected frozen CASE record below is the sole authority for what to execute and how to score; do not read the dataset or other CASE data.
+Contract paths (frozen by convention; read-only):
+- plans/${mission.slug}/s1-brainstorm.md
+- plans/${mission.slug}/s2-manual-tests.md
+- plans/${mission.slug}/s3-dev-guide.md
+- plans/${mission.slug}/s4-coordination.md
+- plans/${mission.slug}/s4-coordination.pml
+- .herd/missions/${mission.slug}/s2-cases.edn (control state; do not edit)
+
+You own exactly one CASE: ${caseSpec.case_id} (path: ${caseSpec.path}, PASS threshold: ${caseSpec.threshold}/100).
+The framework has already validated the CASE dataset. The injected CASE record below is the sole authority for what to execute and how to score; do not read the dataset or other CASE data.
 Other auditors are attacking the other CASEs in parallel right now. Spend 100% of your budget trying to falsify this single CASE against real software behavior.
 
-S1 original approved background (frozen \`advance_s1.summary\`; never extracted from \`s1-brainstorm.md\`):
-#"""
-${mission.s1Summary}
-"""#
+Read \`plans/${mission.slug}/s1-brainstorm.md\` as the approved S1 background. There is no \`s1-summary.md\`; do not extract a summary from any other file.
 
-Assigned frozen CASE record:
-#"""
+Assigned CASE record (EDN + UFSS, rendered by \`formatCaseRecord(caseSpec)\`):
 ${formatCaseRecord(caseSpec)}
-"""#
 
 Mindset & Hard Rules (Bach · Myers · Weinberg):
 - Executor claims, commit messages, file counts, typechecks, linters, builds, unit/integration suites, and CI green lights are NOT acceptance evidence (Testing != Checking). They must NEVER raise a score.
-- Never mutate product code, tests, docs, or \`.herd/\` state in the main workspace (workspace stamps are verified after you exit; any mutation invalidates the audit).
-- Isolation: for TUI observations, run omp inside dedicated tmux session \`herd-${mission.slug}-${caseId}\`, send real keystrokes, capture panes to \`plans/${mission.slug}/evidence/${caseId}/\`, and cite exact capture paths and visible lines. Never claim an uncaptured TUI path.
-- If the CASE exercises the S1 manual-approval gate, you may act as a user-authorized test operator ONLY inside the isolated copy: display the real on-disk document, perform an explicit approve-or-revise interaction, and note in your report that this approval was performed by an AI test operator in the isolated copy; the product does not need operator-identity fields or test modes. Never impersonate human approval or production authorization, and never do this in the main workspace or a real production mission. This exception does NOT extend to \`ask_user\` clarification or the S5 initial-empty-ledger question; those still require a human answer.
-- For destructive, missing-dependency, or corrupt-config paths, copy the repo to \`/tmp/herd-audit-${mission.slug}-${caseId}-<uuid>\`, break the copy, and test there.
+- Never mutate product code, tests, docs, or \`.herd/\` state in the main workspace. The framework observes the workspace; any mutation invalidates the audit.
+- Isolation: for TUI observations, run omp inside dedicated tmux session \`herd-${mission.slug}-${caseSpec.case_id}\`, send real keystrokes, capture panes to \`plans/${mission.slug}/evidence/${caseSpec.case_id}/\`, and cite exact capture paths and visible lines. Never claim an uncaptured TUI path.
+- If the CASE exercises the S1 manual-approval gate, you may act as a user-authorized test operator ONLY inside the isolated copy: display the real on-disk document, perform an explicit approve-or-revise interaction against \`attach_brainstorm\`, and note in your report that this approval was performed by an AI test operator in the isolated copy; the product does not need operator-identity fields or test modes. Never impersonate human approval or production authorization, and never do this in the main workspace or a real production mission. This exception does NOT extend to \`ask_user\` clarification or the S5 initial-empty-ledger question; those still require a human answer.
+- For destructive, missing-dependency, or corrupt-config paths, copy the repo to \`/tmp/herd-audit-${mission.slug}-${caseSpec.case_id}-<uuid>\`, break the copy, and test there.
 - Disapprove scaffolds, imitations, silent fallbacks, or unexercised error branches. If an environment/GUI/service is unavailable, record the failure and score below threshold—never skip or pass on faith.
 - Score twice from your own subjective willingness to pay, strictly following this CASE's \`rubric\` (which includes the minimum evidence requirements; reproducible within +-5): \`user_score\` (external value a user would pay for) and \`developer_score\` (internal quality a developer would pay for). Wow folds into both; final verdict uses \`min(user_score, developer_score)\`.
 

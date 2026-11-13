@@ -2,12 +2,15 @@
  * Aggregate K independent CASE audits into one mission verdict.
  *
  * `aggregate` is a pure reconciliation step: it never reads or writes files.
- * The frozen `cases.edn` CASE records are the only authority for ids, order,
- * and thresholds. Each record is `{case_id,path,threshold,steps,expected,
- * rubric}`; this module validates the fields it consumes.
- * Every submission is matched exactly once; missing, unknown, duplicate,
- * non-finite, out-of-range, empty-report, evidence, snapshot, and contract
- * problems are reported together instead of thrown.
+ * The submitted CASE records from `.herd/missions/<slug>/s2-cases.edn` are the
+ * only authority for ids, order, and thresholds. Each record is
+ * `{case_id,path,threshold,steps,expected,rubric}`; this module validates the
+ * fields it consumes. Every submission is matched exactly once; missing,
+ * unknown, duplicate, non-finite, out-of-range, empty-report, evidence, and
+ * snapshot problems are reported together instead of thrown.
+ *
+ * The contract carries only `{missionId, revision}`. There is no contract-line
+ * and no frozen-hash recheck: approval binds to the mission id and revision.
  *
  * `writeS5Report` is the only file-writing step. It writes
  * `plans/<slug>/s5-report.md` only for a clean PASS, computes the report
@@ -184,14 +187,6 @@ function validateContract(contract, invalid) {
 			}),
 		);
 	}
-	if (typeof contract.contractLine !== "string" || contract.contractLine.trim() === "") {
-		problems.push(
-			rejection("INVALID_ARGUMENT", "contract.contractLine must be a non-empty string", {
-				field: "contract.contractLine",
-				actual: describe(contract.contractLine),
-			}),
-		);
-	}
 	if (problems.length > 0) {
 		invalid.push(...problems);
 		return null;
@@ -199,7 +194,6 @@ function validateContract(contract, invalid) {
 	return {
 		missionId: contract.missionId,
 		revision: contract.revision,
-		contractLine: contract.contractLine,
 	};
 }
 
@@ -546,32 +540,21 @@ function deriveRepairSpec(rows, invalid, contractInfo) {
 	};
 }
 
-function buildResult({
-	rows,
-	missing,
-	unknown,
-	duplicates,
-	invalid,
-	contractInfo,
-	contractValid,
-	auditInfo,
-	snapshot,
-}) {
+function buildResult({ rows, missing, unknown, duplicates, invalid, contractInfo, auditInfo, snapshot }) {
 	const rejected =
 		invalid.length > 0 ||
 		missing.length > 0 ||
 		unknown.length > 0 ||
 		duplicates.length > 0 ||
 		snapshot.mutated ||
-		!snapshot.checked ||
-		!contractValid;
+		!snapshot.checked;
 	const allPassed = rows.length > 0 && rows.every((row) => row.passed);
 	const verdict = rejected ? "INCOMPLETE" : allPassed ? "PASS" : "FAIL";
 
 	return {
 		ok: verdict === "PASS",
 		verdict,
-		contract: contractInfo === null ? null : { ...contractInfo, verified: contractValid },
+		contract: contractInfo === null ? null : { ...contractInfo },
 		audit: auditInfo,
 		rows,
 		caseIds: rows.map((row) => row.caseId),
@@ -582,7 +565,6 @@ function buildResult({
 		workspaceMutated: snapshot.mutated,
 		snapshotChecked: snapshot.checked,
 		snapshotBefore: snapshot.before,
-		contractValid,
 		rejected,
 		repairSpec: deriveRepairSpec(rows, invalid, contractInfo),
 		retryRequired: rejected,
@@ -594,15 +576,16 @@ function buildResult({
  *
  * Inputs:
  * - `caseSpecs`: validated CASE records
- *   `{case_id,path,threshold,steps,expected,rubric}` in `cases.edn` order.
+ *   `{case_id,path,threshold,steps,expected,rubric}` in
+ *   `.herd/missions/<slug>/s2-cases.edn` order. That order is the order of
+ *   `rows`, `caseIds`, and the sections of the final report.
  * - `submissions`: raw auditor fields
  *   `{case_id, user_score, developer_score, report_markdown, evidence_paths}`;
  *   an optional `validation: {ok, errors?}` carries B3's single-submission
  *   result, so a failed evidence or snapshot check can never be masked by
  *   high scores.
- * - `contract`: `{missionId, revision, contractLine}` plus whatever the
- *   injected T2 verifier needs (for example `frozen`). T4 does not re-parse
- *   the contract line or its hashes; T2 remains the only hash authority.
+ * - `contract`: `{missionId, revision}`. Exactly these two fields bind the
+ *   final approval; there is no contract-line and no frozen hash to recheck.
  * - `snapshotBefore` / `snapshotAfter`: `{files: [{path, sha256, stamp}], digest?}`
  *   with a non-empty `files` list. Both are required for a clean PASS.
  * - `audit`: `{environment, limitations?, lessons?}` for the final report;
@@ -610,22 +593,20 @@ function buildResult({
  *   PASS requires one of them.
  * - `ports.checkEvidence({caseId, paths})`: optional synchronous evidence
  *   existence/containment check. B3's `validation` field remains authoritative.
- * - `ports.verifyContract(contract)`: synchronous T2 contract re-check.
- *   It receives the original contract object and is required for a clean PASS.
+ *   A `ports.verifyContract` value is ignored: contract hashes are gone.
  *
  * Output: `{ok, verdict, contract, audit, rows, missing, unknown, duplicates,
- * invalid, workspaceMutated, snapshotChecked, snapshotBefore, contractValid,
- * rejected, repairSpec, retryRequired, caseIds}`. `snapshotBefore` is a deep
- * copy of the audit-time snapshot, so a later recheck port can compare the
- * current workspace without observing a caller-mutated object.
+ * invalid, workspaceMutated, snapshotChecked, snapshotBefore, rejected,
+ * repairSpec, retryRequired, caseIds}`. `snapshotBefore` is a deep copy of the
+ * audit-time snapshot, so a later recheck port can compare the current
+ * workspace without observing a caller-mutated object.
  *
  * `verdict` is `PASS` only when the CASE set is complete and exact, every
  * score is finite and in 0..100, every report and evidence list is non-empty,
- * both snapshots match, the contract was re-verified, and every
- * `min(user_score, developer_score)` reaches its S2 threshold. A score-only
- * miss yields `FAIL` with a `RepairSpec`; any reconciliation or contamination
- * problem yields `INCOMPLETE` and must be retried. Malformed input never
- * throws.
+ * both snapshots match, and every `min(user_score, developer_score)` reaches
+ * its S2 threshold. A score-only miss yields `FAIL` with a `RepairSpec`; any
+ * reconciliation or contamination problem yields `INCOMPLETE` and must be
+ * retried. Malformed input never throws.
  */
 export function aggregate({ caseSpecs, submissions, contract, snapshotBefore, snapshotAfter, audit, ports } = {}) {
 	const invalid = [];
@@ -637,37 +618,6 @@ export function aggregate({ caseSpecs, submissions, contract, snapshotBefore, sn
 
 	const specs = validateCaseSpecs(caseSpecs, invalid);
 	const contractInfo = validateContract(contract, invalid);
-	let contractValid = false;
-	if (contractInfo !== null) {
-		const verifyContract = portSet.verifyContract;
-		if (typeof verifyContract === "function") {
-			try {
-				const verified = verifyContract(contract);
-				contractValid = Boolean(verified && verified.ok === true);
-				if (!contractValid) {
-					invalid.push(
-						rejection("CONTRACT_HASH_MISMATCH", `contract verification failed${detailOf(verified)}`, {
-							field: "contract",
-						}),
-					);
-				}
-			} catch (error) {
-				contractValid = false;
-				invalid.push(
-					rejection("CONTRACT_HASH_MISMATCH", `contract verification failed: ${messageOf(error)}`, {
-						field: "contract",
-					}),
-				);
-			}
-		} else {
-			invalid.push(
-				rejection("INVALID_ARGUMENT", "contract re-verification requires an injected verifyContract port", {
-					field: "contract.verification",
-				}),
-			);
-		}
-	}
-
 	const auditInfo = normalizeAudit(audit, contract, invalid);
 	const snapshot = compareSnapshots(snapshotBefore, snapshotAfter, invalid);
 
@@ -679,7 +629,6 @@ export function aggregate({ caseSpecs, submissions, contract, snapshotBefore, sn
 			duplicates,
 			invalid,
 			contractInfo,
-			contractValid,
 			auditInfo,
 			snapshot,
 		});
@@ -719,7 +668,7 @@ export function aggregate({ caseSpecs, submissions, contract, snapshotBefore, sn
 			if (!specById.has(caseId)) {
 				if (!unknown.includes(caseId)) unknown.push(caseId);
 				invalid.push(
-					rejection("AUDIT_UNKNOWN_CASE", `${caseId}: no such CASE in the S2 contract`, {
+					rejection("AUDIT_UNKNOWN_CASE", `${caseId}: no such CASE in the S2 dataset`, {
 						caseId,
 						index,
 					}),
@@ -815,7 +764,6 @@ export function aggregate({ caseSpecs, submissions, contract, snapshotBefore, sn
 		duplicates,
 		invalid,
 		contractInfo,
-		contractValid,
 		auditInfo,
 		snapshot,
 	});
@@ -833,14 +781,14 @@ function trimTrailing(value) {
 	return typeof value === "string" ? value.replace(/\s+$/u, "") : "";
 }
 
-function composeReport(result) {
+function composeReport(result, slug) {
 	const { contract, audit, rows } = result;
 	const limitations = typeof audit.limitations === "string" && audit.limitations !== "" ? audit.limitations : "无记录";
 	const lessons = typeof audit.lessons === "string" && audit.lessons !== "" ? audit.lessons : "无记录";
 	const lines = [
 		`# S5 手工验收报告：${contract.missionId}`,
 		"",
-		`- 契约行：${contract.contractLine}`,
+		`- 用例集：\`.herd/missions/${slug}/s2-cases.edn\``,
 		`- 使命：${contract.missionId}`,
 		`- 修订：${contract.revision}`,
 		`- 审计环境：${audit.environment}`,
@@ -895,6 +843,7 @@ function isPassResult(result) {
 		result.ok === true &&
 		result.verdict === "PASS" &&
 		result.repairSpec === null &&
+		isPlainObject(result.contract) &&
 		Array.isArray(result.caseIds) &&
 		result.caseIds.length > 0 &&
 		Array.isArray(result.rows) &&
@@ -960,13 +909,15 @@ async function requestApproval(result, reportSha256, approvalPort, recheck) {
  * Write the final `plans/<slug>/s5-report.md` and request the one-time approval.
  *
  * Inputs: repository root, mission slug, the result of `aggregate`, and
- * `{approvalPort, recheckPort}`. `recheckPort` is mandatory: after the report
- * is written it re-reads the current contract and main-workspace snapshot and
- * returns `{ok:true}` only when both still match. The ApprovalPort receives
- * the compact audit evidence `{verdict:"PASS", caseCount, recheck}`; T2 owns
- * the remaining approval checks. A missing or failing recheck never reaches
- * the ApprovalPort. `completed` stays false because T4 never writes mission
- * state.
+ * `{approvalPort, recheckPort?}`. The report lists every CASE in
+ * `.herd/missions/<slug>/s2-cases.edn` order. `recheckPort` is optional: when
+ * present it runs after the report is written and may reject a changed
+ * workspace; it receives `{root, slug, missionId, revision, contract,
+ * reportPath, reportSha256, snapshotBefore}`. It is not a contract-hash
+ * recheck, because approval binds only to `(missionId, revision)`. The
+ * ApprovalPort receives `(missionId, revision, reportSha256, {verdict,
+ * caseCount, recheck})`; T2 owns the remaining approval checks. `completed`
+ * stays false because T4 never writes mission state.
  */
 export async function writeS5Report(root, slug, result, options) {
 	const errors = [];
@@ -1005,7 +956,7 @@ export async function writeS5Report(root, slug, result, options) {
 		};
 	}
 
-	const markdown = composeReport(result);
+	const markdown = composeReport(result, slug);
 	const targetDir = join(root, "plans", slug);
 	let written;
 	try {
@@ -1022,87 +973,73 @@ export async function writeS5Report(root, slug, result, options) {
 
 	const reportSha256 = sha256(markdown);
 	const recheckPort = settings.recheckPort;
-	if (typeof recheckPort !== "function") {
-		return {
-			ok: false,
-			code: ERROR_CODES.INVALID_ARGUMENT,
-			path: written.path,
-			sha256: reportSha256,
-			markdown,
-			approval: null,
-			recheck: null,
-			errors: [
-				rejection("INVALID_ARGUMENT", "a recheckPort is required after writing s5-report.md; approval was not issued", {
-					field: "recheckPort",
-				}),
-			],
-			completed: false,
-		};
-	}
-
-	let recheckResult;
-	try {
-		recheckResult = await recheckPort({
-			root,
-			slug,
+	let recheck = null;
+	if (typeof recheckPort === "function") {
+		let recheckResult;
+		try {
+			recheckResult = await recheckPort({
+				root,
+				slug,
+				missionId: result.contract.missionId,
+				revision: result.contract.revision,
+				contract: result.contract,
+				reportPath: written.path,
+				reportSha256,
+				snapshotBefore: result.snapshotBefore,
+			});
+		} catch (error) {
+			const refusal = rejection(
+				"APPROVAL_REQUIRED",
+				`post-report workspace recheck failed: ${messageOf(error)}; approval was not issued`,
+				{ field: "recheck" },
+			);
+			return {
+				ok: false,
+				code: refusal.code,
+				path: written.path,
+				sha256: reportSha256,
+				markdown,
+				approval: null,
+				recheck: { ok: false, message: messageOf(error) },
+				errors: [refusal],
+				completed: false,
+			};
+		}
+		if (!isPlainObject(recheckResult) || recheckResult.ok !== true) {
+			const code =
+				isPlainObject(recheckResult) && typeof recheckResult.code === "string" && recheckResult.code.trim() !== ""
+					? recheckResult.code
+					: APPROVAL_REQUIRED;
+			const message =
+				isPlainObject(recheckResult) &&
+				typeof recheckResult.message === "string" &&
+				recheckResult.message.trim() !== ""
+					? recheckResult.message
+					: "the post-report workspace recheck did not pass; approval was not issued";
+			const refusal = rejection(code, message, {
+				field: "recheck",
+				mismatches:
+					isPlainObject(recheckResult) && Array.isArray(recheckResult.mismatches) ? recheckResult.mismatches : [],
+			});
+			return {
+				ok: false,
+				code: refusal.code,
+				path: written.path,
+				sha256: reportSha256,
+				markdown,
+				approval: null,
+				recheck: recheckResult,
+				errors: [refusal],
+				completed: false,
+			};
+		}
+		recheck = {
+			...recheckResult,
 			missionId: result.contract.missionId,
 			revision: result.contract.revision,
-			contract: result.contract,
-			reportPath: written.path,
 			reportSha256,
-			snapshotBefore: result.snapshotBefore,
-		});
-	} catch (error) {
-		const refusal = rejection(
-			"APPROVAL_REQUIRED",
-			`post-report contract/snapshot recheck failed: ${messageOf(error)}; approval was not issued`,
-			{ field: "recheck" },
-		);
-		return {
-			ok: false,
-			code: refusal.code,
-			path: written.path,
-			sha256: reportSha256,
-			markdown,
-			approval: null,
-			recheck: { ok: false, message: messageOf(error) },
-			errors: [refusal],
-			completed: false,
 		};
 	}
-	if (!isPlainObject(recheckResult) || recheckResult.ok !== true) {
-		const code =
-			isPlainObject(recheckResult) && typeof recheckResult.code === "string" && recheckResult.code.trim() !== ""
-				? recheckResult.code
-				: APPROVAL_REQUIRED;
-		const message =
-			isPlainObject(recheckResult) && typeof recheckResult.message === "string" && recheckResult.message.trim() !== ""
-				? recheckResult.message
-				: "the post-report contract/snapshot recheck did not pass; approval was not issued";
-		const refusal = rejection(code, message, {
-			field: "recheck",
-			mismatches:
-				isPlainObject(recheckResult) && Array.isArray(recheckResult.mismatches) ? recheckResult.mismatches : [],
-		});
-		return {
-			ok: false,
-			code: refusal.code,
-			path: written.path,
-			sha256: reportSha256,
-			markdown,
-			approval: null,
-			recheck: recheckResult,
-			errors: [refusal],
-			completed: false,
-		};
-	}
-
-	const recheck = {
-		...recheckResult,
-		missionId: result.contract.missionId,
-		revision: result.contract.revision,
-		reportSha256,
-	};
 
 	const approval = await requestApproval(result, reportSha256, settings.approvalPort, recheck);
 	if (!approval.ok) {

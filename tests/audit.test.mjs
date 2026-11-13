@@ -1,12 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { EdnKeyword, printUfss, readUfss } from "../src/clj-sandbox/ufss.mjs";
-import { planSpawn } from "../src/host/subprocess.mjs";
 import { buildCaseAuditorPrompt, formatCaseRecord } from "../src/prompts/roles.mjs";
-import { __test as contractCodec } from "../src/stages/contract.mjs";
 import { aggregate } from "../src/stages/scores.mjs";
 import {
 	createFileSubmissionReader,
@@ -81,44 +78,52 @@ const CAPABILITIES = {
 	unverified: [],
 };
 
-function sha256(text) {
-	return createHash("sha256").update(text, "utf8").digest("hex");
-}
-
 function write(path, text) {
 	mkdirSync(dirname(path), { recursive: true });
 	writeFileSync(path, text);
+}
+
+function casesEdnText(cases) {
+	const records = cases.map(
+		(entry) =>
+			`{:case_id "${entry.case_id}" :path "${entry.path}" :threshold ${entry.threshold} :steps [${entry.steps
+				.map((step) => `"${step}"`)
+				.join(" ")}] :expected "${entry.expected}" :rubric "${entry.rubric}"}`,
+	);
+	return `{:cases [${records.join(" ")}]}\n`;
+}
+
+function field(map, name) {
+	for (const [key, value] of map) if (key instanceof EdnKeyword && key.name === name) return value;
+	return undefined;
+}
+
+function readCases(path) {
+	const top = readUfss(readFileSync(path, "utf8"));
+	return field(top, "cases").map((entry) => ({
+		case_id: field(entry, "case_id"),
+		path: field(entry, "path"),
+		threshold: field(entry, "threshold"),
+		steps: field(entry, "steps"),
+		expected: field(entry, "expected"),
+		rubric: field(entry, "rubric"),
+	}));
 }
 
 function makeFixture() {
 	const root = mkdtempSync(join(tmpdir(), "herd-auditors-"));
 	fixtures.push(root);
 	const slug = "demo";
-	const stageTexts = {
-		s1: "# S1\n\nS1 background marker\n",
-		s2: [
-			"# S2 manual tests",
-			"",
-			"### CASE-01",
-			"- PASS threshold: 90/100",
-			"- 路径：正常",
-			"- 评分细则：rubric one marker",
-			"Observe case one marker.",
-			"",
-			"### CASE-02",
-			"- PASS threshold: 90/100",
-			"- 路径：错误",
-			"- 评分细则：rubric two marker",
-			"Observe case two marker.",
-			"",
-		].join("\n"),
-		s3: "# S3\n\nDevelopment guide marker\n",
-		s4: "# S4\n\nCoordination marker\n",
-	};
-	write(join(root, "plans", slug, "s1-brainstorm.md"), stageTexts.s1);
-	write(join(root, "plans", slug, "s2-manual-tests.md"), stageTexts.s2);
-	write(join(root, "plans", slug, "s3-dev-guide.md"), stageTexts.s3);
-	write(join(root, "plans", slug, "s4-coordination.md"), stageTexts.s4);
+	const missionId = "mission-1";
+	const revision = 3;
+	write(join(root, "plans", slug, "s1-brainstorm.md"), "# S1\n\nS1 background marker\n");
+	write(
+		join(root, "plans", slug, "s2-manual-tests.md"),
+		"# S2 manual test methodology\n\nMethodology only; CASEs live in s2-cases.edn.\n",
+	);
+	write(join(root, "plans", slug, "s3-dev-guide.md"), "# S3\n\nDevelopment guide marker\n");
+	write(join(root, "plans", slug, "s4-coordination.md"), "# S4\n\nCoordination marker\n");
+	write(join(root, "plans", slug, "s4-coordination.pml"), "active proctype Coordinator() { skip }\n");
 	write(join(root, "src", "product.mjs"), "export const value = 1;\n");
 	write(join(root, "tests", "product.test.mjs"), "console.log('test');\n");
 	write(join(root, "package.json"), '{"name":"fixture"}\n');
@@ -127,39 +132,17 @@ function makeFixture() {
 	write(join(root, "tools", "dev-tool.mjs"), "export const tool = true;\n");
 	write(join(root, "src", "nested", "build", "keep.mjs"), "export const nested = true;\n");
 	write(join(root, "plugin-extension.mjs"), "export default {};\n");
-	const s1SummaryText = "# Frozen S1 summary\n\nFrozen S1 summary marker.\n";
-	const s1SummaryPath = join(root, ".herd", "missions", slug, "s1-summary.md");
-	write(s1SummaryPath, s1SummaryText);
-	const caseEdnText = '{:cases [{:case-id "CASE-01"} {:case-id "CASE-02"}]}\n';
-	const caseEdnBytes = Buffer.from(caseEdnText, "utf8");
-	const s1SummaryBytes = Buffer.from(s1SummaryText, "utf8");
-	const caseEdnSha256 = sha256(caseEdnBytes);
-	const s1SummarySha256 = sha256(s1SummaryBytes);
-	const s3ModulesText = '[{:id "core" :mapped-cases ["CASE-01" "CASE-02"]}]\n';
-	const s3ModulesSha256 = sha256(s3ModulesText);
-	const frozen = {
-		s1: { sha256: sha256(stageTexts.s1) },
-		"s1-summary": { sha256: s1SummarySha256 },
-		s2: { sha256: sha256(stageTexts.s2) },
-		"s2-cases": { sha256: caseEdnSha256 },
-		s3: { sha256: sha256(stageTexts.s3) },
-		s4: { sha256: sha256(stageTexts.s4) },
-		"s3-modules": { sha256: s3ModulesSha256 },
-	};
-	const contract = {
-		missionId: "mission-1",
-		revision: 3,
-		contractLine: `mission=mission-1; s1:file=s1-brainstorm.md sha256=${frozen.s1.sha256}; s1-summary:file=.herd/missions/demo/s1-summary.md sha256=${frozen["s1-summary"].sha256}; s2:file=s2-manual-tests.md sha256=${frozen.s2.sha256}; s2-cases:file=.herd/missions/demo/cases.edn sha256=${frozen["s2-cases"].sha256}; s3:file=s3-dev-guide.md sha256=${frozen.s3.sha256}; s4:file=s4-coordination.md sha256=${frozen.s4.sha256}; s3-modules:inline sha256=${frozen["s3-modules"].sha256}`,
-		frozen,
-		verified: true,
-	};
+	const casesPath = join(root, ".herd", "missions", slug, "s2-cases.edn");
+	write(casesPath, casesEdnText(CASES));
+	write(join(root, ".herd", "missions", slug, "board.edn"), "{:tasks {}}\n");
 	return {
 		root,
 		slug,
-		cases: CASES,
-		caseEdn: { bytes: caseEdnBytes, sha256: caseEdnSha256 },
-		s1Summary: { path: s1SummaryPath, bytes: s1SummaryBytes, sha256: s1SummarySha256 },
-		contract,
+		missionId,
+		revision,
+		casesPath,
+		cases: readCases(casesPath),
+		contract: { missionId, revision },
 	};
 }
 
@@ -167,54 +150,26 @@ function makeBareFixture({ slug, caseId }) {
 	const root = mkdtempSync(join(tmpdir(), "herd-auditors-bare-"));
 	fixtures.push(root);
 	write(join(root, "plugin-extension.mjs"), "export default {};\n");
-	const hashes = {
-		s1: "a".repeat(64),
-		"s1-summary": "b".repeat(64),
-		s2: "b".repeat(64),
-		"s2-cases": "c".repeat(64),
-		s3: "c".repeat(64),
-		s4: "d".repeat(64),
-		"s3-modules": "e".repeat(64),
-	};
-	const s1SummaryText = "Frozen S1 summary marker.\n";
-	const s1SummaryPath = join(root, ".herd", "missions", slug, "s1-summary.md");
-	write(s1SummaryPath, s1SummaryText);
-	const caseEdnBytes = Buffer.from("{:cases []}\n", "utf8");
-	const caseEdnSha256 = sha256(caseEdnBytes);
-	const s1SummarySha256 = sha256(s1SummaryText);
+	const cases = [
+		{
+			case_id: caseId,
+			threshold: 90,
+			path: "正常",
+			steps: ["Inspect the isolated copy."],
+			expected: "The observable behavior matches the assigned CASE.",
+			rubric: "long identifier rubric",
+		},
+	];
+	const casesPath = join(root, ".herd", "missions", slug, "s2-cases.edn");
+	write(casesPath, casesEdnText(cases));
 	return {
 		root,
 		slug,
-		cases: [
-			{
-				case_id: caseId,
-				threshold: 90,
-				path: "正常",
-				steps: ["Inspect the isolated copy."],
-				expected: "The observable behavior matches the frozen CASE.",
-				rubric: "long identifier rubric",
-			},
-		],
-		caseEdn: { bytes: caseEdnBytes, sha256: caseEdnSha256 },
-		s1Summary: {
-			path: s1SummaryPath,
-			bytes: Buffer.from(s1SummaryText, "utf8"),
-			sha256: s1SummarySha256,
-		},
-		contract: {
-			missionId: "mission-long",
-			revision: 1,
-			contractLine:
-				`s1 sha256=${hashes.s1}; s1-summary sha256=${hashes["s1-summary"]}; ` +
-				`s2 sha256=${hashes.s2}; s2-cases sha256=${hashes["s2-cases"]}; ` +
-				`s3 sha256=${hashes.s3}; s4 sha256=${hashes.s4}; s3-modules sha256=${hashes["s3-modules"]}`,
-			frozen: Object.fromEntries(Object.entries(hashes).map(([stage, hash]) => [stage, { sha256: hash }])),
-		},
-		hashes,
-		verifyContract: () => ({
-			ok: true,
-			contract: { hashes: { ...hashes, "s2-cases": caseEdnSha256, "s1-summary": s1SummarySha256 } },
-		}),
+		missionId: "mission-long",
+		revision: 1,
+		casesPath,
+		cases: readCases(casesPath),
+		contract: { missionId: "mission-long", revision: 1 },
 	};
 }
 
@@ -298,20 +253,9 @@ function depsFor(fixture, runtime, overrides = {}) {
 		parentActiveModelPattern: "test/model",
 		capabilities: CAPABILITIES,
 		preloadedExtensionPaths: [join(fixture.root, "plugin-extension.mjs")],
-		verifyContract: () => ({
-			ok: true,
-			contract: {
-				hashes: Object.fromEntries(Object.entries(fixture.contract.frozen).map(([key, value]) => [key, value.sha256])),
-			},
-		}),
-		buildPrompt: ({ caseSpec, s1Summary }) =>
+		buildPrompt: ({ caseSpec }) =>
 			buildCaseAuditorPrompt({
-				mission: {
-					missionId: fixture.contract.missionId,
-					slug: fixture.slug,
-					contractLine: fixture.contract.contractLine,
-					s1Summary,
-				},
+				mission: { missionId: fixture.missionId, slug: fixture.slug },
 				caseSpec,
 			}),
 		...overrides,
@@ -323,10 +267,19 @@ async function runBatch(fixture, runtime, overrides = {}) {
 		root: fixture.root,
 		slug: fixture.slug,
 		caseSpecs: fixture.cases,
-		caseEdn: fixture.caseEdn,
-		s1Summary: fixture.s1Summary,
-		contract: fixture.contract,
 		deps: depsFor(fixture, runtime, overrides),
+	});
+}
+
+function aggregateBatch(fixture, batch, extra = {}) {
+	return aggregate({
+		caseSpecs: batch.aggregateInput.caseSpecs,
+		submissions: batch.aggregateInput.submissions,
+		contract: fixture.contract,
+		snapshotBefore: batch.aggregateInput.snapshotBefore,
+		snapshotAfter: batch.aggregateInput.snapshotAfter,
+		audit: { environment: "unit-test fixture" },
+		...extra,
 	});
 }
 
@@ -339,9 +292,8 @@ describe("snapshotWorkspace", () => {
 		expect(before.files.map((file) => file.path)).toEqual([...before.files.map((file) => file.path)].sort());
 		expect(before.files.every((file) => typeof file.stamp.mtimeSec === "bigint")).toBe(true);
 		expect(before.files.some((file) => file.path === "src/product.mjs")).toBe(true);
-		expect(before.files.some((file) => file.path === "package.json")).toBe(true);
-		expect(before.files.some((file) => file.path === "tools/dev-tool.mjs")).toBe(true);
-		expect(before.files.some((file) => file.path === "src/nested/build/keep.mjs")).toBe(true);
+		expect(before.files.some((file) => file.path === ".herd/missions/demo/s2-cases.edn")).toBe(true);
+		expect(before.files.some((file) => file.path === ".herd/missions/demo/board.edn")).toBe(true);
 
 		const again = snapshotWorkspace(fixture.root);
 		expect(again.digest).toBe(before.digest);
@@ -349,15 +301,12 @@ describe("snapshotWorkspace", () => {
 		write(join(fixture.root, "plans", fixture.slug, "evidence", "CASE-01", "shot.txt"), "screen\n");
 		write(join(fixture.root, ".herd", "artifacts", fixture.slug, "audit", "CASE-01", "transcript.txt"), "log\n");
 		write(join(fixture.root, ".herd", "missions", fixture.slug, "audit", "CASE-01.submit.edn"), "{}\n");
-		write(join(fixture.root, ".herd-worktrees", fixture.slug, "slice-a", "file.txt"), "worktree\n");
-		const expected = snapshotWorkspace(fixture.root);
-		expect(expected.digest).toBe(before.digest);
+		expect(snapshotWorkspace(fixture.root).digest).toBe(before.digest);
 	});
 
 	it("detects a protected content change, a deletion, and a stamp-only change", () => {
 		const fixture = makeFixture();
 		const before = snapshotWorkspace(fixture.root);
-
 		write(join(fixture.root, "src", "product.mjs"), "export const value = 2;\n");
 		const changed = snapshotWorkspace(fixture.root);
 		expect(changed.digest).not.toBe(before.digest);
@@ -369,8 +318,7 @@ describe("snapshotWorkspace", () => {
 
 		const readme = join(fixture.root, "README.md");
 		utimesSync(readme, new Date(1_600_000_000_000), new Date(1_600_000_000_000));
-		const restamped = snapshotWorkspace(fixture.root);
-		expect(restamped.digest).not.toBe(deleted.digest);
+		expect(snapshotWorkspace(fixture.root).digest).not.toBe(deleted.digest);
 	});
 });
 
@@ -430,9 +378,7 @@ describe("validateSubmissions", () => {
 			submissionFor(fixture, "CASE-02", {
 				evidence_paths: [`plans/${fixture.slug}/evidence/CASE-02/../../../src/product.mjs`],
 			}),
-			submissionFor(fixture, "CASE-01", {
-				evidence_paths: ["/etc/hostname"],
-			}),
+			submissionFor(fixture, "CASE-01", { evidence_paths: ["/etc/hostname"] }),
 		];
 		const after = snapshotWorkspace(fixture.root);
 		const result = validateSubmissions({
@@ -469,6 +415,24 @@ describe("validateSubmissions", () => {
 				entry.validation.errors.some((error) => error.code === ":AUDIT_WORKSPACE_MUTATED"),
 			),
 		).toBe(true);
+	});
+
+	it("treats an edited CASE dataset as a protected workspace mutation", () => {
+		const fixture = makeFixture();
+		const before = snapshotWorkspace(fixture.root);
+		write(fixture.casesPath, casesEdnText([CASES[0]]));
+		const after = snapshotWorkspace(fixture.root);
+		const result = validateSubmissions({
+			caseSpecs: fixture.cases,
+			submissions: [submissionFor(fixture, "CASE-01")],
+			snapshotBefore: before,
+			snapshotAfter: after,
+			root: fixture.root,
+			slug: fixture.slug,
+		});
+		expect(result.ok).toBe(false);
+		expect(result.workspaceMutated).toBe(true);
+		expect(result.submissions[0].validation.ok).toBe(false);
 	});
 
 	it("fails closed when evidence existence cannot be checked", () => {
@@ -705,7 +669,6 @@ describe("startAuditBatch", () => {
 		expect(first.task).toContain("case one marker");
 		expect(first.task).not.toContain("CASE-02");
 		expect(first.task).not.toContain("case two marker");
-		expect(first.task).toContain("herd-demo-CASE-01");
 		expect(first.tools).toEqual(["clj_auditor", "submit_case_audit", "yield"]);
 		expect(first.restrictToolNames).toBe(false);
 		expect(first.enableMCP).toBe(false);
@@ -728,14 +691,7 @@ describe("startAuditBatch", () => {
 		expect(first.timeoutMs).toBe(2000);
 		expect(first.maxRuntimeMs).toBe(2000);
 		expect(first.signal.aborted).toBe(false);
-
-		const tmux = runtime.starts.map((record) => record.options.name);
-		expect(new Set(tmux).size).toBe(2);
-		const tmpDirs = runtime.starts.map(
-			(record) => record.options.task.match(/(?:Use this exact temporary copy|Isolated temporary copy): (.+)/)?.[1],
-		);
-		expect(tmpDirs.every((path) => typeof path === "string" && existsSync(path))).toBe(true);
-		expect(new Set(tmpDirs).size).toBe(2);
+		expect(new Set(runtime.starts.map((record) => record.options.name)).size).toBe(2);
 		expect(existsSync(join(fixture.root, "plans", fixture.slug, "evidence", "CASE-01"))).toBe(true);
 		expect(existsSync(join(fixture.root, "plans", fixture.slug, "evidence", "CASE-02"))).toBe(true);
 
@@ -751,11 +707,12 @@ describe("startAuditBatch", () => {
 		expect(result.missingCases).toEqual([]);
 		expect(result.workspaceMutated).toBe(false);
 		expect(result.closureBlocked).toBe(false);
-		expect(result.contract.verified).toBe(true);
-		expect(result.aggregateInput.contract.verified).toBe(true);
+		expect(result.validation.ok).toBe(true);
+		expect(result.aggregateInput.caseSpecs.map((spec) => spec.case_id)).toEqual(["CASE-01", "CASE-02"]);
 	});
 
 	it("emits options that the actual host planSpawn accepts", async () => {
+		const { planSpawn } = await import("../src/host/subprocess.mjs");
 		const fixture = makeFixture();
 		const plans = [];
 		const runtime = createRuntime((record) => {
@@ -780,108 +737,21 @@ describe("startAuditBatch", () => {
 		expect(plans[0].meta.visibility).toBe("hub");
 		expect(plans[0].meta.extensionSource).toBe("preloaded");
 		expect(plans[0].meta.toolNarrowingRequired).toBe(true);
-		expect(plans[0].meta.hubAutoAdded).toBe(true);
 		expect(plans[0].meta.limits.timeoutMs).toBe(2000);
 		expect(result.ok).toBe(true);
 	});
 
-	it("starts and stops one sandbox per auditor and records its exact paths", async () => {
+	it("fails the whole batch when the runtime cannot open an auditor sandbox", async () => {
 		const fixture = makeFixture();
-		const events = [];
-		const sandboxes = new Map();
-		const createAuditorSandbox = ({ slug, caseId }) => {
-			const auditTmp = mkdtempSync(join(tmpdir(), "herd-audit-fake-"));
-			fixtures.push(auditTmp);
-			const socketDir = `/tmp/h-${caseId === "CASE-01" ? "11111111" : "22222222"}`;
-			const sandbox = {
-				available: true,
-				auditTmp,
-				socketPath: join(socketDir, "s"),
-				sessionName: `herd-${slug}-${caseId}`,
-				async start() {
-					events.push(`start:${caseId}`);
-				},
-				async stop() {
-					events.push(`stop:${caseId}`);
-				},
-			};
-			sandboxes.set(caseId, sandbox);
-			return sandbox;
-		};
 		const runtime = createRuntime((record) => {
-			const caseId = record.options.outputSchema.properties.case_id.enum[0];
-			record.resolve(toolOutcome(fixture, caseId));
+			record.resolve({ ok: false, error: { code: ":CAPABILITY_DENIED", message: "bwrap is not executable on PATH" } });
 		});
-		const result = await runBatch(fixture, runtime, { createAuditorSandbox });
-		expect(result.ok).toBe(true);
-		expect(events).toEqual(expect.arrayContaining(["start:CASE-01", "start:CASE-02", "stop:CASE-01", "stop:CASE-02"]));
-		for (const caseId of ["CASE-01", "CASE-02"]) {
-			const record = result.auditors.find((entry) => entry.caseId === caseId);
-			const sandbox = sandboxes.get(caseId);
-			expect(record.tmpDir).toBe(sandbox.auditTmp);
-			const contextText = readFileSync(join(fixture.root, record.artifactsDir, "audit-context.edn"), "utf8");
-			expect(contextText).toContain(sandbox.socketPath);
-			expect(contextText).toContain(sandbox.auditTmp);
-			expect(contextText).toContain("sandbox-available");
-		}
-	});
-
-	it("starts every auditor sandbox before awaiting any sandbox", async () => {
-		const fixture = makeFixture();
-		const started = [];
-		let release;
-		const gate = new Promise((resolveGate) => {
-			release = resolveGate;
-		});
-		const createAuditorSandbox = ({ slug, caseId }) => {
-			const auditTmp = mkdtempSync(join(tmpdir(), "herd-audit-parallel-"));
-			fixtures.push(auditTmp);
-			return {
-				available: true,
-				auditTmp,
-				socketPath: `/tmp/h-${caseId === "CASE-01" ? "11111111" : "22222222"}/s`,
-				sessionName: `herd-${slug}-${caseId}`,
-				async start() {
-					started.push(caseId);
-					await gate;
-				},
-				async stop() {},
-			};
-		};
-		const runtime = createRuntime((record) => {
-			const caseId = record.options.outputSchema.properties.case_id.enum[0];
-			record.resolve(toolOutcome(fixture, caseId));
-		});
-		const promise = runBatch(fixture, runtime, { createAuditorSandbox });
-		for (let index = 0; index < 20 && started.length < 2; index += 1) await Promise.resolve();
-		expect(started).toEqual(["CASE-01", "CASE-02"]);
-		release();
-		const result = await promise;
-		expect(result.ok).toBe(true);
-	});
-
-	it("refuses to spawn an auditor when the sandbox capability is unavailable", async () => {
-		const fixture = makeFixture();
-		const runtime = createRuntime();
-		const createAuditorSandbox = ({ caseId }) => {
-			const auditTmp = mkdtempSync(join(tmpdir(), "herd-audit-unavailable-"));
-			fixtures.push(auditTmp);
-			return {
-				available: false,
-				reason: "bwrap is not executable on PATH",
-				auditTmp,
-				socketPath: "/tmp/h-33333333/s",
-				sessionName: `herd-demo-${caseId}`,
-				async start() {
-					throw new Error("start must not run when unavailable");
-				},
-				async stop() {},
-			};
-		};
-		const result = await runBatch(fixture, runtime, { createAuditorSandbox });
-		expect(runtime.starts.length).toBe(0);
+		const result = await runBatch(fixture, runtime);
+		expect(runtime.starts.length).toBe(2);
 		expect(result.ok).toBe(false);
-		expect(result.errors.some((error) => String(error.message).includes("auditor sandbox is unavailable"))).toBe(true);
+		expect(result.auditors.map((record) => record.status)).toEqual(["crashed", "crashed"]);
+		expect(result.auditors.every((record) => record.submission === null)).toBe(true);
+		expect(result.retryRequired).toBe(true);
 	});
 
 	it("keeps the auditor name within the host's 80-character limit", async () => {
@@ -890,7 +760,7 @@ describe("startAuditBatch", () => {
 			const caseId = record.options.outputSchema.properties.case_id.enum[0];
 			record.resolve(toolOutcome(fixture, caseId));
 		});
-		const result = await runBatch(fixture, runtime, { verifyContract: fixture.verifyContract });
+		const result = await runBatch(fixture, runtime);
 		expect(result.ok).toBe(true);
 		const name = result.auditors[0].name;
 		expect(name.length).toBeLessThanOrEqual(80);
@@ -909,9 +779,7 @@ describe("startAuditBatch", () => {
 		const result = await runBatch(fixture, runtime, {
 			buildPrompt: ({ caseSpec }) => {
 				const marker = caseSpec.case_id === "CASE-01" ? "Observe case one marker." : "Observe case two marker.";
-				if (!caseSpec.steps.includes(marker)) {
-					throw new Error("steps missing");
-				}
+				if (!caseSpec.steps.includes(marker)) throw new Error("steps missing");
 				return `Audit ${caseSpec.case_id} only. Submit with submit_case_audit; include user_score and evidence_paths.`;
 			},
 		});
@@ -919,7 +787,7 @@ describe("startAuditBatch", () => {
 		expect(prompts[0]).toContain("## Completion");
 		expect(prompts[0]).toContain("yield a minimal confirmation");
 		expect(prompts[0]).not.toContain("## Submission handoff");
-		expect(prompts[0]).toContain(result.auditors[0].tmpDir);
+		expect(prompts[0]).toContain(result.auditors[0].artifactsDir);
 	});
 
 	it("works with the real buildCaseAuditorPrompt from the main assembly", async () => {
@@ -928,21 +796,13 @@ describe("startAuditBatch", () => {
 			const caseId = record.options.outputSchema.properties.case_id.enum[0];
 			record.resolve(toolOutcome(fixture, caseId));
 		});
-		const result = await runBatch(fixture, runtime, {
-			buildPrompt: ({ caseSpec }) =>
-				buildCaseAuditorPrompt({
-					mission: {
-						missionId: fixture.contract.missionId,
-						slug: fixture.slug,
-						contractLine: fixture.contract.contractLine,
-						s1Summary: "Frozen S1 summary marker.",
-					},
-					caseSpec,
-				}),
-		});
+		const result = await runBatch(fixture, runtime);
 		expect(result.ok).toBe(true);
 		const task = runtime.starts[0].options.task;
-		expect(task).toContain("Frozen S1 summary marker.");
+		expect(task).toContain(`Mission: ${fixture.missionId} (slug: ${fixture.slug})`);
+		expect(task).toContain(".herd/missions/demo/s2-cases.edn");
+		expect(task).not.toContain("- plans/demo/s1-summary.md");
+		expect(task).toContain("There is no `s1-summary.md`");
 		expect(task).toContain(":case_id");
 		expect(task).toContain("Observe case one marker.");
 		expect(task).toContain("Case one expected marker.");
@@ -951,7 +811,7 @@ describe("startAuditBatch", () => {
 		expect(task).toContain("## Completion");
 	});
 
-	it("renders one frozen CASE record as deterministic EDN with the declared fields and step order", () => {
+	it("renders one assigned CASE record as deterministic EDN with the declared fields and step order", () => {
 		const caseSpec = {
 			case_id: "CASE-01",
 			path: "正常",
@@ -978,17 +838,15 @@ describe("startAuditBatch", () => {
 		const spawnAgent = async (options) => {
 			const caseId = options.outputSchema.properties.case_id.enum[0];
 			const contextText = readFileSync(join(options.artifactsDir, "audit-context.edn"), "utf8");
-			const contextMap = readUfss(contextText);
-			expect(contextMap).toBeInstanceOf(Map);
-			expect([...contextMap.keys()].some((key) => key instanceof EdnKeyword && key.name === "batch-id")).toBe(true);
-			const context = contractCodec.parseEdn(contextText);
-			expect(context["batch-id"]).toMatch(/^audit-/);
-			expect(context["case-id"]).toBe(caseId);
+			const context = readUfss(contextText);
+			expect(context).toBeInstanceOf(Map);
+			expect(field(context, "batch-id")).toMatch(/^audit-/);
+			expect(field(context, "case-id")).toBe(caseId);
 			const submission = submissionFor(fixture, caseId);
 			write(
-				join(fixture.root, context["submission-path"]),
+				join(fixture.root, field(context, "submission-path")),
 				printEdn({
-					"batch-id": context["batch-id"],
+					"batch-id": field(context, "batch-id"),
 					"case-id": caseId,
 					"user-score": submission.user_score,
 					"developer-score": submission.developer_score,
@@ -1011,14 +869,7 @@ describe("startAuditBatch", () => {
 			root: fixture.root,
 			slug: fixture.slug,
 			caseSpecs: fixture.cases,
-			caseEdn: fixture.caseEdn,
-			s1Summary: fixture.s1Summary,
-			contract: fixture.contract,
-			deps: {
-				...depsFor(fixture, undefined),
-				runtime: undefined,
-				spawnAgent,
-			},
+			deps: { ...depsFor(fixture, undefined), runtime: undefined, spawnAgent },
 		});
 		expect(result.ok).toBe(true);
 		expect(result.auditors.map((record) => record.agentId)).toEqual(["host-CASE-01", "host-CASE-02"]);
@@ -1146,10 +997,7 @@ describe("startAuditBatch", () => {
 
 		const fallbackRuntime = createRuntime((record) => {
 			const caseId = record.options.outputSchema.properties.case_id.enum[0];
-			record.resolve({
-				...toolOutcome(fixture, caseId),
-				resolvedModelIsFallback: true,
-			});
+			record.resolve({ ...toolOutcome(fixture, caseId), resolvedModelIsFallback: true });
 		});
 		const fallback = await runBatch(fixture, fallbackRuntime);
 		expect(fallback.ok).toBe(false);
@@ -1166,10 +1014,7 @@ describe("startAuditBatch", () => {
 
 		const exitRuntime = createRuntime((record) => {
 			const caseId = record.options.outputSchema.properties.case_id.enum[0];
-			record.resolve({
-				...toolOutcome(fixture, caseId),
-				exitCode: 1,
-			});
+			record.resolve({ ...toolOutcome(fixture, caseId), exitCode: 1 });
 		});
 		const exited = await runBatch(fixture, exitRuntime);
 		expect(exited.ok).toBe(false);
@@ -1248,15 +1093,7 @@ describe("startAuditBatch", () => {
 		expect(result.missingCases).toContain("CASE-01");
 		expect(result.submissions.some((entry) => entry.case_id === "CASE-01")).toBe(false);
 
-		const aggregateResult = aggregate({
-			caseSpecs: result.aggregateInput.caseSpecs,
-			submissions: result.aggregateInput.submissions,
-			contract: result.aggregateInput.contract,
-			snapshotBefore: result.aggregateInput.snapshotBefore,
-			snapshotAfter: result.aggregateInput.snapshotAfter,
-			audit: { environment: "unit-test fixture" },
-			ports: { verifyContract: () => ({ ok: result.contractVerification.ok }) },
-		});
+		const aggregateResult = aggregateBatch(fixture, result);
 		expect(aggregateResult.verdict).toBe("INCOMPLETE");
 		const repair = deriveRepairSlices({ aggregateResult });
 		expect(repair.retryRequired).toBe(true);
@@ -1322,79 +1159,18 @@ describe("startAuditBatch", () => {
 		).toBe(true);
 	});
 
-	it("refuses to start when the frozen contract does not match disk", async () => {
+	it("voids the batch when an auditor edits the persisted CASE dataset", async () => {
 		const fixture = makeFixture();
-		const runtime = createRuntime();
-		const badContract = {
-			...fixture.contract,
-			frozen: { ...fixture.contract.frozen, s1: { sha256: "0".repeat(64) } },
-		};
-		const result = await startAuditBatch({
-			root: fixture.root,
-			slug: fixture.slug,
-			caseSpecs: fixture.cases,
-			caseEdn: fixture.caseEdn,
-			s1Summary: fixture.s1Summary,
-			contract: badContract,
-			deps: depsFor(fixture, runtime, {
-				verifyContract: (contract) =>
-					contract.frozen.s1.sha256 === fixture.contract.frozen.s1.sha256
-						? {
-								ok: true,
-								contract: {
-									hashes: Object.fromEntries(
-										Object.entries(fixture.contract.frozen).map(([key, value]) => [key, value.sha256]),
-									),
-								},
-							}
-						: { ok: false, code: ":CONTRACT_HASH_MISMATCH", message: "frozen s1 hash mismatch" },
-			}),
-		});
-		expect(result.state).toBe("refused");
-		expect(result.ok).toBe(false);
-		expect(runtime.starts.length).toBe(0);
-		expect(result.errors.some((error) => error.code === ":CONTRACT_HASH_MISMATCH")).toBe(true);
-
-		const portRuntime = createRuntime();
-		const portRejected = await startAuditBatch({
-			root: fixture.root,
-			slug: fixture.slug,
-			caseSpecs: fixture.cases,
-			caseEdn: fixture.caseEdn,
-			s1Summary: fixture.s1Summary,
-			contract: fixture.contract,
-			deps: depsFor(fixture, portRuntime, {
-				verifyContract: () => ({
-					ok: false,
-					code: ":CONTRACT_HASH_MISMATCH",
-					message: "T2 says the contract changed",
-				}),
-			}),
-		});
-		expect(portRejected.state).toBe("refused");
-		expect(portRuntime.starts.length).toBe(0);
-		expect(portRejected.errors.some((error) => error.message.includes("T2 says the contract changed"))).toBe(true);
-
-		const hashes = Object.fromEntries(
-			Object.entries(fixture.contract.frozen).map(([stage, value]) => [stage, value.sha256]),
-		);
-		const trustedRuntime = createRuntime((record) => {
+		const runtime = createRuntime((record) => {
 			const caseId = record.options.outputSchema.properties.case_id.enum[0];
+			if (caseId === "CASE-01") write(fixture.casesPath, casesEdnText([CASES[0]]));
 			record.resolve(toolOutcome(fixture, caseId));
 		});
-		const trusted = await startAuditBatch({
-			root: fixture.root,
-			slug: fixture.slug,
-			caseSpecs: fixture.cases,
-			caseEdn: fixture.caseEdn,
-			s1Summary: fixture.s1Summary,
-			contract: fixture.contract,
-			deps: depsFor(fixture, trustedRuntime, {
-				verifyContract: () => ({ ok: true, contract: { hashes } }),
-			}),
-		});
-		expect(trusted.ok).toBe(true);
-		expect(trusted.contractVerification.hashes).toEqual(hashes);
+		const result = await runBatch(fixture, runtime);
+		expect(result.ok).toBe(false);
+		expect(result.workspaceMutated).toBe(true);
+		expect(result.retryRequired).toBe(true);
+		expect(result.aggregateInput).not.toBeNull();
 	});
 
 	it("refuses zero CASEs and a missing runtime port", async () => {
@@ -1404,9 +1180,6 @@ describe("startAuditBatch", () => {
 			root: fixture.root,
 			slug: fixture.slug,
 			caseSpecs: [],
-			caseEdn: fixture.caseEdn,
-			s1Summary: fixture.s1Summary,
-			contract: fixture.contract,
 			deps: depsFor(fixture, runtime),
 		});
 		expect(empty.state).toBe("refused");
@@ -1416,39 +1189,19 @@ describe("startAuditBatch", () => {
 			root: fixture.root,
 			slug: fixture.slug,
 			caseSpecs: fixture.cases,
-			caseEdn: fixture.caseEdn,
-			s1Summary: fixture.s1Summary,
-			contract: fixture.contract,
 			deps: { ...depsFor(fixture, undefined), runtime: undefined },
 		});
 		expect(noRuntime.state).toBe("refused");
 		expect(noRuntime.errors.some((error) => error.code === ":HOST_API_MISMATCH")).toBe(true);
 	});
 
-	it("refuses a mutated CASE dataset and a legacy Markdown-era CASE shape before spawning auditors", async () => {
+	it("refuses a legacy Markdown-era CASE shape before spawning auditors", async () => {
 		const fixture = makeFixture();
 		const runtime = createRuntime();
-		const mutated = await startAuditBatch({
-			root: fixture.root,
-			slug: fixture.slug,
-			caseSpecs: fixture.cases,
-			caseEdn: { bytes: Buffer.from("{:cases [:mutated]}\n"), sha256: fixture.caseEdn.sha256 },
-			s1Summary: fixture.s1Summary,
-			contract: fixture.contract,
-			deps: depsFor(fixture, runtime),
-		});
-		expect(mutated.state).toBe("refused");
-		expect(mutated.ok).toBe(false);
-		expect(runtime.starts.length).toBe(0);
-		expect(mutated.errors.some((error) => error.code === ":CONTRACT_HASH_MISMATCH")).toBe(true);
-
 		const legacy = await startAuditBatch({
 			root: fixture.root,
 			slug: fixture.slug,
 			caseSpecs: [{ ...fixture.cases[0], id: "CASE-01", rawBlock: "legacy markdown" }],
-			caseEdn: fixture.caseEdn,
-			s1Summary: fixture.s1Summary,
-			contract: fixture.contract,
 			deps: depsFor(fixture, runtime),
 		});
 		expect(legacy.state).toBe("refused");
@@ -1457,72 +1210,28 @@ describe("startAuditBatch", () => {
 		expect(runtime.starts.length).toBe(0);
 	});
 
-	it("refuses a missing prompt port and an empty frozen S1 summary", async () => {
+	it("refuses a missing prompt port and an empty CASE dataset", async () => {
 		const fixture = makeFixture();
 		const runtime = createRuntime();
 		const noPrompt = await startAuditBatch({
 			root: fixture.root,
 			slug: fixture.slug,
 			caseSpecs: fixture.cases,
-			caseEdn: fixture.caseEdn,
-			s1Summary: fixture.s1Summary,
-			contract: fixture.contract,
 			deps: { ...depsFor(fixture, runtime), buildPrompt: undefined },
 		});
 		expect(noPrompt.state).toBe("refused");
 		expect(noPrompt.errors.some((error) => error.field === "deps.buildPrompt")).toBe(true);
 		expect(runtime.starts.length).toBe(0);
 
-		const emptyBytes = Buffer.from(" \n", "utf8");
-		const emptySummary = await startAuditBatch({
+		const empty = await startAuditBatch({
 			root: fixture.root,
 			slug: fixture.slug,
-			caseSpecs: fixture.cases,
-			caseEdn: fixture.caseEdn,
-			s1Summary: { path: fixture.s1Summary.path, bytes: emptyBytes, sha256: sha256(emptyBytes) },
-			contract: fixture.contract,
+			caseSpecs: [],
 			deps: depsFor(fixture, runtime),
 		});
-		expect(emptySummary.state).toBe("refused");
-		expect(emptySummary.errors.some((error) => error.field === "s1Summary.bytes")).toBe(true);
+		expect(empty.state).toBe("refused");
+		expect(empty.errors.some((error) => error.field === "caseSpecs")).toBe(true);
 		expect(runtime.starts.length).toBe(0);
-	});
-
-	it("refuses stale same-read CASE/summary bytes when the live frozen hashes advanced", async () => {
-		const fixture = makeFixture();
-		const runtime = createRuntime();
-		const liveHashes = Object.fromEntries(
-			Object.entries(fixture.contract.frozen).map(([key, value]) => [key, value.sha256]),
-		);
-		const result = await startAuditBatch({
-			root: fixture.root,
-			slug: fixture.slug,
-			caseSpecs: fixture.cases,
-			caseEdn: fixture.caseEdn,
-			s1Summary: fixture.s1Summary,
-			contract: fixture.contract,
-			deps: depsFor(fixture, runtime, {
-				verifyContract: () => ({
-					ok: true,
-					contract: {
-						hashes: {
-							...liveHashes,
-							"s2-cases": "e".repeat(64),
-							"s1-summary": "f".repeat(64),
-						},
-					},
-				}),
-			}),
-		});
-		expect(result.state).toBe("refused");
-		expect(result.ok).toBe(false);
-		expect(runtime.starts.length).toBe(0);
-		expect(result.errors).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({ code: ":CONTRACT_HASH_MISMATCH", field: "caseEdn.sha256" }),
-				expect.objectContaining({ code: ":CONTRACT_HASH_MISMATCH", field: "s1Summary.sha256" }),
-			]),
-		);
 	});
 
 	it("turns missing submissions into an audit retry, not a code repair", async () => {
@@ -1532,15 +1241,7 @@ describe("startAuditBatch", () => {
 		});
 		const batch = await runBatch(fixture, runtime);
 		expect(batch.ok).toBe(false);
-		const aggregateResult = aggregate({
-			caseSpecs: batch.aggregateInput.caseSpecs,
-			submissions: batch.aggregateInput.submissions,
-			contract: batch.aggregateInput.contract,
-			snapshotBefore: batch.aggregateInput.snapshotBefore,
-			snapshotAfter: batch.aggregateInput.snapshotAfter,
-			audit: { environment: "unit-test fixture" },
-			ports: { verifyContract: () => ({ ok: batch.contractVerification.ok }) },
-		});
+		const aggregateResult = aggregateBatch(fixture, batch);
 		expect(aggregateResult.verdict).toBe("INCOMPLETE");
 		const repair = deriveRepairSlices({ aggregateResult });
 		expect(repair.ok).toBe(false);
@@ -1557,15 +1258,7 @@ describe("startAuditBatch", () => {
 		});
 		const batch = await runBatch(fixture, runtime);
 		expect(batch.ok).toBe(true);
-		const aggregateResult = aggregate({
-			caseSpecs: batch.aggregateInput.caseSpecs,
-			submissions: batch.aggregateInput.submissions,
-			contract: batch.aggregateInput.contract,
-			snapshotBefore: batch.aggregateInput.snapshotBefore,
-			snapshotAfter: batch.aggregateInput.snapshotAfter,
-			audit: { environment: "unit-test fixture" },
-			ports: { verifyContract: () => ({ ok: batch.contractVerification.ok }) },
-		});
+		const aggregateResult = aggregateBatch(fixture, batch);
 		expect(aggregateResult.verdict).toBe("FAIL");
 		expect(aggregateResult.rows.find((row) => row.caseId === "CASE-02").score).toBe(80);
 		const repair = deriveRepairSlices({ aggregateResult });
@@ -1574,7 +1267,6 @@ describe("startAuditBatch", () => {
 		expect(repair.mappedCases).toEqual(["CASE-02"]);
 		expect(repair.repairSlices[0].mapped_cases).toEqual(["CASE-02"]);
 		expect(repair.repairSlices[0].defects.join(" ")).toContain("user_score 80");
-		expect(repair.frozenS4Modified).toBe(false);
 	});
 
 	it("produces an aggregate input that T4 accepts for a clean PASS", async () => {
@@ -1586,15 +1278,7 @@ describe("startAuditBatch", () => {
 		const batch = await runBatch(fixture, runtime);
 		expect(batch.ok).toBe(true);
 
-		const aggregateResult = aggregate({
-			caseSpecs: batch.aggregateInput.caseSpecs,
-			submissions: batch.aggregateInput.submissions,
-			contract: batch.aggregateInput.contract,
-			snapshotBefore: batch.aggregateInput.snapshotBefore,
-			snapshotAfter: batch.aggregateInput.snapshotAfter,
-			audit: { environment: "unit-test fixture" },
-			ports: { verifyContract: () => ({ ok: batch.contractVerification.ok }) },
-		});
+		const aggregateResult = aggregateBatch(fixture, batch);
 		expect(aggregateResult.verdict).toBe("PASS");
 		expect(aggregateResult.ok).toBe(true);
 		expect(aggregateResult.workspaceMutated).toBe(false);
@@ -1607,13 +1291,7 @@ describe("deriveRepairSlices", () => {
 		ok: false,
 		verdict: "FAIL",
 		retryRequired: false,
-		contract: {
-			missionId: "mission-1",
-			revision: 3,
-			contractLine: "line",
-			verified: true,
-			frozen: {},
-		},
+		contract: { missionId: "mission-1", revision: 3 },
 		rows: [
 			{
 				caseId: "CASE-02",
@@ -1649,9 +1327,12 @@ describe("deriveRepairSlices", () => {
 		},
 	};
 
-	it("derives one runtime repair Slice per failed CASE and never edits frozen S4", () => {
+	it("derives one runtime repair Slice per failed CASE and never writes an S4 document", () => {
 		const fixture = makeFixture();
-		const before = readFileSync(join(fixture.root, "plans", fixture.slug, "s4-coordination.md"), "utf8");
+		const s4 = join(fixture.root, "plans", fixture.slug, "s4-coordination.md");
+		const pml = join(fixture.root, "plans", fixture.slug, "s4-coordination.pml");
+		const before = readFileSync(s4, "utf8");
+		const beforePml = readFileSync(pml, "utf8");
 		const result = deriveRepairSlices({ aggregateResult: failingAggregate });
 		expect(result.ok).toBe(true);
 		expect(result.retryRequired).toBe(false);
@@ -1664,19 +1345,14 @@ describe("deriveRepairSlices", () => {
 		expect(slice.depends_on).toEqual([]);
 		expect(slice.defects).toContain("developer_score 88 is below threshold 95");
 		expect(slice.done_when).toContain("95/100");
-		expect(result.frozenS4Modified).toBe(false);
-		const after = readFileSync(join(fixture.root, "plans", fixture.slug, "s4-coordination.md"), "utf8");
-		expect(after).toBe(before);
+		expect(readFileSync(s4, "utf8")).toBe(before);
+		expect(readFileSync(pml, "utf8")).toBe(beforePml);
+		expect(existsSync(join(fixture.root, "plans", fixture.slug, "s4-coordination.repair.md"))).toBe(false);
 	});
 
 	it("returns no slices for PASS and a retry for INCOMPLETE anomalies", () => {
 		const passed = deriveRepairSlices({
-			aggregateResult: {
-				ok: true,
-				verdict: "PASS",
-				contract: { missionId: "mission-1", revision: 1 },
-				rows: [],
-			},
+			aggregateResult: { ok: true, verdict: "PASS", contract: { missionId: "mission-1", revision: 1 }, rows: [] },
 		});
 		expect(passed.ok).toBe(true);
 		expect(passed.repairSlices).toEqual([]);
@@ -1705,9 +1381,7 @@ describe("deriveRepairSlices", () => {
 				{ caseId: "CASE-A-1", defects: ["two"], evidencePaths: [] },
 			],
 		};
-		const result = deriveRepairSlices({
-			aggregateResult: { ...failingAggregate, repairSpec: shared },
-		});
+		const result = deriveRepairSlices({ aggregateResult: { ...failingAggregate, repairSpec: shared } });
 		const ids = result.repairSlices.map((slice) => slice.slice_id);
 		expect(new Set(ids).size).toBe(2);
 	});

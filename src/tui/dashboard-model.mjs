@@ -1,9 +1,13 @@
 /**
  * Pure dashboard model for Herdchestra Lite.
  *
- * Input: one control-state snapshot (`mission`, `slices`, `boards`, `audit`,
- * `focus`, `now`). Output: the compact view, the expanded five-layer view, the
- * audit score table, and the `/herd-status` text.
+ * Input: one control-state snapshot (`mission`, `workspaces`, `boards`,
+ * `audit`, `focus`, `now`). Output: the compact view, the expanded five-layer
+ * tenure view, the K-audit score table, and the `/herd-status` text.
+ *
+ * The board is also the review ledger: one flat task map per tenure plus
+ * reviewer findings. The model never writes stage documents; it shows which
+ * attach is expected and whether the review board is open or quiescent.
  *
  * This module owns every user-visible status word, count, waiting chain and
  * score. The TUI widget only chooses lines and width; `/herd-status` prints the
@@ -22,7 +26,6 @@ export const USER_STATES = Object.freeze({
 });
 
 export const AUDIT_PHASES = Object.freeze([
-	Object.freeze({ key: "contract", label: "契约复核" }),
 	Object.freeze({ key: "start", label: "审计员启动" }),
 	Object.freeze({ key: "submit", label: "逐 CASE 提交" }),
 	Object.freeze({ key: "aggregate", label: "汇总" }),
@@ -171,6 +174,30 @@ const normalizeStage = (value) => {
 	return embedded ? `S${embedded[1]}` : null;
 };
 
+export const STAGE_ATTACH = Object.freeze({
+	S1: Object.freeze({ tool: "attach_brainstorm", document: "brainstorm.md" }),
+	S2: Object.freeze({ tool: "attach_manual_tests", document: "s2-cases.edn" }),
+	S3: Object.freeze({ tool: "attach_dev_guide", document: "dev-guide.md" }),
+	S4: Object.freeze({ tool: "attach_coordination", document: "coordination.md" }),
+});
+
+const normalizeTenure = (mission) => {
+	const raw = field(mission, "tenure", "tenureId", "tenure_id", "term", "termId", "term_id");
+	if (isRecord(raw)) {
+		const index = integerOrNull(field(raw, "index", "term", "number", "n"));
+		const id = atom(field(raw, "id", "term_id", "termId", "name")) ?? (index === null ? null : `T-${index}`);
+		return {
+			id,
+			index,
+			askUsed: boolValue(field(raw, "initialAskUsed", "initial_ask_used", "askUsed", "ask_used")),
+		};
+	}
+	const text = atom(raw);
+	if (!text) return { id: null, index: null, askUsed: false };
+	const numeric = /^(?:t-?)?(\d+)$/i.exec(text);
+	return { id: text, index: numeric ? Number(numeric[1]) : null, askUsed: false };
+};
+
 const normalizeUserState = (value) => {
 	const text = tokenText(value);
 	if (!text) return null;
@@ -263,8 +290,35 @@ const normalizeMission = (mission, now, degradation) => {
 	const tokens = normalizeTokens(mission);
 	const outcome = normalizeOutcome(mission);
 	const reportPath = atom(field(mission, "reportPath", "report_path", "report"));
-	const contractLine = atom(field(mission, "contractLine", "contract_line"));
-	const revision = integerOrNull(field(mission, "revision", "rev"));
+	const tenure = normalizeTenure(mission);
+	const stageAttach = stage === null ? undefined : STAGE_ATTACH[stage];
+	const attachedDocuments = unique(
+		asArray(field(mission, "attached", "attachedDocuments", "attached_documents", "deliveredDocuments"))
+			.map((value) => atom(value))
+			.filter(Boolean),
+	);
+	const explicitAttachReady = field(mission, "attachReady", "attach_ready");
+	const attachReady =
+		explicitAttachReady === undefined
+			? stageAttach !== undefined && attachedDocuments.includes(stageAttach.document)
+			: boolValue(explicitAttachReady);
+	const attach = {
+		ready: attachReady,
+		expectedTool: attachReady
+			? null
+			: (atom(
+					field(mission, "attachExpected", "attach_expected", "expectedAttach", "expected_attach", "expectedTool"),
+				) ??
+				stageAttach?.tool ??
+				null),
+		expectedDocument: attachReady
+			? null
+			: (atom(
+					field(mission, "attachDocument", "attach_document", "expectedDocument", "expected_document", "deliverable"),
+				) ??
+				stageAttach?.document ??
+				null),
+	};
 
 	if (userStateKey === "undelivered") {
 		if (!outcome.reason) {
@@ -282,8 +336,8 @@ const normalizeMission = (mission, now, degradation) => {
 		slug: slug ?? null,
 		title,
 		stage,
-		revision,
-		contractLine,
+		tenure,
+		attach,
 		userStateKey,
 		userState: USER_STATES[userStateKey],
 		approval: approved,
@@ -301,7 +355,8 @@ const normalizeSliceStatus = (value) => {
 	const normalized = text.toLowerCase().replaceAll("_", "-");
 	if (/^(running|active|in-progress|working|started)$/.test(normalized)) return "running";
 	if (/^(queued|pending|waiting|ready)$/.test(normalized)) return "queued";
-	if (/^(joined|merged|done|completed|finished)$/.test(normalized)) return "joined";
+	if (/^(reviewing|review|auditing)$/.test(normalized)) return "reviewing";
+	if (/^(joined|merged|done|completed|finished)$/.test(normalized)) return "done";
 	if (/^(abandoned|cancelled|canceled|failed|stopped)$/.test(normalized)) return "abandoned";
 	return "unknown";
 };
@@ -328,7 +383,7 @@ const normalizeSlices = (input, degradation) => {
 	}
 	const singleSlice =
 		isRecord(input) &&
-		(field(input, "slice_id", "sliceId", "worktree", "worktree_path", "worktreePath", "id") !== undefined ||
+		(field(input, "slice_id", "sliceId", "workspace", "workspace_path", "workspacePath", "id") !== undefined ||
 			field(input, "status", "state", "phase") !== undefined);
 	const entries =
 		input instanceof Map
@@ -346,7 +401,7 @@ const normalizeSlices = (input, degradation) => {
 			slices.push({
 				id,
 				status: normalizeSliceStatus(field(raw, "status", "state", "phase")),
-				worktree: atom(field(raw, "worktree", "worktree_path", "worktreePath", "path")),
+				reviewer: atom(field(raw, "reviewer", "owner", "owner_id", "ownerId", "agent", "agent_id", "agentId")),
 				rootTaskCount: integerOrNull(field(raw, "rootTaskCount", "root_task_count", "roots")),
 				lastEvent: summarizeEvent(field(raw, "lastEvent", "last_event", "recentEvent", "event")),
 			});
@@ -356,7 +411,7 @@ const normalizeSlices = (input, degradation) => {
 			slices.push({
 				id,
 				status: normalizeSliceStatus(raw),
-				worktree: undefined,
+				reviewer: undefined,
 				rootTaskCount: null,
 				lastEvent: undefined,
 			});
@@ -390,8 +445,15 @@ const normalizeTask = (raw, key, index) => {
 	return {
 		id,
 		title,
-		state: normalizeTaskState(field(raw, "state", "status")),
+		state: boolValue(field(raw, "waiting"))
+			? "waiting"
+			: normalizeTaskState(field(raw, "state", "status")),
 		parent: atom(field(raw, "parent", "parent_id", "parentId")),
+		children: unique(
+			asArray(field(raw, "child_keys", "childKeys", "child-keys", "children"))
+				.map((value) => atom(value))
+				.filter(Boolean),
+		),
 		waitFor: unique(waitFor),
 		needsToken: boolValue(field(raw, "needs_token", "needsToken", "token")),
 		owner: atom(field(raw, "owner", "owner_id", "ownerId", "assignee", "agent_id", "agentId")),
@@ -527,6 +589,56 @@ const normalizeWriteLocks = (input) => {
 	return locks;
 };
 
+const normalizeFindings = (value) => {
+	const findings = [];
+	for (const [key, raw] of asEntries(value)) {
+		if (isRecord(raw)) {
+			const findingKey = atom(field(raw, "key", "id", "finding_key", "findingKey")) ?? atom(key);
+			const findingValue = atom(field(raw, "value", "text", "finding", "summary", "note"));
+			if (findingKey && findingValue) findings.push({ key: findingKey, value: findingValue });
+			continue;
+		}
+		const findingKey = atom(key);
+		const findingValue = atom(raw);
+		if (findingKey && findingValue) findings.push({ key: findingKey, value: findingValue });
+	}
+	return findings;
+};
+
+const normalizeReview = (raw) => {
+	const present =
+		field(
+			raw,
+			"review",
+			"review_ledger",
+			"reviewLedger",
+			"review-board",
+			"reviewBoard",
+			"findings",
+			"summary_markdown",
+			"summaryMarkdown",
+		) !== undefined;
+	const value = field(raw, "review", "review_ledger", "reviewLedger", "review-board", "reviewBoard");
+	const board = isRecord(value) ? value : raw;
+	const byKey = new Map();
+	for (const finding of normalizeFindings(
+		field(board, "findings", "open_findings", "openFindings", "review_findings"),
+	)) {
+		byKey.set(finding.key, finding.value);
+	}
+	const findings = [...byKey.entries()].map(([key, findingValue]) => ({ key, value: findingValue }));
+	const summaryMarkdown = atom(
+		field(board, "summary_markdown", "summaryMarkdown", "review_summary", "reviewSummary"),
+	);
+	return {
+		present,
+		summaryMarkdown,
+		findings,
+		open: present && findings.length > 0,
+		quiescent: present && findings.length === 0,
+	};
+};
+
 const normalizeBoard = (raw) => {
 	const tasksRaw = field(raw, "tasks", "task_map", "taskMap");
 	const tasks = [];
@@ -573,20 +685,42 @@ const normalizeBoard = (raw) => {
 				.map((task) => task.id),
 		);
 	}
+	const review = normalizeReview(raw);
+	const tenure = normalizeTenure(raw);
+	const lock = normalizeWriteLock(
+		field(raw, "lock", "board_lock", "boardLock", "board-lock", "write_lock", "writeLock", "write-lock"),
+	);
 	return {
-		sliceId: atom(field(raw, "slice_id", "sliceId", "id")),
+		sliceId: atom(field(raw, "slice_id", "sliceId", "id", "workspace_id", "workspaceId")),
+		stage: normalizeStage(field(raw, "stage", "current_stage", "currentStage")),
 		version: integerOrNull(field(raw, "board_version", "boardVersion", "version")),
+		tenure,
+		review,
 		tasks,
 		actions,
 		actors,
 		tokenSlot,
-		writeLock: normalizeWriteLock(field(raw, "write_lock", "writeLock", "write-lock", "writeGate", "write_gate")),
+		lock,
 	};
 };
 
 const looksLikeBoard = (value) =>
 	isRecord(value) &&
-	["tasks", "task_map", "taskMap", "actions", "actors", "token-slot", "tokenSlot", "write-lock", "writeLock"].some(
+	[
+		"tasks",
+		"task_map",
+		"taskMap",
+		"actions",
+		"actors",
+		"token-slot",
+		"tokenSlot",
+		"review",
+		"findings",
+		"tenure",
+		"board_lock",
+		"write-lock",
+		"writeLock",
+	].some(
 		(key) => key in value,
 	);
 
@@ -650,10 +784,15 @@ const taskLookup = (board) => new Map((board?.tasks ?? []).map((task) => [task.i
 const rootTasks = (board) => {
 	const tasks = board?.tasks ?? [];
 	const byId = taskLookup(board);
-	return tasks.filter((task) => !task.parent || !byId.has(task.parent));
+	const declared = new Set(tasks.flatMap((task) => task.children));
+	return tasks.filter((task) => (!task.parent || !byId.has(task.parent)) && !declared.has(task.id));
 };
 
-const childrenOf = (board, parentId) => (board?.tasks ?? []).filter((task) => task.parent === parentId);
+const childrenOf = (board, parentId) => {
+	const parent = taskLookup(board).get(parentId);
+	const declared = new Set(parent?.children ?? []);
+	return (board?.tasks ?? []).filter((task) => task.parent === parentId || declared.has(task.id));
+};
 
 const sortTasks = (tasks) => {
 	const rank = { waiting: 0, ready: 1, unknown: 2, done: 3 };
@@ -684,20 +823,56 @@ const renderTaskForest = (board) => {
 	return lines;
 };
 
-const renderFleet = (slices, boards, stage) => {
-	if (slices.length === 0) {
-		return [stage === "S5" ? "尚无 Slice（尚未 fork）" : "尚无 Slice（S1–S4 不创建 Slice）"];
+const attachLine = (attach) =>
+	attach.ready
+		? "交付物 已 attach"
+		: `交付物 待 attach · 下一步 ${attach.expectedTool ?? "attach"}${
+				attach.expectedDocument ? ` → ${attach.expectedDocument}` : ""
+			}`;
+
+const reviewLine = (review, stage) => {
+	if (!review?.present) return "审查 尚无 review 记录";
+	if (review.open) return `审查 发现 ${review.findings.length} 项 · wake-all`;
+	return stage === "S5" ? "审查 quiescent · 进入 K 审计" : "审查 quiescent";
+};
+
+const renderTenure = (mission, board, review) => {
+	const lines = [
+		`阶段 ${mission.stage ?? "—"} · 任期 ${mission.tenure.id ?? "—"}${
+			board?.version !== null && board?.version !== undefined ? ` · 板 v${board.version}` : ""
+		}`,
+		mission.stage === "S5" ? "工作区 单一主工作区 · Reviewer 1 · Swarm board 1" : attachLine(mission.attach),
+		reviewLine(review, mission.stage),
+	];
+	if (board?.tenure?.askUsed) lines.push("首问已用");
+	if (review?.summaryMarkdown) lines.push(`审查摘要 ${review.summaryMarkdown}`);
+	if (review?.open) lines.push(`findings: ${review.findings.map((entry) => entry.key).join(", ")}`);
+	return lines;
+};
+
+const renderWorkspaces = (workspaces, boards, stage) => {
+	if (workspaces.length === 0) {
+		return [stage === "S5" ? "尚无工作区（S5 为单一主工作区）" : "尚无工作区（S1–S4 只有 Plan tenure）"];
 	}
 	const lines = [];
-	for (const slice of slices.slice(0, MAX_LIST_LINES)) {
-		const board = boardFor(boards, slice.id);
-		const roots = board ? rootTasks(board).length : (slice.rootTaskCount ?? 0);
-		const parts = [`${slice.id}`, `:${slice.status}`, `根任务 ${roots}`];
-		if (slice.worktree) parts.push(slice.worktree);
-		if (slice.lastEvent) parts.push(`最近: ${slice.lastEvent}`);
+	for (const workspace of workspaces.slice(0, MAX_LIST_LINES)) {
+		const board = boardFor(boards, workspace.id);
+		const roots = board ? rootTasks(board).length : (workspace.rootTaskCount ?? 0);
+		const parts = [
+			`${workspace.id}`,
+			`:${workspace.status}`,
+			`Reviewer ${workspace.reviewer ?? "—"}`,
+			`根任务 ${roots}`,
+		];
+		if (board?.review?.present) {
+			parts.push(
+				board.review.open ? `findings ${board.review.findings.length} · wake-all` : "findings 0 · quiescent",
+			);
+		}
+		if (workspace.lastEvent) parts.push(`最近: ${workspace.lastEvent}`);
 		lines.push(parts.join(" · "));
 	}
-	if (slices.length > MAX_LIST_LINES) lines.push(`… 其余 ${slices.length - MAX_LIST_LINES} 个 Slice`);
+	if (workspaces.length > MAX_LIST_LINES) lines.push(`… 其余 ${workspaces.length - MAX_LIST_LINES} 个工作区`);
 	return lines;
 };
 
@@ -732,9 +907,9 @@ const renderToken = (board) => {
 
 const renderWriteLock = (board) => {
 	if (!board) return ["看板未加载"];
-	const lock = board.writeLock;
-	if (!lock?.holder) return ["W 空闲"];
-	const parts = [`持有人 ${lock.holder.agentId ?? "agent —"}`];
+	const lock = board.lock;
+	if (!lock?.holder) return ["board.lock 空闲"];
+	const parts = ["board.lock", `持有人 ${lock.holder.agentId ?? "agent —"}`];
 	if (lock.holder.termId) parts.push(`term ${lock.holder.termId}`);
 	if (lock.action) parts.push(`动作 ${lock.action}`);
 	parts.push(`队列 ${lock.queue.length}`);
@@ -914,7 +1089,7 @@ const finalizeCaseRow = (row) => {
 
 const resolvePhaseIndex = (audit, counts) => {
 	const explicitIndex = integerOrNull(field(audit, "phaseIndex", "phase_index", "phaseNumber", "phase_number"));
-	if (explicitIndex !== null && explicitIndex >= 0 && explicitIndex <= 4) return explicitIndex;
+	if (explicitIndex !== null && explicitIndex >= 0 && explicitIndex <= 3) return explicitIndex;
 	const phaseText = tokenText(field(audit, "phase", "phaseKey", "phase_key", "status", "stage"));
 	if (phaseText) {
 		const normalized = phaseText.toLowerCase().replaceAll("_", "-");
@@ -922,15 +1097,15 @@ const resolvePhaseIndex = (audit, counts) => {
 		if (byKey >= 0) return byKey;
 		const byLabel = AUDIT_PHASES.findIndex((phase) => phase.label === phaseText);
 		if (byLabel >= 0) return byLabel;
-		const numeric = /^([1-5])$/.exec(normalized);
+		const numeric = /^([1-4])$/.exec(normalized);
 		if (numeric) return Number(numeric[1]) - 1;
-		if (/^(auditors?|starting|launch|launching)$/.test(normalized)) return 1;
-		if (/^(cases?|collecting|submissions?|submitted|running)$/.test(normalized)) return 2;
-		if (/^(summary|aggregation|aggregating)$/.test(normalized)) return 3;
-		if (/^(closed|done|finished)$/.test(normalized)) return 4;
-		if (/^(rework|repair|approval|report)$/.test(normalized)) return 4;
+		if (/^(auditors?|starting|launch|launching)$/.test(normalized)) return 0;
+		if (/^(cases?|collecting|submissions?|submitted|running)$/.test(normalized)) return 1;
+		if (/^(summary|aggregation|aggregating)$/.test(normalized)) return 2;
+		if (/^(closed|done|finished)$/.test(normalized)) return 3;
+		if (/^(rework|repair|approval|report)$/.test(normalized)) return 3;
 	}
-	if (boolValue(field(audit, "closed", "finished"))) return 4;
+	if (boolValue(field(audit, "closed", "finished"))) return 3;
 	if (counts.submitted > 0) return 2;
 	return 0;
 };
@@ -1023,7 +1198,7 @@ const normalizeAudit = (input, degradation) => {
 		: explicitActive === undefined
 			? counts.total > 0 || field(audit, "phase", "phaseIndex", "phase_index") !== undefined
 			: boolValue(explicitActive);
-	const phaseIndex = closed ? 4 : resolvePhaseIndex(audit, counts);
+	const phaseIndex = closed ? 3 : resolvePhaseIndex(audit, counts);
 	const phaseKey = counts.total > 0 || active ? AUDIT_PHASES[phaseIndex].key : null;
 	const phases = AUDIT_PHASES.map((phase, index) => ({
 		...phase,
@@ -1052,23 +1227,23 @@ const normalizeAudit = (input, degradation) => {
 	};
 };
 
-const buildSliceSummary = (slices, stage) => {
-	const counts = { running: 0, queued: 0, joined: 0, abandoned: 0, unknown: 0, total: slices.length };
-	for (const slice of slices) counts[slice.status] = (counts[slice.status] ?? 0) + 1;
+const buildWorkspaceSummary = (workspaces, stage) => {
+	const counts = { running: 0, reviewing: 0, done: 0, abandoned: 0, unknown: 0, total: workspaces.length };
+	for (const workspace of workspaces) counts[workspace.status] = (counts[workspace.status] ?? 0) + 1;
 	const filled =
 		counts.total === 0
 			? 0
-			: Math.max(0, Math.min(PROGRESS_WIDTH, Math.round((counts.joined / counts.total) * PROGRESS_WIDTH)));
+			: Math.max(0, Math.min(PROGRESS_WIDTH, Math.round((counts.done / counts.total) * PROGRESS_WIDTH)));
 	const bar = `${"█".repeat(filled)}${"░".repeat(PROGRESS_WIDTH - filled)}`;
 	if (counts.total === 0) {
-		const emptyLabel = stage === "S5" ? "Slice 0 · 尚未 fork" : "Slice 0 · 尚未进入 S5";
+		const emptyLabel = stage === "S5" ? "工作区 0 · 主工作区未启动" : "工作区 0 · S1–S4 只有 Plan tenure";
 		return { counts, progressBar: `[${bar}]`, label: emptyLabel, line: emptyLabel };
 	}
 	const parts = [
-		`Slice ${counts.total} [${bar}]`,
+		`工作区 ${counts.total} [${bar}]`,
 		`运行 ${counts.running}`,
-		`排队 ${counts.queued}`,
-		`合入 ${counts.joined}`,
+		`审查 ${counts.reviewing}`,
+		`完成 ${counts.done}`,
 		`放弃 ${counts.abandoned}`,
 	];
 	if (counts.unknown > 0) parts.push(`未知 ${counts.unknown}`);
@@ -1080,7 +1255,7 @@ const buildSliceSummary = (slices, stage) => {
 	};
 };
 
-const buildCompact = ({ mission, sliceSummary, focus, audit, degradation }) => {
+const buildCompact = ({ mission, workspaceSummary, focus, review, audit, degradation }) => {
 	if (!mission) {
 		const lines = singleLines([
 			"Herdchestra Lite · 无活跃使命",
@@ -1094,11 +1269,19 @@ const buildCompact = ({ mission, sliceSummary, focus, audit, degradation }) => {
 		? `Herdchestra Lite · ${mission.title === mission.slug ? mission.slug : `${mission.title} · ${mission.slug}`}`
 		: `Herdchestra Lite · ${mission.title}`;
 	lines.push(title);
-	const status = [`状态 ${mission.userState}`, `阶段 ${mission.stage ?? "—"}`];
+	const status = [
+		`状态 ${mission.userState}`,
+		`阶段 ${mission.stage ?? "—"}`,
+		`任期 ${mission.tenure.id ?? "—"}`,
+	];
 	if (mission.elapsedLabel) status.push(`耗时 ${mission.elapsedLabel}`);
 	if (mission.tokens.label) status.push(`Token ${mission.tokens.label}`);
 	lines.push(status.join(" · "));
-	lines.push(sliceSummary.line);
+	lines.push(workspaceSummary.line);
+	lines.push(
+		mission.stage === "S5" ? "工作区 单一主工作区 · Reviewer 1 · Swarm board 1" : attachLine(mission.attach),
+	);
+	lines.push(reviewLine(review, mission.stage));
 	lines.push(`焦点 ${focus.line}`);
 	if (mission.userStateKey === "undelivered") {
 		lines.push(`原因 ${mission.outcome.reason} · 教训 ${mission.outcome.lessons}`);
@@ -1120,14 +1303,12 @@ const buildCompact = ({ mission, sliceSummary, focus, audit, degradation }) => {
 	return { regime: "compact", lines: safeLines, text: safeLines.join("\n"), essentialCount };
 };
 
-const buildAuditPanel = (audit, mission) => {
+const buildAuditPanel = (audit) => {
 	const layers = AUDIT_PHASES.map((phase, index) => {
 		const status = audit.phases[index].status;
 		const marker = status === "done" ? "[完成]" : status === "current" ? "[当前]" : "[待]";
 		const lines = [];
-		if (phase.key === "contract") {
-			lines.push(`revision ${mission?.revision ?? "—"} · 契约行 ${mission?.contractLine ?? "—"}`);
-		} else if (phase.key === "start") {
+		if (phase.key === "start") {
 			lines.push(
 				`审计员 ${audit.auditors > 0 ? `${audit.auditors} 名` : "数量未提供"} · CASE ${audit.counts.total} 个`,
 			);
@@ -1167,7 +1348,7 @@ const buildAuditPanel = (audit, mission) => {
 	};
 };
 
-const buildExpanded = ({ mission, slices, boards, focus, audit, degradation }) => {
+const buildExpanded = ({ mission, slices, boards, focus, review, audit, degradation }) => {
 	if (!mission) {
 		const lines = singleLines([
 			"Herdchestra Lite · 无活跃使命",
@@ -1176,14 +1357,18 @@ const buildExpanded = ({ mission, slices, boards, focus, audit, degradation }) =
 		]);
 		return { regime: "expanded", layers: [], lines, text: lines.join("\n"), essentialCount: 2 };
 	}
-	if (audit.active) return buildAuditPanel(audit, mission);
+	if (audit.active) return buildAuditPanel(audit);
 	const selectedSliceId = focus.sliceId ?? slices[0]?.id ?? null;
 	const board = boardFor(boards, selectedSliceId);
 	const layers = [
-		{ key: "fleet", title: "0. Fleet 总览", lines: renderFleet(slices, boards, mission.stage) },
+		{
+			key: "tenure",
+			title: "0. 任期与交付物",
+			lines: [...renderTenure(mission, board, review), ...renderWorkspaces(slices, boards, mission.stage)],
+		},
 		{
 			key: "tasks",
-			title: `1. 任务树 · ${selectedSliceId ?? "无 Slice"}`,
+			title: "1. 任务树 · review board",
 			lines: [
 				"图例：等待解除回 :ready；只有 :done 表示任务完成。",
 				...(board ? renderTaskForest(board) : ["看板未加载"]),
@@ -1191,7 +1376,7 @@ const buildExpanded = ({ mission, slices, boards, focus, audit, degradation }) =
 		},
 		{ key: "slots", title: "2. 槽位与个体", lines: renderSlots(board) },
 		{ key: "token", title: "3. 令牌与责任", lines: renderToken(board) },
-		{ key: "write-lock", title: "4. 写锁 W", lines: renderWriteLock(board) },
+		{ key: "lock", title: "4. board.lock", lines: renderWriteLock(board) },
 	];
 	const safeLayers = layers.map((layer) => ({ ...layer, lines: singleLines(layer.lines) }));
 	const lines = [];
@@ -1233,6 +1418,7 @@ const deepFreeze = (value) => {
  *
  * @param {{
  *   mission?: object,
+ *   workspaces?: object[] | Map<string, object> | Record<string, object>,
  *   slices?: object[] | Map<string, object> | Record<string, object>,
  *   boards?: object[] | Map<string, object> | Record<string, object>,
  *   audit?: object,
@@ -1247,31 +1433,44 @@ export function deriveDashboard(input = {}) {
 	const now = toTimestamp(input.now) ?? Date.now();
 	const degradation = [];
 	const mission = normalizeMission(input.mission, now, degradation);
-	const slices = normalizeSlices(input.slices, degradation);
+	const slices = normalizeSlices(input.workspaces ?? input.slices, degradation);
 	const boards = normalizeBoards(input.boards, slices, degradation);
 	const writeLocks = normalizeWriteLocks(input.writeLock ?? input.locks);
-	const sliceIds = sliceIdsOf(slices, boards);
-	const sliceRows = sliceIds.map(
+	const workspaceIds = sliceIdsOf(slices, boards);
+	const sliceRows = workspaceIds.map(
 		(id) =>
-			slices.find((slice) => slice.id === id) ?? { id, status: "unknown", worktree: undefined, rootTaskCount: null },
+			slices.find((slice) => slice.id === id) ?? {
+				id,
+				status: "unknown",
+				reviewer: undefined,
+				rootTaskCount: null,
+			},
 	);
 	const audit = normalizeAudit(input.audit, degradation);
 	const focus = normalizeFocus(input.focus, sliceRows, boards);
 	const focusBoard = boardFor(boards, focus.sliceId);
-	if (focusBoard && !focusBoard.writeLock && writeLocks.size > 0) {
+	if (focusBoard && !focusBoard.lock && writeLocks.size > 0) {
 		const lock =
 			writeLocks.get(focus.sliceId) ??
 			writeLocks.get("") ??
 			(writeLocks.size === 1 ? writeLocks.values().next().value : undefined);
-		if (lock) focusBoard.writeLock = lock;
+		if (lock) focusBoard.lock = lock;
 	}
-	const sliceSummary = buildSliceSummary(sliceRows, mission?.stage ?? null);
-	const compact = buildCompact({ mission, sliceSummary, focus, audit, degradation });
-	const expanded = buildExpanded({ mission, slices: sliceRows, boards, focus, audit, degradation });
+	const review =
+		focusBoard?.review?.present === true ? { ...focusBoard.review, stage: mission?.stage ?? null } : null;
+	const workspaceSummary = buildWorkspaceSummary(sliceRows, mission?.stage ?? null);
+	const compact = buildCompact({ mission, workspaceSummary, focus, review, audit, degradation });
+	const expanded = buildExpanded({ mission, slices: sliceRows, boards, focus, audit, review, degradation });
 	const status = {
 		userState: mission?.userState ?? null,
 		userStateKey: mission?.userStateKey ?? null,
 		stage: mission?.stage ?? null,
+		tenure: mission?.tenure.id ?? null,
+		attachReady: mission?.attach.ready ?? false,
+		expectedAttach: mission?.attach.expectedTool ?? null,
+		reviewOpen: review?.open ?? false,
+		findings: review?.findings.length ?? 0,
+		singleWorkspace: mission?.stage === "S5",
 		compactText: compact.text,
 		verboseText: expanded.text,
 		text: compact.text,
@@ -1280,8 +1479,9 @@ export function deriveDashboard(input = {}) {
 		version: DASHBOARD_MODEL_VERSION,
 		empty: mission === null,
 		mission,
-		slices: { items: sliceRows, ...sliceSummary },
+		workspaces: { items: sliceRows, ...workspaceSummary },
 		focus,
+		review,
 		audit,
 		compact,
 		expanded,

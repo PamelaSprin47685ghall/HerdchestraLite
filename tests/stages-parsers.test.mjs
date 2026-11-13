@@ -1,12 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import {
-	normalizeCaseSpecs,
-	validateModuleCoverage,
-	validateS1,
-	validateS2,
-	validateS3,
-	validateS4,
-} from "../src/stages/parsers.mjs";
+import { normalizeCaseSpecs, validateS1, validateS2, validateS3, validateS4 } from "../src/stages/parsers.mjs";
 
 const S1_DOC = [
 	"# S1",
@@ -74,89 +67,30 @@ const CASE_IDS = CASES.map((entry) => entry.case_id);
 
 const S3_DOC = [
 	"# S3 开发指南",
-	"## 模块边界",
-	"每个模块只隐藏一个变化点。",
-	"## 依赖图",
-	"`src/b.mjs` 依赖 `src/a.mjs`。",
+	"## 目标与边界",
+	"先交付只读健康检查，再交付可写入口。",
+	"## 架构",
+	"每个模块只隐藏一个变化点；依赖保持单向。",
+	"## 实现步骤",
+	"先落解析器，再接门禁，最后接命令行。",
 	"## 失败隔离",
-	"校验失败不保存。",
-	"## CASE 对应表",
-	"每个 CASE 有模块映射。",
+	"校验失败不保存，也不推进阶段。",
 ].join("\n\n");
 
-const S3_PAYLOAD_DOC = [
-	"# S3 开发指南",
-	"## 模块契约",
-	"每个模块守住一个变化秘密。",
-	"## 模块 DAG",
-	"模块依赖单向，无环。",
-	"## 用例到模块的映射",
-	"结构性映射由 modules[].mapped_cases 承载。",
-].join("\n\n");
-
-const MODULES = [
-	{
-		path: "src/a.mjs",
-		secret_owned: "变化点 A",
-		depends_on: [],
-		mapped_cases: ["CASE-01", "CASE-02", "CASE-03"],
-	},
-	{
-		path: "src/b.mjs",
-		secret_owned: "变化点 B",
-		depends_on: ["src/a.mjs"],
-		mapped_cases: ["CASE-04", "CASE-05"],
-	},
-];
-
-const S4_DOC = [
-	"# S4 协调手册",
-	"## 文学化伪代码",
-	"```text",
-	"board_take_or_die(actor):",
-	"  if token is free: actor becomes holder",
-	"```",
-	"## Safety",
-	"至多一个 Holder。",
-	"## Liveness",
-	"无死锁，无睡死。",
-	"## 拓扑合并顺序",
-	"先 alpha 后 beta。",
-].join("\n\n");
-
-const S4_UPPER_DOC = S4_DOC.replace("## 拓扑合并顺序", "## 合并拓扑");
-
-const SLICES = [
-	{
-		slice_id: "alpha",
-		goal: "解析层",
-		inputs: ["S1-S4 文档"],
-		depends_on: [],
-		done_when: "全部校验有回执",
-		mapped_cases: ["CASE-01", "CASE-02", "CASE-03"],
-	},
-	{
-		slice_id: "beta",
-		goal: "集成层",
-		inputs: "alpha 的接口",
-		depends_on: ["alpha"],
-		done_when: "端到端门禁可运行",
-		mapped_cases: ["CASE-04", "CASE-05"],
-	},
-];
-
-const UPPER_SLICES = SLICES.map((slice) => ({
-	...slice,
-	slice_id: slice.slice_id.toUpperCase(),
-	depends_on: slice.depends_on.map((dependency) => dependency.toUpperCase()),
-}));
+const PROMELA = [
+	"/* 协调模型：至多一个 Holder。 */",
+	"byte holder = 0;",
+	"active proctype Coordinator() {",
+	"  holder = 1;",
+	"}",
+].join("\n");
 
 function clone(value) {
 	return structuredClone(value);
 }
 
 describe("validateS1", () => {
-	it("accepts the eight topics", () => {
+	it("accepts the eight topics from markdown alone", () => {
 		const result = validateS1(S1_DOC);
 		expect(result.ok).toBe(true);
 		expect(result.sections.map((section) => section.key)).toEqual([
@@ -175,6 +109,14 @@ describe("validateS1", () => {
 		const result = validateS1(S1_DOC.replace("## 事前验尸", "## 风险"));
 		expect(result.ok).toBe(false);
 		expect(result.errors.map((error) => error.section)).toEqual(["pre-mortem"]);
+	});
+
+	it("rejects empty and non-string markdown without reading summary fields", () => {
+		for (const value of ["", "   ", null, undefined, 42]) {
+			const result = validateS1(value);
+			expect(result.ok).toBe(false);
+			expect(result.errors[0]).toMatchObject({ field: "markdown", code: "INVALID_ARGUMENT" });
+		}
 	});
 });
 
@@ -259,6 +201,7 @@ describe("validateS2", () => {
 		const result = validateS2("# S2 方法论\n\nTesting != Checking.", clone(CASES));
 		expect(result.ok).toBe(true);
 		expect(result.cases).toEqual(CASES);
+		expect(Object.keys(result).sort()).toEqual(["cases", "errors", "ok"]);
 	});
 
 	it("ignores CASE text embedded in the markdown", () => {
@@ -277,97 +220,68 @@ describe("validateS2", () => {
 	it("rejects empty markdown even when the cases are valid", () => {
 		const result = validateS2(" ", clone(CASES));
 		expect(result.ok).toBe(false);
-		expect(result.errors[0]).toMatchObject({ field: "manual_tests_markdown", code: "CASE_SCHEMA_INVALID" });
+		expect(result.errors[0]).toMatchObject({ field: "markdown", code: "CASE_SCHEMA_INVALID" });
+	});
+
+	it("mentions neither freezing nor hashes in a successful or failed result", () => {
+		const okResult = validateS2("# S2 方法论", clone(CASES));
+		const failedResult = validateS2("# S2 方法论", []);
+		for (const result of [okResult, failedResult]) {
+			expect(JSON.stringify(result)).not.toMatch(/frozen|freeze|sha256|hash/i);
+		}
+	});
+
+	it("still rejects an invalid CASE dataset", () => {
+		const incomplete = clone(CASES).slice(0, 1);
+		const result = validateS2("# S2 方法论", incomplete);
+		expect(result.ok).toBe(false);
+		expect(result.errors.at(-1)).toMatchObject({ code: "CASE_REQUIRED_PATH_MISSING" });
 	});
 });
 
-describe("validateS3 and module coverage", () => {
-	it("accepts modules whose mapped_cases cover every frozen case", () => {
-		expect(validateS3(S3_DOC, clone(MODULES), CASE_IDS).ok).toBe(true);
-		expect(validateModuleCoverage(clone(MODULES), CASE_IDS).ok).toBe(true);
+describe("validateS3", () => {
+	it("accepts a prose guide without modules or mapped cases", () => {
+		const result = validateS3(S3_DOC);
+		expect(result.ok).toBe(true);
+		expect(Object.keys(result).sort()).toEqual(["errors", "ok"]);
 	});
 
-	it("accepts module boundaries plus a 模块 DAG heading without a CASE mapping heading", () => {
-		expect(validateS3(S3_PAYLOAD_DOC, clone(MODULES), CASE_IDS).ok).toBe(true);
+	it("does not require headings or a modules array", () => {
+		expect(validateS3("自由组织的开发指南正文。").ok).toBe(true);
 	});
 
-	it("still rejects a document with no dependency graph heading", () => {
-		const markdown = ["# S3", "## 模块契约", "只有模块边界。"].join("\n\n");
-		const result = validateS3(markdown, clone(MODULES), CASE_IDS);
-		expect(result.ok).toBe(false);
-		expect(result.errors.map((error) => error.section)).toEqual(["dependency-graph"]);
-	});
-
-	it("rejects unknown, missing, and duplicate mapped cases", () => {
-		const unknown = clone(MODULES);
-		unknown[0].mapped_cases.push("CASE-99");
-		expect(validateS3(S3_DOC, unknown, CASE_IDS).errors[0]).toMatchObject({
-			code: "MAPPED_CASE_UNKNOWN",
-			case_id: "CASE-99",
-		});
-
-		const missing = clone(MODULES);
-		missing[1].mapped_cases = ["CASE-04"];
-		expect(validateS3(S3_DOC, missing, CASE_IDS).errors.at(-1)).toMatchObject({
-			code: "MAPPED_CASE_MISSING",
-			missing: ["CASE-05"],
-		});
-
-		const duplicate = clone(MODULES);
-		duplicate[0].mapped_cases.push("CASE-01");
-		expect(validateModuleCoverage(duplicate, CASE_IDS).errors[0]).toMatchObject({
-			code: "CASE_SCHEMA_INVALID",
-			case_id: "CASE-01",
-		});
-	});
-
-	it("rejects an unknown module field and an empty case id list", () => {
-		const modules = clone(MODULES);
-		modules[0].owner = "someone";
-		expect(validateS3(S3_DOC, modules, CASE_IDS).errors[0]).toMatchObject({ field: "modules.owner" });
-		expect(validateS3(S3_DOC, clone(MODULES), []).errors[0]).toMatchObject({ field: "caseIds" });
+	it("rejects empty and non-string markdown", () => {
+		for (const value of ["", "   ", null, undefined]) {
+			const result = validateS3(value);
+			expect(result.ok).toBe(false);
+			expect(result.errors[0]).toMatchObject({ field: "markdown", code: "INVALID_ARGUMENT" });
+		}
 	});
 });
 
 describe("validateS4", () => {
-	it("accepts slices whose mapped_cases cover every frozen case", () => {
-		expect(validateS4(S4_DOC, clone(SLICES), CASE_IDS).ok).toBe(true);
+	it("accepts non-empty markdown and non-empty promela", () => {
+		const result = validateS4("# S4 协调手册", PROMELA);
+		expect(result.ok).toBe(true);
+		expect(Object.keys(result).sort()).toEqual(["errors", "ok"]);
 	});
 
-	it("accepts uppercase slice ids and 合并拓扑 as the merge-order heading", () => {
-		expect(validateS4(S4_UPPER_DOC, clone(UPPER_SLICES), CASE_IDS).ok).toBe(true);
+	it("does not parse promela content", () => {
+		expect(validateS4("# S4 协调手册", "not a promela model at all").ok).toBe(true);
 	});
 
-	it("keeps depends_on case-sensitive against the declared slice ids", () => {
-		const slices = clone(UPPER_SLICES);
-		slices[1].depends_on = ["slice-01"];
-		const result = validateS4(S4_UPPER_DOC, slices, CASE_IDS);
+	it("requires a non-empty promela string", () => {
+		for (const value of ["", "   ", null, undefined, 42]) {
+			const result = validateS4("# S4 协调手册", value);
+			expect(result.ok).toBe(false);
+			expect(result.errors).toHaveLength(1);
+			expect(result.errors[0]).toMatchObject({ field: "promela", code: "INVALID_ARGUMENT" });
+		}
+	});
+
+	it("requires non-empty markdown", () => {
+		const result = validateS4(" ", PROMELA);
 		expect(result.ok).toBe(false);
-		expect(result.errors.some((error) => error.field === "slices.depends_on" && error.dependency === "slice-01")).toBe(
-			true,
-		);
-	});
-
-	it("rejects unknown, missing, and duplicate mapped cases", () => {
-		const unknown = clone(SLICES);
-		unknown[0].mapped_cases.push("CASE-99");
-		expect(validateS4(S4_DOC, unknown, CASE_IDS).errors[0]).toMatchObject({
-			code: "MAPPED_CASE_UNKNOWN",
-			case_id: "CASE-99",
-		});
-
-		const missing = clone(SLICES);
-		missing[1].mapped_cases = ["CASE-04"];
-		expect(validateS4(S4_DOC, missing, CASE_IDS).errors.at(-1)).toMatchObject({
-			code: "MAPPED_CASE_MISSING",
-			missing: ["CASE-05"],
-		});
-
-		const duplicate = clone(SLICES);
-		duplicate[0].mapped_cases.push("CASE-01");
-		expect(validateS4(S4_DOC, duplicate, CASE_IDS).errors[0]).toMatchObject({
-			code: "CASE_SCHEMA_INVALID",
-			case_id: "CASE-01",
-		});
+		expect(result.errors[0]).toMatchObject({ field: "markdown", code: "INVALID_ARGUMENT" });
 	});
 });
