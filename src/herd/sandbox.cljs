@@ -401,8 +401,11 @@
                     (.then (fn [values]
                              {:exists true
                               :entries relative
-                              :results (vec values)}))))))))))
-
+                              :results (vec values)}))))))
+          (.catch (fn [error]
+                    (if (= "ENOENT" (.-code error))
+                      {:exists false :entries [] :results []}
+                      (throw error))))))))
 (defn stat [{:keys [path]}]
   (-> (.stat fs-promises (resolve-path path))
       (.then (fn [s] {:exists true
