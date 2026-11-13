@@ -904,6 +904,26 @@ async function requestS1Approval(deps, ctx) {
 async function applyAttachDecision(deps, ctx) {
 	const decision = ctx.decision;
 	if (decision.decision === "pending") return awaitingAttach(ctx.pending, decision.reason);
+	if (decision.decision === "deny") {
+		const cleared = await writePending(deps, ctx.root, ctx.slug, null);
+		if (!cleared.ok) return cleared;
+		return {
+			ok: true,
+			status: "denied",
+			stage: "s1",
+			slug: ctx.slug,
+			sha256: ctx.saved?.sha256 ?? null,
+			feedback: decision.feedback ?? decision.reason ?? "",
+			askUser: {
+				question:
+					decision.feedback ??
+					decision.reason ??
+					"请在对话中说明需要如何调整 S1 头脑风暴文档。",
+				context: "attach_brainstorm 的确认面板返回 deny；未提交 barrier，仍留在 S1。",
+			},
+			suppressNudge: true,
+		};
+	}
 	if (decision.decision === "revise") {
 		const revised = { ...ctx.board, "attach-ready": false };
 		const written = await writeAttachBoard(deps, ctx.root, ctx.slug, revised, {
