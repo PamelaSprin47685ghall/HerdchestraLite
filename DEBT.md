@@ -75,12 +75,6 @@
 - **影响**：`__expectedStamp` 的冲突检测弱于旧 mjs；默认面 LLM 不传该字段，影响面小。
 - **下一步**：改用 `fs.statSync(path, #js {:bigint true})` 的 `mtimeNs`，按 bigint 拆分秒与纳秒。
 
-## D25 `read` 未代理宿主 native 工具
-
-- **缺口**：`sandbox/read` 与 `cat` 同为 `fs.readFile`；规格要求 `read` 代理宿主官方 native `read`，宿主入口不可用即 fail-closed。
-- **影响**：`read` 的宿主解码/格式化语义与旧完整装配不同；两者都读真实文件，但 `read` 的“只保证可读”边界未兑现。
-- **下一步**：通过受控 Runner 捕获调用 `invokeNativeTool("read", ...)`；不可用时返回 `:HOST_API_MISMATCH`，不回退 `node:fs`。
-
 ## D30 `before_agent_start` 的工具面更新未 await
 
 - **缺口**：`apply-tool-surface!` 调 `setActiveTools` 后只挂 `.catch`，`before_agent_start` 不等待其完成。尝试把 handler 改成 `^:async` 后，SCI 在 nbb 中把 handler 注册成不可调用的对象，真实宿主会拿不到函数，因此已回退为同步 handler。

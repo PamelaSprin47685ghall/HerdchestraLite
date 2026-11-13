@@ -232,7 +232,6 @@ Question:
     (str prompt "\n\n" prompts/common-rules-text)))
 
 (defn- before-agent-start [event _ctx]
-  (apply-tool-surface!)
   (try
     #js {:systemPrompt (prompt-with-rules (.-systemPrompt event))}
     (catch :default _
