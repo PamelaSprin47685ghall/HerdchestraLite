@@ -7,8 +7,11 @@
 (defonce programs (atom {}))
 
 (def ^:private prelude
-  (str "(require '[herd.sandbox :refer [cat read stat ls write mkdir rm mv whereAll call]])\n"
-       "(require '[herd.macros :refer-macros [park unpark abandon where]])\n"))
+  (str #"""
+(require '[herd.sandbox :refer [cat read stat ls write mkdir rm mv whereAll call]])
+(require '[herd.macros :refer-macros [park unpark abandon where]])
+"""#
+       "\n"))
 
 (defn- timeout-error []
   (ex-info "program timed out" {:code :STALLED}))
@@ -32,9 +35,16 @@
 
 (defn- source [code]
   (str prelude
-       "(defn ^:async __run []\n"
+       #"""
+(defn ^:async __run []
+"""#
+       "\n"
        (ufss/unwrap code)
-       "\n)\n(__run)\n"))
+       #"""
+)
+(__run)
+"""#
+       "\n"))
 
 (defn- evaluate [code]
   (nbb/load-string (source code)))

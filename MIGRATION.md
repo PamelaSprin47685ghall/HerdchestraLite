@@ -111,3 +111,4 @@
 4. UFSS 输出策略：多行 body 顶格、先 UFSS 再 pprint、`""",` 与后续 entry 同行。
 5. `wait` 的期限暂为固定 30s；旧 evaluator/repl 测试暂停，最终以 CLJS 测试替代。
 6. `/clj-status` 取消，不再实现或注入。
+7. 所有业务 CLJS 源码（`prompts`、`sandbox`、`repl`、`main`）的字符串字面量按 UFSS 规范书写：普通文本用标准字符串，含引号/反斜杠用最小 fence，多行用顶格三引号。`ufss.cljs` 与 `bootstrap.cljs` 是自举内核，保持标准字符串。
