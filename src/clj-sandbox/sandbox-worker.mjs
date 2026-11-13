@@ -227,7 +227,7 @@ async function buildBundle(role, root, ownerId, onCallActivity, onWaitLock, sess
 	});
 }
 
-function emitParkedList(sessionKey) {
+function collectParkedList(sessionKey) {
 	const prefix = `${sessionKey}\u0000`;
 	const list = [];
 	for (const [bundleKey, built] of state.bundles.entries()) {
@@ -238,7 +238,11 @@ function emitParkedList(sessionKey) {
 			list.push({ toolName, name });
 		}
 	}
-	postFromWorker?.({ type: "parkedList", sessionKey, list });
+	return list;
+}
+
+function emitParkedList(sessionKey) {
+	postFromWorker?.({ type: "parkedList", sessionKey, list: collectParkedList(sessionKey) });
 }
 
 export function createSandboxRuntime(postMessage) {
@@ -300,6 +304,11 @@ export function createSandboxRuntime(postMessage) {
 				: { ok: false, code: "PROGRAM_UNKNOWN", name: msg.programName };
 			emitParkedList(msg.sessionKey);
 			postFromWorker?.({ type: "parkResult", id: msg.id, result });
+			return;
+		}
+
+		if (msg.type === "listParked") {
+			postFromWorker?.({ type: "parkedResult", id: msg.id, list: collectParkedList(msg.sessionKey) });
 			return;
 		}
 

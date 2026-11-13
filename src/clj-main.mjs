@@ -515,6 +515,7 @@ export function registerCljTools(pi, deps = {}) {
 		pools: new Map(),
 		pendingExecs: new Map(),
 		pendingParks: new Map(),
+		pendingParked: new Map(),
 		worker: null,
 		workerCherry: null,
 		seq: 0,
@@ -534,6 +535,10 @@ export function registerCljTools(pi, deps = {}) {
 		for (const [id, resolvePark] of state.pendingParks.entries()) {
 			state.pendingParks.delete(id);
 			resolvePark({ ok: false, code: "HOST_API_MISMATCH" });
+		}
+		for (const [id, resolveParked] of state.pendingParked.entries()) {
+			state.pendingParked.delete(id);
+			resolveParked([]);
 		}
 	};
 	const nativeRunnerProvider = typeof deps.nativeRunner === "function" ? deps.nativeRunner : null;
@@ -623,6 +628,14 @@ export function registerCljTools(pi, deps = {}) {
 			if (resolvePark) {
 				state.pendingParks.delete(msg.id);
 				resolvePark(msg.result);
+			}
+			return;
+		}
+		if (msg.type === "parkedResult") {
+			const resolveParked = state.pendingParked.get(msg.id);
+			if (resolveParked) {
+				state.pendingParked.delete(msg.id);
+				resolveParked(Array.isArray(msg.list) ? msg.list : []);
 			}
 			return;
 		}
@@ -771,6 +784,18 @@ export function registerCljTools(pi, deps = {}) {
 		return new Promise((resolvePark) => {
 			state.pendingParks.set(id, resolvePark);
 			worker.postMessage({ type: "parkOnDeadline", id, sessionKey, role, programName });
+		});
+	}
+
+	function queryParkedList(sessionKey) {
+		const worker = state.worker;
+		if (!worker) {
+			return Promise.resolve([]);
+		}
+		const id = `parked-${++state.seq}`;
+		return new Promise((resolveParked) => {
+			state.pendingParked.set(id, resolveParked);
+			worker.postMessage({ type: "listParked", id, sessionKey });
 		});
 	}
 
@@ -1050,6 +1075,7 @@ export function registerCljTools(pi, deps = {}) {
 					let hostAbort = null;
 					let hostPromise = null;
 					let settled = false;
+					let longWait = false;
 					let remainingMs = waitMs;
 					let tickingSince = null;
 					let timer = null;
@@ -1080,18 +1106,22 @@ export function registerCljTools(pi, deps = {}) {
 					};
 
 					const onDeadline = async () => {
-						if (settled) return;
-						settled = true;
-						hostAbort?.abort();
-						cleanup();
+						if (settled || longWait) return;
 						const targets = [...pool.inFlight.values()].filter((item) => !item.claimed);
 						if (targets.length === 0) {
-							resolvePromise(formatWaitingDeadlineReceipt(waitMs, pool));
+							longWait = true;
+							pauseTimer();
+							if (invokeNative === null) {
+								settled = true;
+								cleanup();
+								resolvePromise(formatWaitingDeadlineReceipt(waitMs, pool));
+							}
 							return;
 						}
 						const results = await Promise.all(
 							targets.map((item) => parkInWorker(item.sessionKey, item.role, item.programName)),
 						);
+						if (settled) return;
 						const parkedTargets = [];
 						for (let i = 0; i < targets.length; i += 1) {
 							if (results[i]?.ok) {
@@ -1100,15 +1130,24 @@ export function registerCljTools(pi, deps = {}) {
 							}
 						}
 						if (parkedTargets.length === 0) {
-							resolvePromise(formatWaitingDeadlineReceipt(waitMs, pool));
+							longWait = true;
+							pauseTimer();
+							if (invokeNative === null && pool.inFlight.size === 0) {
+								settled = true;
+								cleanup();
+								resolvePromise(formatWaitingDeadlineReceipt(waitMs, pool));
+							}
 							return;
 						}
+						settled = true;
+						hostAbort?.abort();
+						cleanup();
 						const settledItems = await Promise.all(parkedTargets.map((item) => item.donePromise));
 						resolvePromise(formatJoinedResults(settledItems, pool));
 					};
 
 					const syncTimer = () => {
-						if (settled) return;
+						if (settled || longWait) return;
 						if (pool.activeCalls.size > 0 || pool.waitingLocks.size > 0) {
 							if (timer === null) {
 								tickingSince = Date.now();
@@ -1233,7 +1272,8 @@ export function registerCljTools(pi, deps = {}) {
 					await Promise.all([...pool.startingPromises]);
 				}
 				try {
-					const parked = pool.parkedList ?? [];
+				const parked = await queryParkedList(sessionKey);
+				pool.parkedList = parked;
 				if (parked.length > 0) {
 					return toolFailure(herdError("STALE_CONTROL", "time_leap is refused while sandbox programs are parked; unpark or abandon them first", { parked, next: "call (unpark {:name ... :value ...}) or (abandon {:name ...}) first" }));
 				}

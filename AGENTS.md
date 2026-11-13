@@ -769,11 +769,11 @@ VFS 不再承载写入批次。`write`/`mkdir`/`rm`/`mv` 只通过宿主 native 
    - **能力集核验**：当前角色没有恢复该程序所需能力集，返回 `:CAPABILITY_DENIED`。
 
    通过后，`value` 原样成为原挂起表达式的返回值（内核不做二次校验；切片有效性由程序自己保证）；原程序继续执行，恢复时按新请求的 `code` 字节数重新计时。
-6. **按 `call` 自动后台化与 `wait` 期限**：`clj_*` 工具在 fork 时提前赠送共计 `1000ms` 的免费 `call` 等待额度（同一调用内多次 `call` 累计共用这 `1000ms`）：若在 `1000ms` 内完成则同步返回，一旦累计超过 `1000ms` 立即后台化并返回 `:state :forked`。LLM 通过统一的 `wait({ otherwise_independent_work })` 工具收集结果：`otherwise_independent_work` 必须反事实地说明本可以立即派发什么无依赖工作而不是调用 `wait` 死等结果；每次 `wait` 同样继续赠送 `1000ms`，等待期限为 `1000ms + UTF-8 字节数 × 50ms`，且**只对 `call` 计时，沙盒引擎自身耗时不计**。无任务时 `wait` 立刻返回 `:idle`；有积压结果时 `wait` 一次性全部返回且不阻塞；否则 `wait` 阻塞等待最先返回的一个结果（不可指定）并返回，其余任务继续在后台执行，可再次调用 `wait` 收集。`wait` 超期采用 `park-all` 语义，将所有运行中程序挂起（`:state :parked :reason :deadline`）并返回其回执，随后仍可通过指名 `(unpark {:name ... :value ...})`, `(abandon {:name ...})` 恢复。
+6. **按 `call` 自动后台化与 `wait` 期限**：`clj_*` 工具在 fork 时提前赠送共计 `1000ms` 的免费 `call` 等待额度（同一调用内多次 `call` 累计共用这 `1000ms`）：若在 `1000ms` 内完成则同步返回，一旦累计超过 `1000ms` 立即后台化并返回 `:state :forked`。LLM 通过统一的 `wait({ otherwise_independent_work })` 工具收集结果：`otherwise_independent_work` 必须反事实地说明本可以立即派发什么无依赖工作而不是调用 `wait` 死等结果；每次 `wait` 同样继续赠送 `1000ms`，等待期限为 `1000ms + UTF-8 字节数 × 50ms`，且**只对 `call` 计时，沙盒引擎自身耗时不计**。无任务时 `wait` 立刻返回 `:idle`；有积压结果时 `wait` 一次性全部返回且不阻塞；否则 `wait` 阻塞等待最先返回的一个结果（不可指定）并返回，其余任务继续在后台执行，可再次调用 `wait` 收集。`wait` 超期采用 `park-all` 语义：先尝试把所有运行中程序挂起（`:state :parked :reason :deadline`）；若至少新增一个可裁决的 `:parked` 项，返回其回执，随后可通过指名 `(unpark {:name ... :value ...})`, `(abandon {:name ...})` 恢复。若 `park-all` 是 no-op（没有新增待 `unpark` 项，包括没有未认领在途程序或全部挂起失败），本次 `wait` 不得返回 deadline 回执，而应把等待交还给宿主 `wait` 继续长阻塞；**无短等是进入长等的必要条件**。宿主 `wait` 本身不叠加沙箱预算，只受取消信号约束；沙箱的 `1000ms + UTF-8 字节数 × 50ms` 仅约束沙箱一路。
 7. **增量输出、`stdin` 灌入、未裁决提醒与 `$W$` 排队**：
    - 慢 `call` 因 `wait` 超时 `park` 时，将自上次展示以来的增量 `{:stdout ... :stderr ...}` 放入 `:payload`，满足 `sum(各次 park) + final === all`。
    - `(unpark {:name ... :value ...})` 恢复 `pendingCall` 时，字符串或 `{:stdin ... :eof ...}` 作为键盘输入灌入子进程 `stdin`。
-   - `(abandon {:name ...})` 抛弃挂起程序、丢弃未执行步骤、中止遗留 `call` 子进程释放 `$W$` 并释放内存。
+   - `(abandon {:name ...})` 抛弃挂起程序、丢弃未执行步骤、中止遗留 `call` 子进程释放 `$W$` 并释放内存。若目标程序已处于 `:completed` / `:failed`，`abandon` 必须将其从程序表清理并返回 `:cleared true` 与真实 `:state`，不得报 `:STALE_CONTROL`；重复 `unpark` 已恢复的程序仍返回 `:STALE_CONTROL`。停靠列表以 worker 实时 `parkedNames` 为准：`time_leap` 前必须向 worker 查询而不得读取主线程缓存；程序进入终态后不得继续出现在停靠提醒中。
    - `context` 钩子在每次 LLM 请求末尾总是注入 `<skill version="1.0">…</skill>` 语言纪律块强制简体中文思考与输出，并在存在未裁决 `:parked` 程序时同消息另附 `<skill version="1.0">你有以下停靠程序未裁决……</skill>` 块提醒模型裁决。
    - 同回合混发 `call` 与写操作遇到 `$W$` 被占用时排队等待（并触发后台化 `:state :forked`），先抢到锁的先执行，禁止同步 hang。
 8. **名字占用**：同名程序仍处于 `:running` / `:waiting` / `:parked` 时，新程序占用同名启动被拒 `:NAME_TAKEN`；进入 `:completed` / `:failed` 后名字可复用。同一物理工具调用（同一 `call-id`）带相同载荷再次到达，直接重放原回执；不同载荷返回 `:CALL_REPLAY_MISMATCH`。
@@ -1164,7 +1164,7 @@ Lite 不启动独立服务；控制状态由 `omp` 进程内的主会话与子�
 - **S5 槽位**：默认 4；可配置。槽位是资源，不是任务分配器；补位只让槽恢复可用。
 - **审计并发**：K 个 CASE 同时启动；运行时限制导致排队时，语义仍是全部启动，不得跳过。
 - **文件/命令上限**：文件写入 2 MiB/16 MiB/256；`call` 内联 1 MiB、日志 64 MiB；超出显式报错。
-- **期限**：1000ms + `code` 字节数 × 50ms；到期 `park`，不杀死会话。
+- **期限**：1000ms + `code` 字节数 × 50ms；到期先 `park-all`，若没有新增可裁决的 `:parked` 项则本次 `wait` 转为宿主长等，不杀死会话。
 - **Nudge/上游退避**：见 §2.7、§5.4.4。
 - **不制造虚假并发**：没有独立价值的任务不拆；拆分是为了减少真实不确定性，不是为了把看板填满。
 

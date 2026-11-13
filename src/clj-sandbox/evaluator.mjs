@@ -7856,6 +7856,15 @@ async function abandonProgram(session, { name, callerName }) {
 		fail("INVALID_ARGUMENT", "A program cannot abandon itself", { program: name });
 	}
 	if (program.state !== PARKED) {
+		if (program.state === COMPLETED || program.state === FAILED) {
+			session.programs.delete(name);
+			return data().mapFromEntries([
+				[V("name"), name],
+				[V("state"), V(program.state)],
+				[V("abandoned"), false],
+				[V("cleared"), true],
+			]);
+		}
 		fail("STALE_CONTROL", `Program ${name} is not parked`, { program: name, state: program.state });
 	}
 	await discardProgram(session, program);

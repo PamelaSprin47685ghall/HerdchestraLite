@@ -297,6 +297,28 @@ describe("clj-only async dogfood surface (parallel shard)", () => {
 		expect(readFileSync(join(root, "sliced.txt"), "utf8")).toBe("X\nx\n");
 	});
 
+	it("clears a settled program on abandon instead of failing STALE_CONTROL", async () => {
+		const { tools } = fakeHost();
+		const completed = await callTool(
+			tools,
+			"clj_devops",
+			"settled-1",
+			{ name: "settled", code: "(+ 1 2)" },
+			root,
+		);
+		expect(completed.isError).not.toBe(true);
+		const cleared = await callTool(
+			tools,
+			"clj_devops",
+			"settled-2",
+			{ name: "cleanup", code: `(abandon {:name "settled"})` },
+			root,
+		);
+		expect(cleared.isError).not.toBe(true);
+		expect(cleared.content[0].text).toContain(":cleared true");
+		expect(cleared.content[0].text).toContain(":state :completed");
+	});
+
 		it("always injects language requirement in context tail even when nothing is parked", async () => {
 		const { hooks } = fakeHost();
 		const ctxHandler = hooks.get("context")[0];
