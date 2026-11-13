@@ -77,8 +77,23 @@
 (defn cat [{:keys [path]}]
   (.readFile fs-promises (resolve-path path) "utf8"))
 
+(defn- native-text [result]
+  (cond
+    (string? result) result
+    (and result (.-content result))
+    (->> (array-seq (.-content result))
+         (keep (fn [block] (when (= "text" (.-type block)) (.-text block))))
+         (string/join ""))
+    :else (str result)))
+
 (defn read [{:keys [path]}]
-  (.readFile fs-promises (resolve-path path) "utf8"))
+  (let [native (.-__herdNative js/globalThis)
+        runner (when native ((.-getRunner native)))]
+    (when-not (and runner (.hasNativeTool runner "read"))
+      (throw (ex-info "host native read is unavailable"
+                      {:code :HOST_API_MISMATCH :path path})))
+    (-> (.invokeNativeTool runner "read" #js {:path path} #js {})
+        (.then native-text))))
 
 (defonce budgets (atom {}))
 
