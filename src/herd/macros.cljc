@@ -7,7 +7,7 @@
   (list 'await (cons 'herd.sandbox/unpark args)))
 
 (defmacro abandon [& args]
-  (list 'await (cons 'herd.sandbox/abandon args)))
+  (list 'await (cons 'herd.repl/abandon args)))
 
 (defmacro where [& args]
   (list 'await (list 'herd.sandbox/where-with-name '__herd-program-name (first args))))

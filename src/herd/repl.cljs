@@ -83,6 +83,17 @@
 (defn- parked-receipt [name value]
   (merge {:name name} value))
 
+(defn abandon [request]
+  (let [name (:name request)
+        result (sandbox/abandon request)
+        entry (get @programs name)]
+    (if (and (= :unknown (:state result))
+             (contains? #{:completed :failed} (:state entry)))
+      (do
+        (swap! programs dissoc name)
+        {:name name :state :cleared :cleared true})
+      result)))
+
 (defn- failed-receipt [name error]
   (mark-failed! name error)
   {:name name :state :failed :error (error-summary error)})
