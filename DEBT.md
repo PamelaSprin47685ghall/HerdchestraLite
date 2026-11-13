@@ -81,12 +81,6 @@
 - **影响**：`read` 的宿主解码/格式化语义与旧完整装配不同；两者都读真实文件，但 `read` 的“只保证可读”边界未兑现。
 - **下一步**：通过受控 Runner 捕获调用 `invokeNativeTool("read", ...)`；不可用时返回 `:HOST_API_MISMATCH`，不回退 `node:fs`。
 
-## D29 `glob` 的并发与条目语义
-
-- **缺口**：`:exec` 用 `Promise.all` 并发调用，没有旧实现的 worker pool；`onlyFiles` 为 false 时目录条目只返回路径，不带类型；`dot` 只过滤 basename。
-- **影响**：大量匹配时占满单线程；目录/符号链接的 glob 结果弱于旧实现。
-- **下一步**：评估 worker pool 或受控并发上限；把 `walk-entries` 的 `[full is-file]` 扩展为完整 entry 信息。
-
 ## D30 `before_agent_start` 的工具面更新未 await
 
 - **缺口**：`apply-tool-surface!` 调 `setActiveTools` 后只挂 `.catch`，`before_agent_start` 不等待其完成。尝试把 handler 改成 `^:async` 后，SCI 在 nbb 中把 handler 注册成不可调用的对象，真实宿主会拿不到函数，因此已回退为同步 handler。
