@@ -1,5 +1,4 @@
 import { beforeAll, describe, expect, it } from "bun:test";
-import { fileURLToPath } from "node:url";
 import * as nbb from "nbb";
 import { hackContext } from "../src/host/hack-context.mjs";
 import { ensureActivated } from "./helpers/nbb-boot.mjs";

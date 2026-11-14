@@ -1,8 +1,7 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { beforeAll, describe, expect, it } from "bun:test";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import * as nbb from "nbb";
 import { ensureModules } from "./helpers/nbb-boot.mjs";
 
@@ -38,7 +37,7 @@ const MODULES = [
 	"swarm/auditors",
 	"system",
 ];
-let moduleRoot;
+let _moduleRoot;
 
 beforeAll(async () => {
 	await ensureModules(MODULES);

@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import * as nbb from "nbb";
 
 import { ensureModules } from "./helpers/nbb-boot.mjs";

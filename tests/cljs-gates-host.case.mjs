@@ -1,8 +1,7 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { beforeAll, describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import * as nbb from "nbb";
 import { ensureModules } from "./helpers/nbb-boot.mjs";
 
@@ -20,7 +19,7 @@ const MODULES = [
 	"gates_host",
 ];
 const NOW = "2026-11-14T00:00:00.000Z";
-let moduleRoot;
+let _moduleRoot;
 
 beforeAll(async () => {
 	await ensureModules(MODULES);

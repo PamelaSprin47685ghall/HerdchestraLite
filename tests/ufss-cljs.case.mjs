@@ -1,6 +1,5 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import * as nbb from "nbb";
 import { ensureActivated } from "./helpers/nbb-boot.mjs";
 

@@ -1,8 +1,7 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { beforeAll, describe, expect, it } from "bun:test";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import * as nbb from "nbb";
 import { ensureModules } from "./helpers/nbb-boot.mjs";
 
@@ -39,13 +38,13 @@ const MODULES = [
 	"system",
 ];
 
-let moduleRoot;
+let _moduleRoot;
 
 beforeAll(async () => {
 	await ensureModules(MODULES);
 });
 
-const PRELUDE = String.raw`
+const PRELUDE = `
 (require '[herd.system :as system])
 
 (defn make-pi []
@@ -88,7 +87,7 @@ const PRELUDE = String.raw`
 const literal = (value) => JSON.stringify(value);
 
 async function scenario(root, body) {
-	const text = await nbb.loadString(PRELUDE + body.replaceAll("__ROOT__", literal(root)) + " (scenario)");
+	const text = await nbb.loadString(`${PRELUDE + body.replaceAll("__ROOT__", literal(root))} (scenario)`);
 	return JSON.parse(text);
 }
 
@@ -97,7 +96,7 @@ describe("CLJS dashboard removal", () => {
 		const root = await mkdtemp(join(tmpdir(), "cljs-dashboard-removed-run-"));
 		const out = await scenario(
 			root,
-			String.raw`
+			`
 (defn ^:async scenario []
   (let [pi (make-pi)
         _ (system/reset-state!)

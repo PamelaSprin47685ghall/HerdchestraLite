@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import * as nbb from "nbb";
 import { ensureActivated } from "./helpers/nbb-boot.mjs";
 
-const here = (path) => fileURLToPath(new URL("../" + path, import.meta.url));
+const here = (path) => fileURLToPath(new URL(`../${path}`, import.meta.url));
 
 const makePi = (active) => {
 	const calls = [];

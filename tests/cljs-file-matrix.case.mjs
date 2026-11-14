@@ -2,7 +2,6 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import * as nbb from "nbb";
 import { ensureModules } from "./helpers/nbb-boot.mjs";
 

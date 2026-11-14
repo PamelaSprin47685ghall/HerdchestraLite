@@ -1,8 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { beforeAll, describe, expect, it } from "bun:test";
 import * as nbb from "nbb";
 import { ensureModules } from "./helpers/nbb-boot.mjs";
 
@@ -19,7 +15,7 @@ const MODULES = [
 	"swarm/store",
 	"swarm/apply",
 ];
-let moduleRoot;
+let _moduleRoot;
 
 beforeAll(async () => {
 	await ensureModules(MODULES);
@@ -132,7 +128,7 @@ describe("CLJS board kernel", () => {
 
 		expect(out["wrong-code"]).toBe("CLAIM_CHANGED");
 		expect(out["release-ok"]).toBe(true);
-		expect(out["owner"]).toBeNull();
+		expect(out.owner).toBeNull();
 		expect(out["claim-ok"]).toBe(true);
 		expect(out["late-code"]).toBe("CLAIM_CHANGED");
 	});
@@ -266,7 +262,7 @@ describe("CLJS board kernel", () => {
                                 (get-in a2 [:receipt :claim-id]))
                  :changed-code (get-in changed [:error :code])}`}))`);
 
-		expect(out["first"]).toBe(true);
+		expect(out.first).toBe(true);
 		expect(out["second-replayed"]).toBe(true);
 		expect(out["same-claim"]).toBe(true);
 		expect(out["changed-code"]).toBe("CALL_REPLAY_MISMATCH");

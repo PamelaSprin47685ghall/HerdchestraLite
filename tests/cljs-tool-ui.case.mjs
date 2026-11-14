@@ -1,7 +1,5 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
-import * as nbb from "nbb";
 import { loadLanguageDetector } from "../src/host/language-detect.mjs";
 import { ensureActivated } from "./helpers/nbb-boot.mjs";
 

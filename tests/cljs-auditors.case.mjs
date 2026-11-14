@@ -1,8 +1,7 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import * as nbb from "nbb";
 import { ensureModules } from "./helpers/nbb-boot.mjs";
 
@@ -26,7 +25,7 @@ const MODULES = [
 	"stages/approval",
 	"swarm/auditors",
 ];
-let moduleRoot;
+let _moduleRoot;
 let workspace;
 
 beforeAll(async () => {

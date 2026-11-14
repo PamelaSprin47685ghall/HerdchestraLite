@@ -118,7 +118,7 @@ describe("CLJS host wiring", () => {
 		const handler = localPi.hooks.get("before_agent_start");
 		const start = "<!-- herdchestra:system-prompt v1 -->";
 		const end = "<!-- /herdchestra:system-prompt -->";
-		const prompt = start + "\nold rules\n" + end + "\n\nbase";
+		const prompt = `${start}\nold rules\n${end}\n\nbase`;
 		const out = await handler({ systemPrompt: prompt }, {});
 		expect(out.systemPrompt.split(start)).toHaveLength(2);
 		expect(out.systemPrompt).not.toContain("old rules");
@@ -183,7 +183,7 @@ describe("CLJS host wiring", () => {
 		);
 		expect(call.children).toHaveLength(3);
 		expect(call.children[0].text).toBe("Read Ufss State dim:--- [稳定收敛]");
-		expect(call.children[1].render(10)).toEqual(["dim:" + "─".repeat(10)]);
+		expect(call.children[1].render(10)).toEqual([`dim:${"─".repeat(10)}`]);
 		expect(call.children[2].text).toBe("(let [x 1] (+ x 1))");
 	});
 
@@ -221,7 +221,7 @@ describe("CLJS host wiring", () => {
 			{ fg: (role, text) => `${role}:${text}` },
 		);
 		expect(call.children).toHaveLength(3);
-		expect(call.children[1].render(10)).toEqual(["dim:" + "─".repeat(10)]);
+		expect(call.children[1].render(10)).toEqual([`dim:${"─".repeat(10)}`]);
 		expect(call.children[2].text).toContain("dim:$$$");
 		expect(call.children[2].text).not.toContain("secret-value-that-is-longer-than-forty-characters");
 	});
@@ -271,7 +271,7 @@ b"}`,
 			{ fg: (role, text) => `${role}:${text}` },
 		);
 		expect(call.children).toHaveLength(3);
-		expect(call.children[1].render(10)).toEqual(["dim:" + "─".repeat(10)]);
+		expect(call.children[1].render(10)).toEqual([`dim:${"─".repeat(10)}`]);
 		expect(call.children[2].text).toContain("dim:$$$");
 		expect(call.children[2].text).not.toContain("secret-value-that-is-longer-than-forty-characters");
 	});
@@ -385,7 +385,7 @@ b"}`,
 			{ fg: (role, text) => `${role}:${text}` },
 		);
 		expect(result.children).toHaveLength(2);
-		expect(result.children[0].render(10)).toEqual(["dim:" + "─".repeat(10)]);
+		expect(result.children[0].render(10)).toEqual([`dim:${"─".repeat(10)}`]);
 		expect(result.children[1].text).toContain("dim:$$$");
 		expect(result.children[1].text).not.toContain("secret-value-that-is-longer-than-forty-characters");
 	});
@@ -541,7 +541,7 @@ b"}`,
 			{ fg: (role, text) => `${role}:${text}` },
 		);
 		expect(result.children).toHaveLength(2);
-		expect(result.children[0].render(10)).toEqual(["dim:" + "─".repeat(10)]);
+		expect(result.children[0].render(10)).toEqual([`dim:${"─".repeat(10)}`]);
 		expect(result.children[1].text).toBe("output");
 	});
 });
