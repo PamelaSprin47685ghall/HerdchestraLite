@@ -538,14 +538,42 @@ Reject when the file no longer matches the stamp captured by a read. Async
                                    :is-symlink (.isSymbolicLink entry)})
                                 (array-seq entries)))}))
       (.catch (fn [_] {:exists false :entries []}))))
+(def ^:private regex-meta-chars #{\. \+ \^ \$ \{ \} \( \) \| \\})
+
 (defn- glob->regex [pattern]
-  (-> pattern
-      (string/replace #"[.+^${}()|\\]" #"\$&"#)
-      (string/replace "**" "")
-      (string/replace "*" "[^/]*")
-      (string/replace "?" "[^/]")
-      (string/replace "" ".*")
-      re-pattern))
+  (let [n (count pattern)]
+    (loop [i 0 out []]
+      (if (>= i n)
+        (re-pattern (apply str out))
+        (let [ch (nth pattern i)]
+          (cond
+            (and (= ch \*)
+                 (< (inc i) n)
+                 (= (nth pattern (inc i)) \*))
+            (let [after (loop [j (+ i 2)]
+                          (if (and (< (+ j 2) n)
+                                   (= (nth pattern j) \/)
+                                   (= (nth pattern (inc j)) \*)
+                                   (= (nth pattern (+ j 2)) \*))
+                            (recur (+ j 3))
+                            j))
+                  at-dir-start? (or (zero? i) (= (nth pattern (dec i)) \/))
+                  slash-next? (and (< after n) (= (nth pattern after) \/))]
+              (if (and at-dir-start? slash-next?)
+                (recur (inc after) (conj out "(?:.*/)?"))
+                (recur after (conj out ".*"))))
+
+            (= ch \*)
+            (recur (inc i) (conj out "[^/]*"))
+
+            (= ch \?)
+            (recur (inc i) (conj out "[^/]"))
+
+            (contains? regex-meta-chars ch)
+            (recur (inc i) (conj out (str #"\"# ch)))
+
+            :else
+            (recur (inc i) (conj out ch))))))))
 
 (def ^:private glob-default-limit 20000)
 (def ^:private glob-default-budget-ms 2000)
@@ -662,9 +690,12 @@ Breadth-first walk bounded by an entry cap and a wall-clock budget. Both
                                   (filter (fn [[full is-file]]
                                             (or (not files-only?) is-file)))
                                   (map (fn [[full _]]
-                                         (-> full
-                                             (subs (inc (count root)))
-                                             (string/replace #"\\" "/"))))
+                                         (let [base-len (if (string/ends-with? root "/")
+                                                          (count root)
+                                                          (inc (count root)))]
+                                           (-> full
+                                               (subs base-len)
+                                               (string/replace #"\\" "/")))))
                                   (filter #(re-matches matcher %))
                                   sort
                                   vec)
@@ -967,6 +998,8 @@ Breadth-first walk bounded by an entry cap and a wall-clock budget. Both
       (reset! (:shown-err entry) (count err))
       {:stdout dout
        :stderr derr
+       :stdin-open (let [s (.-stdin (:child entry))]
+                     (boolean (and s (not (.-writableEnded s)))))
        :output-truncated (:truncated state)
        :log-truncated (:log-truncated state)})))
 
@@ -1002,8 +1035,11 @@ Breadth-first walk bounded by an entry cap and a wall-clock budget. Both
       (when (and (some? input) (not (string? input)))
         (throw (ex-info "stdin must be a string"
                         {:code :INVALID_ARGUMENT :field :stdin})))
+      (when (and (some? input) (.-writableEnded stdin))
+        (throw (ex-info "active call stdin is already closed"
+                        {:code :STRUCTURE_CONFLICT :name name})))
       (when (some? input) (.write stdin input))
-      (when eof? (.end stdin))
+      (when (and eof? (not (.-writableEnded stdin))) (.end stdin))
       (when-let [parked-entry (@parked name)]
         (with-program-name name (fn [] ((:resolve parked-entry) value)))
         (forget-park! name))
@@ -1063,7 +1099,7 @@ Breadth-first walk bounded by an entry cap and a wall-clock budget. Both
     env))
 
 (defn call
-  [{:keys [argv cwd name max-inline-bytes] :or {cwd "."}} timeout-ms]
+  [{:keys [argv cwd name max-inline-bytes stdin eof] :or {cwd "."}} timeout-ms]
   (let [program-name (or name (active-name))]
     (with-global-token
       (fn []
@@ -1073,6 +1109,12 @@ Breadth-first walk bounded by an entry cap and a wall-clock budget. Both
                       (not-every? string? (vec argv)))
               (throw (ex-info "argv must be a non-empty array of strings"
                               {:code :INVALID_ARGUMENT :field :argv})))
+            (when (and (some? stdin) (not (string? stdin)) (not (boolean? stdin)))
+              (throw (ex-info "stdin must be a string or boolean"
+                              {:code :INVALID_ARGUMENT :field :stdin})))
+            (when (and (some? eof) (not (boolean? eof)))
+              (throw (ex-info "eof must be a boolean"
+                              {:code :INVALID_ARGUMENT :field :eof})))
             (js/Promise.
               (fn [resolve reject]
                 (let [argv (vec argv)
@@ -1088,6 +1130,14 @@ Breadth-first walk bounded by an entry cap and a wall-clock budget. Both
                       capture (fn [key chunk]
                                 (append-inline state key chunk inline-limit))]
                   (register-call! program-name {:child child :reject reject :state state :shown-out shown-out :shown-err shown-err})
+                  (when-let [child-stdin (.-stdin child)]
+                    (cond
+                      (string? stdin)
+                      (do
+                        (.write child-stdin stdin)
+                        (when-not (false? eof) (.end child-stdin)))
+                      (or (false? stdin) (true? eof))
+                      (.end child-stdin)))
                   (.on (.-stdout child) "data" #(capture :out (str %)))
                   (.on (.-stderr child) "data" #(capture :err (str %)))
                   (.on child "error"

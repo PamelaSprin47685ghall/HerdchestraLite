@@ -985,4 +985,39 @@ describe("CLJS nbb sandbox", () => {
 		expect(text).not.toContain("sync-ok-first");
 		expect(text).not.toContain("sync-err-second");
 	});
+	it("matches zero-depth directories with **/ in glob", async () => {
+		await run('(mkdir {:path "tmp/glob-zero/sub"})');
+		await run('(write {:path "tmp/glob-zero/root.txt" :content "r"})');
+		await run('(write {:path "tmp/glob-zero/sub/deep.txt" :content "d"})');
+		try {
+			const res = await run('(glob {:path "tmp/glob-zero" :pattern "**/*.txt" :exec (fn [p] p)})');
+			const text = res.content[0].text;
+			expect(text).toContain("root.txt");
+			expect(text).toContain("sub/deep.txt");
+		} finally {
+			await run('(rm {:path "tmp/glob-zero"})');
+		}
+	});
+
+	it("supports :eof and :stdin on call without hanging stdin-reading commands", async () => {
+		await drain();
+		const eofRes = await run('(call {:argv ["sh" "-c" "cat"] :eof true})');
+		expect(eofRes.content[0].text).toContain(":exit 0");
+		expect(eofRes.content[0].text).toContain(':stdout ""');
+
+		const stdinRes = await run('(call {:argv ["sh" "-c" "cat"] :stdin "hello-stdin"})');
+		expect(stdinRes.content[0].text).toContain(":exit 0");
+		expect(stdinRes.content[0].text).toContain("hello-stdin");
+
+		const parked = await runNamed(
+			"stdin-open-check",
+			`(let [p (call {:argv ["sh" "-c" "sleep 0.2"] :name "stdin-open-check"} 0)]
+  (-> (herd.sandbox/await-call-start "stdin-open-check")
+      (.then (fn [_] (park {:payload 1})))
+      (.then (fn [_] p))))`,
+		);
+		expect(parked.content[0].text).toContain(":stdin-open true");
+		await runNamed("stdin-open-abandon", '(abandon {:name "stdin-open-check"})');
+		await drain();
+	});
 });

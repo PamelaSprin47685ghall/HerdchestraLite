@@ -446,7 +446,7 @@ Index of the last persisted handoff document, searched in the trailing
 (defn- register-worker! [pi]
   (register! pi {:name "clj_worker"
                  :label "Clojure Sandbox (Swarm Worker)"
-                 :description "All capabilities return js/Promise (no await). Always (require '[promesa.core :as p]) and use p/let, p/do, p/loop/p/recur, p/catch, p/all; never hand-roll .then/.catch chains. Holder gets call; Worker does not. Require other namespaces at the top level as needed."
+                 :description #"All capabilities return js/Promise (no await). Always (require '[promesa.core :as p]) and use p/let, p/do, p/loop/p/recur, p/catch, p/all; never hand-roll .then/.catch chains. Holder gets call; Worker does not. Require other namespaces at the top level as needed. Note: glob passes a relative path string (not a map) to :exec; call keeps stdin open by default for unpark (pass :eof true or :stdin "..." when invoking commands like rg/grep that otherwise wait on stdin)."#
                  :parameters (devops-parameters)
                  :renderCall ui/clj-render-call
                  :renderResult ui/clj-render-result
@@ -455,7 +455,7 @@ Index of the last persisted handoff document, searched in the trailing
 (defn register-all! [pi]
   (register! pi {:name "clj_devops"
                  :label "Clojure Sandbox (Plan DevOps)"
-                 :description "All capabilities return js/Promise (no await). Always (require '[promesa.core :as p]) and use p/let, p/do, p/loop/p/recur, p/catch, p/all; never hand-roll .then/.catch chains or custom combinators. Require other namespaces at the top level as needed; writes may run concurrently and are serialized by the write gate."
+                 :description #"All capabilities return js/Promise (no await). Always (require '[promesa.core :as p]) and use p/let, p/do, p/loop/p/recur, p/catch, p/all; never hand-roll .then/.catch chains or custom combinators. Require other namespaces at the top level as needed; writes may run concurrently and are serialized by the write gate. Note: glob passes a relative path string (not a map) to :exec; call keeps stdin open by default for unpark (pass :eof true or :stdin "..." when invoking commands like rg/grep that otherwise wait on stdin)."#
                  :parameters (devops-parameters)
                  :renderCall ui/clj-render-call
                  :renderResult ui/clj-render-result
@@ -565,7 +565,7 @@ Index of the last persisted handoff document, searched in the trailing
           #js {:systemPrompt (.-systemPrompt event)}))))
 
 (def ^:private language-skill
-  #"<skill version="1.0">强制以简体中文思考，尤其要以简体中文词开头。强制简体中文回答用户。</skill>"#)
+  #"<skill version="1.0">（宿主扩展在每轮末尾附带的常规友情提醒，非用户新消息，请继续当前工作）强制以简体中文思考，尤其要以简体中文词开头。强制简体中文回答用户。</skill>"#)
 
 (defn- outbound-tail []
   (let [parked (repl/parked-names)

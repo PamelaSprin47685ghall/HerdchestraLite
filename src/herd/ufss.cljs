@@ -202,7 +202,30 @@
       (vec (mapcat walk forms)))))
 
 (defn- invisible-control? [s]
-  (boolean (re-find #"[\x00-\x08\x0B\x0C\x0E-\x1F]" s)))
+  (boolean (re-find #"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]" s)))
+
+(defn- hex4 [n]
+  (let [h (.toString n 16)]
+    (str (apply str (repeat (- 4 (count h)) "0")) h)))
+
+(defn- escape-char [code]
+  (cond
+    (= code 34) (str backslash-str quote-str)
+    (= code 92) (str backslash-str backslash-str)
+    (= code 8) (str backslash-str "b")
+    (= code 9) (str backslash-str "t")
+    (= code 10) (str backslash-str "n")
+    (= code 12) (str backslash-str "f")
+    (= code 13) (str backslash-str "r")
+    (or (< code 32) (= code 127)) (str backslash-str "u" (hex4 code))
+    :else (.fromCharCode js/String code)))
+
+(defn- escape-standard-string [s]
+  (let [n (count s)]
+    (loop [i 0 out []]
+      (if (>= i n)
+        (str quote-str (apply str out) quote-str)
+        (recur (inc i) (conj out (escape-char (.charCodeAt s i))))))))
 
 (defn- max-hash-run [s quote-count]
   (let [n (count s)]
@@ -235,7 +258,7 @@
 
 (defn- format-string [body]
   (cond
-    (invisible-control? body) (pr-str body)
+    (invisible-control? body) (escape-standard-string body)
 
     (and (str/includes? body newline-str)
          (every? #(or (= % \newline) (= % \tab) (= % \space)) body))

@@ -842,8 +842,9 @@ COMMON_RULES
 
 ### 5.3 请求尾注语言要求与未决程序提醒
 
-- 所有注入块合并进单一 `<system-reminder>…</system-reminder>`，内部按序排列语言纪律与停靠程序两个 `<skill version=\"1.0\">` 块。由 `context` 钩子在每次 LLM 请求末尾通过统一的出站尾注无条件追加到 messages 末尾；不扫描历史、不做幂等判断。 `<skill version="1.0">…</skill>` 语言块强制简体中文思考与输出。
+- 所有注入块合并进单一 `<system-reminder>…</system-reminder>`，内部按序排列语言纪律与停靠程序两个 `<skill version=\"1.0\">` 块。由 `context` 钩子在每次 LLM 请求末尾通过统一的出站尾注无条件追加到 messages 末尾；不扫描历史、不做幂等判断。`<skill version="1.0">…</skill>` 语言块强制简体中文思考与输出。
 - 存在未裁决的 `:parked` 挂起程序时，同消息另附 `<skill version="1.0">你有以下停靠程序未裁决……</skill>` 块，提醒模型及时 `unpark` 或 `abandon`。
+- **预期特征（非 Bug）**：该尾注作为一条仅含 `<system-reminder><skill version="1.0">…</skill></system-reminder>` 的独立 `user` 消息无条件附在每次出站请求末尾。因此，在连续工具调用、多轮执行或宿主回放中看到仅包含 `<system-reminder><skill ...>` 的看似“空用户回合”或反复出现的消息是刻意设计的 feature（确保语言纪律与停靠提醒始终处于上下文最末端），**不是**多余空消息或重复注入 bug，严禁以去重、折叠、跳过或删除来“修复”它。
 
 ## 6 TUI 工作台、斜杠命令与故障恢复
 
@@ -1301,7 +1302,7 @@ Finish strictly by calling `attach_case_audit` once with `case_id: "${caseSpec.c
 
 ```text
 export const LANGUAGE_SKILL =
-  '<skill version="1.0">强制以简体中文思考，尤其要以简体中文词开头。强制简体中文回答用户。</skill>';
+  '<skill version="1.0">（宿主扩展在每轮末尾附带的常规友情提醒，非用户新消息，请继续当前工作）强制以简体中文思考，尤其要以简体中文词开头。强制简体中文回答用户。</skill>';
 ```
 
 保留 `<skill version="1.0">` 外形：它让模型把这段文本当作系统级纪律，而不是普通用户内容。旧实现的 NUL + BOM 前缀是弊病，不得复现。不要把它改成普通 Markdown。

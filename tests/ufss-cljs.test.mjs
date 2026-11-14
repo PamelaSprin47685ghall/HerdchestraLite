@@ -132,4 +132,15 @@ describe("CLJS UFSS", () => {
 			       (> (count (str/split-lines s)) 1)))`);
 		expect(result).toBe(true);
 	});
+	it("escapes control characters canonically without raw control bytes", async () => {
+		const result = await evalClj(`
+			(let [samples [(str (char 0) (char 1) (char 7) (char 8) (char 11) (char 12) (char 27) (char 31) (char 127))
+			               (str "line1\\n" (char 1) "\\nline2")]]
+			  (every? (fn [s]
+			            (let [out (u/canonical {:v s})]
+			              (and (nil? (re-find #"[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F]" out))
+			                   (= {:v s} (u/read out)))))
+			          samples))`);
+		expect(result).toBe(true);
+	});
 });
