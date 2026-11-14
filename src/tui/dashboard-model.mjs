@@ -182,10 +182,10 @@ export const STAGE_ATTACH = Object.freeze({
 });
 
 const normalizeTenure = (mission) => {
-	const raw = field(mission, "tenure", "tenureId", "tenure_id", "term", "termId", "term_id");
+	const raw = field(mission, "tenure", "tenureId", "tenure_id", "tenure-id", "term", "termId", "term_id", "term-id");
 	if (isRecord(raw)) {
 		const index = integerOrNull(field(raw, "index", "term", "number", "n"));
-		const id = atom(field(raw, "id", "term_id", "termId", "name")) ?? (index === null ? null : `T-${index}`);
+		const id = atom(field(raw, "id", "term_id", "termId", "tenure_id", "tenureId", "tenure-id", "name")) ?? (index === null ? null : `T-${index}`);
 		return {
 			id,
 			index,
@@ -277,7 +277,17 @@ const normalizeMission = (mission, now, degradation) => {
 	else userStateKey = "running";
 
 	const startedAt = toTimestamp(
-		field(mission, "startedAt", "started_at", "createdAt", "created_at", "createdAtMs", "created_ms"),
+		field(
+			mission,
+			"startedAt",
+			"started_at",
+			"started-at",
+			"createdAt",
+			"created_at",
+			"created-at",
+			"createdAtMs",
+			"created_ms",
+		),
 	);
 	const endedAt = toTimestamp(field(mission, "endedAt", "ended_at", "completedAt", "completed_at", "finishedAt"));
 	const explicitElapsed = numberOrNull(field(mission, "elapsedMs", "elapsed_ms", "elapsed"));
@@ -289,7 +299,7 @@ const normalizeMission = (mission, now, degradation) => {
 				: Math.max(0, (endedAt ?? now) - startedAt);
 	const tokens = normalizeTokens(mission);
 	const outcome = normalizeOutcome(mission);
-	const reportPath = atom(field(mission, "reportPath", "report_path", "report"));
+	const reportPath = atom(field(mission, "reportPath", "report_path", "report-path", "report"));
 	const tenure = normalizeTenure(mission);
 	const stageAttach = stage === null ? undefined : STAGE_ATTACH[stage];
 	const attachedDocuments = unique(
@@ -297,7 +307,7 @@ const normalizeMission = (mission, now, degradation) => {
 			.map((value) => atom(value))
 			.filter(Boolean),
 	);
-	const explicitAttachReady = field(mission, "attachReady", "attach_ready");
+	const explicitAttachReady = field(mission, "attachReady", "attach_ready", "attach-ready");
 	const attachReady =
 		explicitAttachReady === undefined
 			? stageAttach !== undefined && attachedDocuments.includes(stageAttach.document)
@@ -307,14 +317,33 @@ const normalizeMission = (mission, now, degradation) => {
 		expectedTool: attachReady
 			? null
 			: (atom(
-					field(mission, "attachExpected", "attach_expected", "expectedAttach", "expected_attach", "expectedTool"),
+					field(
+						mission,
+						"attachExpected",
+						"attach_expected",
+						"attach-expected",
+						"expectedAttach",
+						"expected_attach",
+						"expectedAttachTool",
+						"expectedTool",
+						"expected-tool",
+					),
 				) ??
 				stageAttach?.tool ??
 				null),
 		expectedDocument: attachReady
 			? null
 			: (atom(
-					field(mission, "attachDocument", "attach_document", "expectedDocument", "expected_document", "deliverable"),
+					field(
+						mission,
+						"attachDocument",
+						"attach_document",
+						"attach-document",
+						"expectedDocument",
+						"expected_document",
+						"expected-document",
+						"deliverable",
+					),
 				) ??
 				stageAttach?.document ??
 				null),
@@ -455,7 +484,7 @@ const normalizeTask = (raw, key, index) => {
 				.filter(Boolean),
 		),
 		waitFor: unique(waitFor),
-		needsToken: boolValue(field(raw, "needs_token", "needsToken", "token")),
+		needsToken: boolValue(field(raw, "needs_token", "needsToken", "needs-token", "token")),
 		owner: atom(field(raw, "owner", "owner_id", "ownerId", "assignee", "agent_id", "agentId")),
 	};
 };
@@ -474,12 +503,12 @@ const summarizeAction = (value) => {
 
 const normalizeActor = (raw, key, index) => {
 	if (!isRecord(raw)) return null;
-	const slotId = atom(field(raw, "slot_id", "slotId", "id", "slot")) ?? atom(key) ?? `slot-${index + 1}`;
-	const lifeRaw = tokenText(field(raw, "life_state", "lifeState", "state", "status"));
+	const slotId = atom(field(raw, "slot_id", "slotId", "slot-id", "id", "slot")) ?? atom(key) ?? `slot-${index + 1}`;
+	const lifeRaw = tokenText(field(raw, "life_state", "lifeState", "life-state", "state", "status"));
 	const life = lifeRaw ? lifeRaw.toLowerCase().replaceAll("_", "-") : "unknown";
 	return {
 		slotId,
-		agentId: atom(field(raw, "agent_id", "agentId", "agent", "id")),
+		agentId: atom(field(raw, "agent_id", "agentId", "agent-id", "agent", "id")),
 		lifeState: life,
 		reincarnations: integerOrNull(field(raw, "reincarnations", "reincarnation", "incarnation", "turnover")) ?? 0,
 		action: summarizeAction(
@@ -495,7 +524,7 @@ const normalizeHolder = (value) => {
 	}
 	if (!isRecord(value)) return null;
 	const agentId = atom(field(value, "agent_id", "agentId", "agent", "id"));
-	const termId = atom(field(value, "term_id", "termId", "term"));
+	const termId = atom(field(value, "term_id", "termId", "term-id", "term"));
 	const slotId = atom(field(value, "slot_id", "slotId", "slot"));
 	if (!agentId && !termId && !slotId) return null;
 	return { agentId, termId, slotId };
@@ -509,11 +538,11 @@ const normalizeTokenSlot = (value) => {
 	}
 	const holderValue = field(value, "holder", "current_holder", "currentHolder", "owner");
 	const holderId = atom(holderValue);
-	const termId = atom(field(value, "term_id", "termId", "holder_term_id", "holderTermId"));
+	const termId = atom(field(value, "term_id", "termId", "term-id", "holder_term_id", "holderTermId", "holder-term-id"));
 	const holder =
 		(isRecord(holderValue) ? normalizeHolder(holderValue) : null) ??
 		normalizeHolder({
-			agent_id: holderId ?? atom(field(value, "holder_id", "holderId", "holder_agent_id", "holderAgentId")),
+			agent_id: holderId ?? atom(field(value, "holder_id", "holderId", "holder-id", "holder_agent_id", "holderAgentId", "holder-agent-id")),
 			term_id: termId,
 			slot_id: field(value, "holder_slot_id", "holderSlotId"),
 		});
@@ -535,11 +564,11 @@ const normalizeWriteLock = (value) => {
 	}
 	const holderValue = field(value, "holder", "owner", "agent");
 	const holderId = atom(holderValue);
-	const termId = atom(field(value, "owner_term_id", "ownerTermId", "holder_term_id", "holderTermId", "term_id"));
+	const termId = atom(field(value, "owner_term_id", "ownerTermId", "owner-term-id", "holder_term_id", "holderTermId", "holder-term-id", "term_id", "term-id"));
 	const holder =
 		(isRecord(holderValue) ? normalizeHolder(holderValue) : null) ??
 		normalizeHolder({
-			agent_id: holderId ?? atom(field(value, "owner_agent_id", "ownerAgentId", "holder_agent_id", "holderAgentId")),
+			agent_id: holderId ?? atom(field(value, "owner_agent_id", "ownerAgentId", "owner-agent-id", "holder_agent_id", "holderAgentId", "holder-agent-id")),
 			term_id: termId,
 			slot_id: field(value, "holder_slot_id", "holderSlotId"),
 		});
@@ -691,9 +720,9 @@ const normalizeBoard = (raw) => {
 		field(raw, "lock", "board_lock", "boardLock", "board-lock", "write_lock", "writeLock", "write-lock"),
 	);
 	return {
-		sliceId: atom(field(raw, "slice_id", "sliceId", "id", "workspace_id", "workspaceId")),
-		stage: normalizeStage(field(raw, "stage", "current_stage", "currentStage")),
-		version: integerOrNull(field(raw, "board_version", "boardVersion", "version")),
+		sliceId: atom(field(raw, "slice_id", "sliceId", "slice-id", "id", "workspace_id", "workspaceId", "workspace-id")),
+		stage: normalizeStage(field(raw, "stage", "current_stage", "currentStage", "current-stage")),
+		version: integerOrNull(field(raw, "board_version", "boardVersion", "board-version", "version")),
 		tenure,
 		review,
 		tasks,
@@ -932,7 +961,7 @@ const pickFocusTask = (board, requestedTaskId) => {
 
 const normalizeFocus = (input, slices, boards) => {
 	const focus = isRecord(input) ? input : typeof input === "string" ? { text: input } : {};
-	const sliceId = atom(field(focus, "sliceId", "slice_id", "slice")) ?? slices[0]?.id ?? null;
+	const sliceId = atom(field(focus, "sliceId", "slice_id", "slice-id", "slice")) ?? slices[0]?.id ?? null;
 	const board = boardFor(boards, sliceId);
 	const requestedTaskId = atom(field(focus, "taskId", "task_id", "task"));
 	const customLine = atom(field(focus, "text", "line", "summary"));
@@ -983,10 +1012,10 @@ const scoreValue = (value) => {
 
 const normalizeCaseRow = (raw, fallbackId, degradation) => {
 	const row = isRecord(raw) ? raw : {};
-	const caseId = atom(field(row, "case_id", "caseId", "id", "case")) ?? atom(fallbackId);
+	const caseId = atom(field(row, "case_id", "caseId", "case-id", "id", "case")) ?? atom(fallbackId);
 	const threshold = numberOrNull(field(row, "threshold", "passThreshold", "pass_threshold"));
-	const user = scoreValue(field(row, "user_score", "userScore", "user"));
-	const developer = scoreValue(field(row, "developer_score", "developerScore", "developer"));
+	const user = scoreValue(field(row, "user_score", "userScore", "user-score", "user"));
+	const developer = scoreValue(field(row, "developer_score", "developerScore", "developer-score", "developer"));
 	const submittedFlag = field(row, "submitted", "complete", "completed");
 	const submitted = submittedFlag === undefined ? user.present || developer.present : boolValue(submittedFlag);
 	const evidence = asArray(field(row, "evidence_paths", "evidencePaths", "evidence"))
@@ -1012,8 +1041,8 @@ const normalizeCaseRow = (raw, fallbackId, degradation) => {
 
 const mergeCaseSubmission = (row, raw, degradation) => {
 	const submission = isRecord(raw) ? raw : {};
-	const user = scoreValue(field(submission, "user_score", "userScore", "user"));
-	const developer = scoreValue(field(submission, "developer_score", "developerScore", "developer"));
+	const user = scoreValue(field(submission, "user_score", "userScore", "user-score", "user"));
+	const developer = scoreValue(field(submission, "developer_score", "developerScore", "developer-score", "developer"));
 	const threshold = numberOrNull(field(submission, "threshold", "passThreshold", "pass_threshold"));
 	const evidence = asArray(field(submission, "evidence_paths", "evidencePaths", "evidence"))
 		.map((item) => atom(item))
@@ -1159,7 +1188,7 @@ const normalizeAudit = (input, degradation) => {
 					: [];
 	const seenSubmissions = new Set();
 	for (const [key, value] of submissionEntries) {
-		const caseId = atom(field(value, "case_id", "caseId", "id", "case")) ?? atom(key);
+		const caseId = atom(field(value, "case_id", "caseId", "case-id", "id", "case")) ?? atom(key);
 		if (!caseId) {
 			degradation.push("audit-submission-unreadable");
 			continue;

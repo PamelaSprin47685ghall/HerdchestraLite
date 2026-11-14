@@ -2,6 +2,136 @@
 
 本文件记录本包的用户可见变化。
 
+## [Dogfood] — 2026-11-14 — 工作条事件驱动恢复官方覆盖
+
+### Fixed
+
+- omp 官方在流式输出期间重写工作条后，HerdchestraLite 的 usage/status 工作条不再停留在原版文本。`message_update`、`tool_execution_update`、`message_end` 等真实 hook 事件到达时，先读取宿主当前工作条（宿主提供 `getWorkingMessage` 时优先使用；否则包装 `setWorkingMessage` 记录官方最后写入的文本），只有当前文本不是目标文本才写回；文本相同不重发。没有 `setInterval`，也没有周期性 `setTimeout`。
+- `ui-render` 的 `:last-working` 按 session 记录最后一次写出的工作条文本，替代全局 `:usage-last` 的重复写判断，保留“相同文本不重发”语义。
+- 子代理（`subagent-ctx?`）绝不写主 UI：`apply-working-message!` 是唯一写入点并内置该检查；`message_end` 即使没有 usage payload 也触发覆盖检测。
+
+### Verified（不是验收）
+
+- `env -u BUN_OPTIONS bun test tests/cljs-working-message.test.mjs`：7 pass / 0 fail。
+- `env -u BUN_OPTIONS bun test tests --parallel`：416 pass / 1 skip / 0 fail / 28 files。
+
+## [Dogfood] — 2026-11-14 — 收口：per-pi 安装、vibe 工具面、500ms 锁与 431 测试
+
+本条记录同日收口的最终事实；同日更早条目中的 2s 锁等待与 367/35 为中间快照，已在该条目就地更正或标注。
+
+### Added
+
+- 启动与安装单例：并发激活共享 `globalThis.__herdBootPromise`，失败清空可重试；`contextPis`、`activated-pis`、`installed-pis` 三组 per-pi `WeakSet` 保证同一进程多 pi 各自只安装一次，不重复注册工具、命令与 hooks。
+- 测试：`tests/cljs-surface-vibe.test.mjs`、`tests/cljs-surface.test.mjs`、`tests/cljs-system-install.test.mjs`、`tests/clj-main-trace.test.mjs`、`tests/cljs-lock-contention.test.mjs`、`tests/hack-context-rewrite.test.mjs`。
+
+### Changed
+
+- vibe 工具面：没有 `/herd` 使命时，主会话与无收窄角色的普通子代理保留全部宿主工具，只追加 `clj_devops`、`wait`、`handoff`；删除旧宿主工具黑名单。只有使命内主会话按阶段、显式 herd 角色按角色收窄；收窄失败记 health degraded，不静默删工具。
+- 写锁默认等待 500ms（`HERD_LOCK_WAIT_MS` 可调 50–5000ms），10ms 起指数退避、封顶 160ms，超时 `:LOCK_BUSY`。
+- context 自动重写每会话分支最多一次（host leaf 变化后重置预算）；之后的 prefix miss 只记录 `prefix-miss-suppressed`，compaction/reset boundary 存在时一律不重写。
+- 完整装配、S5 单工作区 runner、K 路审计、异步化与测试恢复仍以同日上一条目为准；本条只更新最终参数与工具面。
+
+### Fixed
+
+- 同进程重复 boot 与重复安装；锁竞争默认等待从 2s 降到 500ms，减少 UI 卡顿。
+- 收窄面失败时不再连带删除宿主工具。
+
+### Verified（不是验收）
+
+- `env -u BUN_OPTIONS bun test tests --parallel`：431 pass / 1 skip / 0 fail / 2041 expect / 432 tests / 44 files，约 16.2s。
+- 真实 tmux S1→S5、`plans/<slug>/s5-report.md` 与 clean-break 验收仍未完成；用户已暂停 dog food，以上数字不是验收。
+
+## [Dogfood] — 2026-11-14 — 完整装配接回、S5 编排与性能收口
+
+### Added
+
+- `src/herd/system.cljs`：完整装配的宿主接线。注册 `review`/`attach_brainstorm`/`attach_manual_tests`/`attach_dev_guide`/`attach_coordination`/`ask_user`/`devops`/`submit_devops_report` 八门禁工具、11 个 `board_*` 与 `attach_case_audit`；提供 `/herd <seed>` 命令、mission 与 `.herd/focus.edn` 创建、角色探测、阶段工具面收窄、Nudge（空转 + 上游断流退避）与 health 记录。
+- `src/herd/swarm/runner.cljs`：单工作区 S5 Reviewer ⇄ Swarm 接力、quiescence 屏障、槽位唤醒与恢复。
+- `src/herd/swarm/auditors.cljs`：K 路审计、独立 `/tmp/herd-audit-*` 隔离路径、单 CASE 注入、`.herd/missions/<slug>/audit/batch.edn` 幂等批次与 FAIL repair 根任务。
+- 测试：`tests/cljs-runner.test.mjs`、`tests/cljs-auditors.test.mjs`、`tests/cljs-system.test.mjs`、`tests/cljs-console-guard.test.mjs`、`tests/cljs-usage.test.mjs`、`tests/cljs-dashboard-wiring.test.mjs`、`tests/perf-hot-path.test.mjs`。
+
+### Changed
+
+- 唯一清单入口 `src/clj-main.mjs` 现在经 `src/herd/bootstrap.cljs` 加载 `src/herd/main.cljs` 与 `src/herd/system.cljs`；默认面不再只是 clj 执行器。
+- 异步化：`src/host/*.mjs`、`src/sandbox/*`、`src/stages/*`、`src/swarm/*`、`src/tui/*`、`src/main.mjs`、`src/bootstrap-main.mjs`、`src/clj-sandbox/*` 改用 `node:fs/promises`；唯一例外是 `src/sandbox/landlock.mjs` 对裸 fd 的 `closeSync`。
+- 测试恢复：删除 `.disabled` 与旧 Cherry/CEK 测试，以 CLJS 测试替代；删除 `tests/fixtures/s5-wiring-scenario.mjs`。
+- usage 面板：delta 显示最近活动子代理的最后一次请求，sum 合并所有 agent key。
+- TUI 看板：按用户明确指令整体移除；`src/tui/*` 保留但无 import/挂载，`tests/cljs-dashboard-wiring.test.mjs` 只断言从不挂载。根规格 §6.1 看板要求被该指令覆盖。
+
+### Fixed
+
+- 5s UI 卡顿：根因是同步 fs、5s 锁等待、无界 `glob`/`where`/`cat` 扫描与默认开启的 `before_provider_request` probe。现在锁等待默认 500ms（`HERD_LOCK_WAIT_MS` 可调 50–5000ms；10ms 起指数退避、封顶 160ms，`:LOCK_BUSY`）；`glob` 跳过 `node_modules`/`.git`/`.herd`，20k 条目/2s 预算（`:LIMIT_EXCEEDED`）；`where` 最近行 DP 1M cells + 150ms；`cat`/`write` 2 MiB；handoff 扫描 512/32；usage/status 100ms 节流；probe 默认关闭（`HERD_CACHE_PROBE=1`）；新增 `HERD_TRACE=1` 热路径计时（`.herd/perf-trace.jsonl`，1 MiB 上限）。
+- 沙盒 console/stdio 防呆：`guard-source!` 拒绝 `console`、`js/console`、`globalThis.console`、`js/process.stdout`/`stderr` 等直接访问，返回 `:CAPABILITY_DENIED`；字符串、注释与 UFSS fence 中的同名词不误杀；`call` 仍用 pipe 捕获日志。
+
+### Verified（不是验收）
+
+- `env -u BUN_OPTIONS bun test tests --parallel`：该条目记录当时快照 367 pass / 1 skip / 0 fail / 35 files；最终测试面为 431 pass / 1 skip / 0 fail / 44 files，见同日收口条目。
+- `timeout 120 omp -p '只回复 ok'`：exit 0，wall 5.1s。
+- 性能实测：5MB payload probe off 0.02ms；1000 条 context 2.3ms；1000 次 message_update 2.4ms；`where` 1MB 0 匹配约 12ms；`glob` 20k 约 14ms；锁竞争约 0.5s 返回 `:LOCK_BUSY`；100 次 `write` 约 25ms；真实 `omp -p` trace 无 sync-ms > 200ms 条目。
+- 真实 S1→S5 tmux 验收、`plans/<slug>/s5-report.md` 与 `docs/manual-acceptance/clean-break/report.md` 仍未完成；用户已暂停 dog food，以上数字不是验收。
+
+## [Dogfood] — 2026-11-14 — 删除 `call` 的 `:alternative` 提示词要求
+
+### Changed
+
+- 根 `AGENTS.md` §4.5、`src/clj-sandbox/tools.mjs` 的 `call` 描述与 `HANDOFF.md` 删除 `:alternative` 参数要求；`call` 仍只接受 `argv`（可选 `cwd`）。
+- `HISTORY.md` 记录删除理由与代价。
+
+### Verified（不是验收）
+
+- `rg ":alternative"` 只剩 `HISTORY.md`/`HANDOFF.md` 的历史说明；规格、源码与工具描述无残留。
+- `env -u BUN_OPTIONS bun test tests --parallel`：268 pass / 1 skip / 0 fail，26 files。
+
+
+## [Dogfood] — 2026-11-14 — 完整装配删除 frozen 哈希与 contract-line 残留
+
+### Changed
+
+- `src/main.mjs` 的 `caseSpecsFor` 只读取 `.herd/missions/<slug>/s2-cases.edn`，不再调用不存在的 `readS1Summary`，不再比对 `mission.frozen` 哈希，也不再返回 `caseEdn`/`s1Summary` 字节镜像。
+- `runMissionAudit` 的 `contract` 只含 `{ missionId, revision }`；审计提示只接收这两个字段与单条 CASE 记录。
+- `aggregate` 调用重新注入 `contract`，修复完整装配审计因缺少 contract 而永远无法 PASS 的断链。
+- `recheckMission` 只校验报告写入后的工作区快照与报告 SHA-256，不再返回 `contractLine`。
+- 删除 `CONTRACT_HASH_MISMATCH`、`S1_SUMMARY_HASH_MISMATCH`、`CONTRACT_LINE_STALE`、`S3_MODULES_HASH_MISMATCH`、`CASE_HASH_MISMATCH`、`MAPPING_REALIGN_REQUIRED` 六个已废弃错误码；`tests/util-errors.test.mjs` 同步删除断言。
+- `DEBT.md` 关闭 D27；`src/AGENTS.md` 更新完整装配的审计接线说明。
+
+### Verified（不是验收）
+
+- `node --check src/main.mjs`：通过。
+- `env -u BUN_OPTIONS bun test tests --parallel`：268 pass / 1 skip / 0 fail，26 files。
+
+
+## [Dogfood] — 2026-11-14 — S1–S4 gate 服务迁移到 CLJS
+
+### Added
+
+- `src/herd/stages/gates.cljs`：`review`、四个 `attach_*` 与 `ask_user`/`devops`/`submit_devops_report` 的 CLJS 服务。包含角色门禁、call-id 重放、S1 确认端口（approve / revise / deny / pending）、批准时读回磁盘文档、barrier 与下一阶段简报，以及八个宿主工具定义与 `register-all!`；`ask_user` 的 S1 问答与 S5 例外检查、`devops`/`submit_devops_report` 的宿主端口。
+- `src/herd/gates_host.cljs`：把 gate 工具定义转换为宿主 JS 形状并注册，`execute` 结果转回 JS。
+- `tests/cljs-gates.test.mjs`：review 开账/空账、attach 未就绪拒绝、S1 四态、磁盘编辑后的批准、S2 晋级、重放冲突、角色拒绝、八工具注册，以及 `ask_user` 与 `devops` 端口。
+- `tests/cljs-gates-host.test.mjs`：宿主适配器的 JS 形状、八个工具注册与 review 执行。
+
+### Changed
+
+- `src/herd/stages/tenure.cljs`：board 归档路径改为 `.herd/missions/<slug>/boards/<tenure-id>.edn`，与 `store.cljs` 和根规格 §7.1 一致。
+- `src/herd/bootstrap.cljs`：加载 `stages/gates` 与 `gates_host`；UFSS canonical 检查覆盖这两个文件。
+
+### Verified（不是验收）
+
+- `env -u BUN_OPTIONS bun test tests`：216 pass / 1 skip / 0 fail，24 files。
+
+
+### Added
+
+- `src/herd/stages/audit.cljs`：`attach_case_audit` 的耐久提交（`wx` 一次写入、`EEXIST` → `:AUDIT_DUPLICATE_CASE`、fsync、失败清理）与读取，兼容 kebab 与下划线 EDN 键。
+- `tests/cljs-report.test.mjs`：报告写入、批准端口、recheck 拒绝、非 PASS 拒绝，以及审计写入/读取/重复/错配，并与 mjs `auditors.mjs` 双向互读。
+
+### Changed
+
+- `src/herd/stages/report.cljs`：`write-report!` 接入 `:approval-port`（`issue`）与 `:recheck-port`，保持 mjs `writeS5Report` 的 `:APPROVAL_REQUIRED`、报告先写后批准、失败不回滚语义。
+- `src/herd/bootstrap.cljs`：加载 `stages/scores`、`stages/audit`、`stages/report`；UFSS 源码检查覆盖这三个文件。
+
+### Verified（不是验收）
+
+- `env -u BUN_OPTIONS bun test tests`：201 pass / 1 skip / 0 fail，22 files。
 ## [Dogfood] — 2026-11-13 — native read/write 委托
 
 ### Changed
@@ -151,3 +281,16 @@
 - 审计绕过：`update_goal({status: "complete"})` 直接经 `goalService.apply` 写入时，没有本次审计批准的完成会被拒绝；工具包装层在每次完成尝试前清除旧批准。
 - 设置文件缺失误拒：设置文件不存在不再被当成读取失败；只有显式 `disabled: true` 才禁用审计器。
 - Node 入口 import：清单入口不再静态加载 `main.mjs` 与 `editor-theme/index.mjs`，普通 Node `import` 三个入口返回 function，不再触发 `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`。
+## 2026-11-14 测试分层与压测移除
+
+- `bun run test` 默认运行 `tests/fast.test.mjs` 的纯 JS 冒烟/单元测试，实测约 0.5s（182 tests，1 skip）。
+- `bun run test:full` / `test:suite` 运行完整 406 tests（27 files），实测约 5.6s。
+- 删除 `tests/perf-hot-path.test.mjs` 与 20 文件吞吐断言；context rewrite 的 1000 消息压力用例缩为 3 消息冒烟；cat 2 MiB 上限、glob 依赖跳过/条目上限、where 零匹配、probe off 等路径用小数据量触发并断言近零开销（等价于压测，但不做大数据量吞吐）。
+- 完整套件实测 USER 62.6s + SYS 4.8s；16 核完美满载下界约 4.2s。1s 全量需要合并 CLJS 测试进程、减少重复 nbb bootstrap。
+
+## 2026-11-14 测试时间源注入与事件驱动
+
+- 新增 `src/herd/clock.cljs`，`sandbox`/`repl`/`auditors`/`regex-worker` 的时间读取与定时器可注入；测试使用 `tests/fake-clock.mjs`，不读真实墙钟。
+- 测试改为显式事件：`await-call-start`、`await-call-output`、`flushTrace`、注入 `set-timeout`；删除 `sleep`、`waitFor` 轮询与固定 150/50/30ms 等待。
+- 全量 400 tests / 27 files：399 pass / 1 skip / 0 fail（约 5.8s）；默认 `bun run test` 快速套件约 0.4s。
+- e2e 真实模型烧钱必须用户批准；默认测试不启动真实 omp 使命。

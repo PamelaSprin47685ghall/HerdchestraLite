@@ -10,7 +10,7 @@
  * logs, or evidence.
  */
 
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 
 function seedError(message, data = {}) {
 	const error = new Error(message);
@@ -28,14 +28,14 @@ function isRecord(value) {
  * the host main process (no seed env) is a no-op. A malformed seed throws; the
  * bootstrap records the failure and keeps the host process alive.
  */
-export function registerAuditModelSeed(pi, env = process.env) {
+export async function registerAuditModelSeed(pi, env = process.env) {
 	const seedPath = env.HERD_AUDIT_MODEL_SEED;
 	if (typeof seedPath !== "string" || seedPath.length === 0) {
 		return { registered: false, reason: "no-seed" };
 	}
 	let seed;
 	try {
-		seed = JSON.parse(readFileSync(seedPath, "utf8"));
+		seed = JSON.parse(await readFile(seedPath, "utf8"));
 	} catch (error) {
 		throw seedError("audit model seed is not readable JSON", {
 			path: seedPath,

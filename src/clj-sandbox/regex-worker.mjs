@@ -377,7 +377,7 @@ function deadlineLeft(options) {
 		if (!Number.isFinite(options.deadlineAt)) {
 			throw taskFailure("invalid", "deadlineAt must be a finite timestamp");
 		}
-		left = Math.min(left, options.deadlineAt - Date.now());
+		left = Math.min(left, options.deadlineAt - (typeof options.now === "function" ? options.now() : Date.now()));
 	}
 	return left;
 }
@@ -428,9 +428,11 @@ export function runRegexTask(task, options = {}) {
 
 		let settled = false;
 		let timer = null;
+		const setTimer = typeof settings.setTimeout === "function" ? settings.setTimeout : setTimeout;
+		const clearTimer = typeof settings.clearTimeout === "function" ? settings.clearTimeout : clearTimeout;
 		const cleanup = () => {
 			if (timer !== null) {
-				clearTimeout(timer);
+				clearTimer(timer);
 				timer = null;
 			}
 			signal?.removeEventListener("abort", onAbort);
@@ -482,7 +484,7 @@ export function runRegexTask(task, options = {}) {
 			}
 		}
 		if (left !== Number.POSITIVE_INFINITY) {
-			timer = setTimeout(
+			timer = setTimer(
 				() => {
 					failTask("deadline", "regex task exceeded its deadline", { timeoutMs: settings.timeoutMs });
 				},

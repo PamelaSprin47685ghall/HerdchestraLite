@@ -35,7 +35,7 @@
  * that carries the next briefing.
  */
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 
 import { herdError, isHerdError, printEdn, renderError } from "../util/errors.mjs";
@@ -357,7 +357,7 @@ function contractOptions(deps) {
 const DISK_DOCUMENTS = Object.freeze({
 	async readText(path) {
 		try {
-			return { ok: true, text: readFileSync(path, "utf8") };
+			return { ok: true, text: await readFile(path, "utf8") };
 		} catch (error) {
 			return { ok: false, code: error?.code ?? "EIO", message: error?.message ?? String(error) };
 		}
@@ -955,7 +955,7 @@ async function applyAttachDecision(deps, ctx) {
 			callId: ctx.callId ?? null,
 		});
 	}
-	const onDisk = approvedDocument(ctx);
+	const onDisk = await approvedDocument(ctx);
 	const cleared = await writePending(deps, ctx.root, ctx.slug, null);
 	if (!cleared.ok) return cleared;
 	return completeAttach(deps, onDisk === null ? ctx : { ...ctx, markdown: onDisk });
@@ -980,12 +980,12 @@ async function announceSuccessor(deps, args) {
  * Approval advances the tenure with the real on-disk document, not the stale
  * in-memory copy captured before the panel was shown.
  */
-function approvedDocument(ctx) {
+async function approvedDocument(ctx) {
 	const relative = ctx.saved?.path ?? ctx.pending?.path;
 	if (typeof relative !== "string" || relative.length === 0) return null;
 	const absolute = isAbsolute(relative) ? relative : join(ctx.root, relative);
 	try {
-		const text = readFileSync(absolute, "utf8");
+		const text = await readFile(absolute, "utf8");
 		return text.trim().length > 0 ? text : null;
 	} catch {
 		return null;

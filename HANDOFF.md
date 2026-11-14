@@ -1,5 +1,7 @@
 # Handoff — 2026-11-12
 
+> 2026-11-14 修订：`call` 的 `:alternative` 要求已删除；下文相关描述仅记录历史。
+
 ## 当前状态
 
 - 分支 `master`，最近提交 `eb80bfe fix(clj): remove legacy wrapper and use argv-only call`；本文件与 `:alternative` 文档回补随后一起提交。
@@ -10,7 +12,7 @@
 
 - 工具接受裸 REPL：`code` 是任意顶层表达式，最后一个值返回；`program_name` 可选，省略自动生成 `repl-<id>`；旧 `(defprogram ...)` 输入被明确拒绝。
 - `call` 是 argv-only：`(call {:argv ["prog" "arg"] :cwd ...})`；直接 spawn，无 shell、管道、重定向、通配或 `&&`；回执含 `:argv`/`:argc`，旧 `:command` 被拒。
-- 提示词要求每次 `call` 提供非空 `:alternative` map（1+ 对，说明内置工具或其他办法及不采用理由）；框架不校验、不处理该字段，只信任模型填写。
+- 旧版提示词曾要求每次 `call` 提供非空 `:alternative` map；该要求已于 2026-11-14 删除，框架从未校验它。
 - VFS 普通路径权限已删除：允许 `..`、绝对路径、越界符号链接、盲写与覆盖 `AGENTS.md`；写锁 `$W$`、批内 VFS 与已读文件的 `stamp` 冲突检查保留。
 - 期限固定为 `1000ms + intent UTF-8 字节数 × 50ms`，无角色下限。
 - 宿主工具黑名单：`read`/`write`/`edit`/`apply_patch`/`ast_edit`/`ast_grep`/`bash`/`exec`/`eval`/`glob`/`grep`/`find` 在 `session_start` 与 `before_agent_start` 从 active 集合移除；其他工具保持原状态。
@@ -36,5 +38,5 @@
 ## 注意
 
 - 未跟踪 `package-lock.json` 是环境生成文件，仓库使用 `bun.lock`；未纳入提交。
-- 根 `AGENTS.md` 已按用户授权更新，§4.5 与 §8.2 记录了 `:alternative` 的 1+ 对、不校验语义。
-- `:alternative` 只是提示词要求；不要为它增加运行时校验、门禁或审计逻辑。
+- 根 `AGENTS.md` §4.5 曾记录 `:alternative`；该要求已于 2026-11-14 删除。
+- `:alternative` 已从规格、工具描述与提示词中删除；不要重新引入。

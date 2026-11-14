@@ -40,7 +40,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import { access, mkdir, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { herdError, isHerdError, messageOf } from "../util/errors.mjs";
 import { host } from "./imports.mjs";
@@ -60,7 +60,6 @@ export const ROLE_MODEL_POLICY = Object.freeze({
 	"Swarm Worker": Object.freeze({ modelSource: "task", spawnable: true }),
 	"Swarm Holder": Object.freeze({ modelSource: "task", spawnable: true }),
 	"Manual Auditor": Object.freeze({ modelSource: "main", spawnable: true }),
-	"Blocker Oracle": Object.freeze({ modelSource: "main", spawnable: true }),
 });
 
 /**
@@ -336,7 +335,7 @@ function absolutePath(value, field) {
  * @param {string} field
  * @returns {string[] | undefined}
  */
-function pathList(value, field) {
+async function pathList(value, field) {
 	if (value === undefined) return undefined;
 	if (!Array.isArray(value) || value.length === 0) {
 		throw fail(":INVALID_ARGUMENT", `${field} must be a non-empty array of absolute paths`, {
@@ -353,7 +352,8 @@ function pathList(value, field) {
 		let usable = false;
 		let cause;
 		try {
-			usable = existsSync(path) && statSync(path).isFile();
+			await access(path);
+			usable = (await stat(path)).isFile();
 		} catch (error) {
 			cause = error;
 		}
@@ -546,7 +546,7 @@ function resolveModelSelection(role, requestedModel) {
  * @param {Record<string, unknown>} options
  * @param {{ agentId?: string, Settings?: unknown, now?: () => number }} [ports]
  */
-export function planSpawn(options, ports = {}) {
+export async function planSpawn(options, ports = {}) {
 	const port = isObjectLike(ports) ? ports : {};
 	const now = typeof port.now === "function" ? port.now : Date.now;
 	/** @type {Record<string, unknown>} */
@@ -748,8 +748,8 @@ export function planSpawn(options, ports = {}) {
 			});
 		}
 
-		const preloadedExtensionPaths = pathList(options.preloadedExtensionPaths, "preloadedExtensionPaths");
-		const preloadedCustomToolPaths = pathList(options.preloadedCustomToolPaths, "preloadedCustomToolPaths");
+		const preloadedExtensionPaths = await pathList(options.preloadedExtensionPaths, "preloadedExtensionPaths");
+		const preloadedCustomToolPaths = await pathList(options.preloadedCustomToolPaths, "preloadedCustomToolPaths");
 		const allowExtensionDiscovery = options.allowExtensionDiscovery;
 		if (allowExtensionDiscovery !== undefined && typeof allowExtensionDiscovery !== "boolean") {
 			throw fail(":INVALID_ARGUMENT", "allowExtensionDiscovery must be a boolean", {
@@ -872,8 +872,8 @@ export function planSpawn(options, ports = {}) {
 		}
 		if (artifactsDir !== undefined && options.prepareArtifacts !== false) {
 			try {
-				mkdirSync(artifactsDir, { recursive: true });
-				if (!statSync(artifactsDir).isDirectory()) {
+				await mkdir(artifactsDir, { recursive: true });
+				if (!(await stat(artifactsDir)).isDirectory()) {
 					throw new Error("path is not a directory");
 				}
 			} catch (cause) {
@@ -1128,7 +1128,7 @@ export function createAgentRuntime(ports = {}) {
 	/**
 	 * @param {Record<string, unknown>} options
 	 */
-	function start(options) {
+	async function start(options) {
 		const parent = options?.parent;
 		const parentHandle = parent === undefined ? undefined : asHandle(parent);
 		const rejected = (error) => ({
@@ -1171,7 +1171,7 @@ export function createAgentRuntime(ports = {}) {
 				}),
 			);
 		}
-		const plan = planSpawn(options, { agentId: plannedId, Settings, now });
+		const plan = await planSpawn(options, { agentId: plannedId, Settings, now });
 		if (!plan.ok) {
 			return { handle: null, done: Promise.resolve(failedOutcome(plan)) };
 		}
@@ -1635,8 +1635,8 @@ function followUpFailure(id, error, result) {
  * @param {Record<string, unknown>} options
  * @returns {Promise<SpawnOutcome>}
  */
-export function spawnAgent(options) {
-	return defaultRuntime.start(options).done;
+export async function spawnAgent(options) {
+	return (await defaultRuntime.start(options)).done;
 }
 
 /**

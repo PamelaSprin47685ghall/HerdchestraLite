@@ -29,7 +29,7 @@
 
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { access, appendFile, mkdir, readFile, realpath } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { isKeyword, keyword, keywordName, printUfss, readUfss } from "../clj-sandbox/ufss.mjs";
@@ -102,11 +102,11 @@ export function worktreePaths(root, slug, sliceId) {
  * `slices` is keyed by Slice id and keeps the persisted lifecycle fields with
  * `status` normalized to a bare lowercase string.
  */
-export function readWorktreeState({ root, slug }) {
+export async function readWorktreeState({ root, slug }) {
 	assertRoot(root);
 	assertSlug(slug);
 	const paths = missionPaths(root, slug);
-	const state = readState(paths.statePath);
+	const state = await readState(paths.statePath);
 	if (state === null) {
 		return {
 			exists: false,
@@ -210,7 +210,7 @@ export async function forkSlices({ root, slug, slices, base, deps = {} }) {
 		}
 	});
 
-	const initial = readState(statePath);
+	const initial = await readState(statePath);
 	if (initial === null) {
 		throw missingState(statePath);
 	}
@@ -223,7 +223,7 @@ export async function forkSlices({ root, slug, slices, base, deps = {} }) {
 		git,
 		now,
 	});
-	const afterRecovery = readState(statePath);
+	const afterRecovery = await readState(statePath);
 	const readySpecs = specs.filter((spec) => isReady(spec, afterRecovery, specsById));
 	const requested = readySpecs.length;
 	if (requested === 0) return recoveredHandles;
@@ -236,7 +236,7 @@ export async function forkSlices({ root, slug, slices, base, deps = {} }) {
 
 	const handles = [...recoveredHandles];
 	for (const spec of specs) {
-		const latest = readState(statePath);
+		const latest = await readState(statePath);
 		if (!isReady(spec, latest, specsById)) continue;
 		const board = boards.get(spec.sliceId);
 
@@ -247,9 +247,9 @@ export async function forkSlices({ root, slug, slices, base, deps = {} }) {
 
 		let created = false;
 		try {
-			assertFreshTarget(slicePaths, spec.sliceId);
+			await assertFreshTarget(slicePaths, spec.sliceId);
 			await assertBranchFresh(git, root, slicePaths.branch, spec.sliceId);
-			mkdirSync(dirname(slicePaths.workspace), { recursive: true });
+			await mkdir(dirname(slicePaths.workspace), { recursive: true });
 			const add = await runGit(git, root, ["worktree", "add", "-b", slicePaths.branch, slicePaths.workspace, base]);
 			if (!add.ok) {
 				if (isResourceFailure(add)) {
@@ -270,7 +270,7 @@ export async function forkSlices({ root, slug, slices, base, deps = {} }) {
 					workspace: slicePaths.workspace,
 				});
 			}
-			assertSamePath(toplevel.stdout.trim(), slicePaths.workspace, spec.sliceId);
+			await assertSamePath(toplevel.stdout.trim(), slicePaths.workspace, spec.sliceId);
 
 			const head = await revParse(git, slicePaths.workspace, "HEAD", spec.sliceId);
 			await board.ensureSlice({
@@ -318,7 +318,7 @@ export async function forkSlices({ root, slug, slices, base, deps = {} }) {
 			handles.push(handle);
 		} catch (error) {
 			let cleanupOk = true;
-			if (created || existsSync(slicePaths.workspace)) {
+			if (created || (await pathExists(slicePaths.workspace))) {
 				cleanupOk = await cleanupFailedWorktree(git, paths.root, slicePaths);
 			}
 			try {
@@ -352,13 +352,13 @@ export async function forkSlices({ root, slug, slices, base, deps = {} }) {
  * workspace is verified and adopted. An unknown shape fails closed.
  */
 async function recoverCreatingSlices({ root, slug, paths, deps, git }) {
-	const state = readState(paths.statePath);
+	const state = await readState(paths.statePath);
 	if (!state) return [];
 	const handles = [];
 	for (const slice of Object.values(state.slices)) {
 		if (normalizeStatus(slice.status) !== "creating") continue;
 		const slicePaths = worktreePaths(root, slug, slice.slice_id);
-		if (!existsSync(slicePaths.workspace)) {
+		if (!(await pathExists(slicePaths.workspace))) {
 			const at = nowIso(ports(deps).clock);
 			await markSlice(paths, deps, slice.slice_id, {
 				status: "pending",
@@ -379,7 +379,7 @@ async function recoverCreatingSlices({ root, slug, paths, deps, git }) {
 				next: "inspect the worktree and remove it before retrying fork",
 			});
 		}
-		assertSamePath(toplevel.stdout.trim(), slicePaths.workspace, slice.slice_id);
+		await assertSamePath(toplevel.stdout.trim(), slicePaths.workspace, slice.slice_id);
 		const branch = await runGit(git, root, ["show-ref", "--verify", "--quiet", `refs/heads/${slicePaths.branch}`]);
 		if (branch.status !== 0) {
 			throw herdError(":STALE_CONTROL", "interrupted worktree has no Slice branch", {
@@ -457,7 +457,7 @@ export async function enqueueSlice({ root, slug, sliceId, report, holder, deps =
 	}
 	const board = resolveBoardPort(ports(deps).board, { root, slug, sliceId });
 	const paths = worktreePaths(root, slug, sliceId);
-	if (readState(paths.statePath) === null) {
+	if ((await readState(paths.statePath)) === null) {
 		throw missingState(paths.statePath);
 	}
 	return withState(
@@ -566,7 +566,7 @@ export async function joinSlice({ root, slug, signal, deps = {} }) {
 
 	for (;;) {
 		throwIfAborted(signal);
-		const current = readState(paths.statePath);
+		const current = await readState(paths.statePath);
 		if (current === null) return noneResult();
 
 		if (current.queue.length > 0) {
@@ -586,10 +586,16 @@ export async function joinSlice({ root, slug, signal, deps = {} }) {
 				next: "call forkSlices for a creating Slice; inspect the worktree/rebase state for a joining Slice",
 			});
 		}
-		const missing = Object.values(current.slices).filter((slice) => {
+		const missing = [];
+		for (const slice of Object.values(current.slices)) {
 			const status = normalizeStatus(slice.status);
-			return (status === "running" || status === "reviewing" || status === "swarming") && !existsSync(slice.workspace);
-		});
+			if (
+				(status === "running" || status === "reviewing" || status === "swarming") &&
+				!(await pathExists(slice.workspace))
+			) {
+				missing.push(slice);
+			}
+		}
 		if (missing.length > 0) {
 			throw herdError(":STALE_CONTROL", "active Slice worktree is missing", {
 				slices: missing.map((slice) => ({
@@ -643,7 +649,7 @@ export async function abandonSlice({ root, slug, sliceId, reason, actor, deps = 
 	const paths = worktreePaths(root, slug, sliceId);
 	const board = resolveBoardPort(deps.board, { root, slug, sliceId });
 	const portsValue = { ...ports(deps), board };
-	if (readState(paths.statePath) === null) {
+	if ((await readState(paths.statePath)) === null) {
 		throw missingState(paths.statePath);
 	}
 	const integration = await acquireWithWait(
@@ -756,7 +762,7 @@ export async function gcWorktrees({ root, slug, retainDays = DEFAULT_RETAIN_DAYS
 	assertRetainDays(retainDays);
 	const portsValue = ports(deps);
 	const paths = missionPaths(root, slug);
-	if (readState(paths.statePath) === null) {
+	if ((await readState(paths.statePath)) === null) {
 		return { removed: [], retained: [], skipped: [] };
 	}
 	const integration = await acquireWithWait(
@@ -816,7 +822,7 @@ export async function gcWorktrees({ root, slug, retainDays = DEFAULT_RETAIN_DAYS
 						"--force",
 						slice.workspace,
 					]);
-					const stillExists = existsSync(slice.workspace);
+					const stillExists = await pathExists(slice.workspace);
 					if (!removedResult.ok && stillExists) {
 						skipped.push({
 							slice_id: slice.slice_id,
@@ -859,7 +865,7 @@ async function joinHead({ root, slug, signal, deps, paths }) {
 		signal,
 	);
 	try {
-		if (readState(paths.statePath) === null) {
+		if ((await readState(paths.statePath)) === null) {
 			throw missingState(paths.statePath);
 		}
 		for (;;) {
@@ -1452,7 +1458,7 @@ async function isRebaseInProgress(git, workspace) {
 		const result = await runGit(git, workspace, ["rev-parse", "--git-path", name]);
 		if (!result.ok) continue;
 		const path = result.stdout.trim();
-		if (path && existsSync(resolve(workspace, path))) return true;
+		if (path && (await pathExists(resolve(workspace, path)))) return true;
 	}
 	return false;
 }
@@ -1519,11 +1525,11 @@ function insufficientWorktrees(root, requested, created, result) {
 }
 
 async function cleanupFailedWorktree(git, root, paths) {
-	if (!existsSync(paths.workspace)) return true;
+	if (!(await pathExists(paths.workspace))) return true;
 	await runGit(git, root, ["worktree", "remove", "--force", paths.workspace]);
 	const branch = await runGit(git, root, ["branch", "-D", paths.branch]);
 	await runGit(git, root, ["worktree", "prune"]);
-	if (existsSync(paths.workspace)) return false;
+	if (await pathExists(paths.workspace)) return false;
 	return branch.ok || /not found/i.test(branch.stderr);
 }
 
@@ -1570,9 +1576,18 @@ function createState(slug, base, now) {
 	};
 }
 
-function readState(path) {
+async function pathExists(path) {
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function readState(path) {
 	const legacy = path.endsWith(".edn") ? `${path.slice(0, -4)}.json` : null;
-	if (legacy && !existsSync(path) && existsSync(legacy)) {
+	if (legacy && !(await pathExists(path)) && (await pathExists(legacy))) {
 		throw herdError(":STALE_CONTROL", "legacy JSON worktree state exists", {
 			path: legacy,
 			expected: path,
@@ -1581,7 +1596,7 @@ function readState(path) {
 	}
 	let text;
 	try {
-		text = readFileSync(path, "utf8");
+		text = await readFile(path, "utf8");
 	} catch (error) {
 		if (error?.code === "ENOENT") return null;
 		throw herdError(":STALE_CONTROL", "cannot read worktree state", {
@@ -1715,7 +1730,7 @@ async function withState(paths, deps, fn, options = {}) {
 	const key = paths.statePath;
 	const previous = stateTails.get(key) ?? Promise.resolve();
 	const run = previous.then(async () => {
-		const existing = readState(paths.statePath);
+		const existing = await readState(paths.statePath);
 		if (existing === null && options.create === false) {
 			throw missingState(paths.statePath);
 		}
@@ -2028,13 +2043,13 @@ function sleep(ms, signal) {
 
 async function appendEvent(path, event, data, options = {}) {
 	try {
-		mkdirSync(dirname(path), { recursive: true });
+		await mkdir(dirname(path), { recursive: true });
 		const record = {
 			at: new Date().toISOString(),
 			event,
 			...data,
 		};
-		appendFileSync(path, `${JSON.stringify(record)}\n`, "utf8");
+		await appendFile(path, `${JSON.stringify(record)}\n`, "utf8");
 		return true;
 	} catch (error) {
 		if (options.required === true) throw error;
@@ -2042,8 +2057,8 @@ async function appendEvent(path, event, data, options = {}) {
 	}
 }
 
-function assertFreshTarget(paths, sliceId) {
-	if (existsSync(paths.workspace)) {
+async function assertFreshTarget(paths, sliceId) {
+	if (await pathExists(paths.workspace)) {
 		throw herdError(":FILE_CONFLICT", "worktree path already exists", {
 			path: paths.workspace,
 			slice_id: sliceId,
@@ -2052,9 +2067,9 @@ function assertFreshTarget(paths, sliceId) {
 	}
 }
 
-function assertSamePath(actual, expected, sliceId) {
-	const left = safeRealpath(actual);
-	const right = safeRealpath(expected);
+async function assertSamePath(actual, expected, sliceId) {
+	const left = await safeRealpath(actual);
+	const right = await safeRealpath(expected);
 	if (left !== right) {
 		throw herdError(":PATH_ESCAPE", "git worktree resolves outside the expected path", {
 			slice_id: sliceId,
@@ -2065,9 +2080,9 @@ function assertSamePath(actual, expected, sliceId) {
 	}
 }
 
-function safeRealpath(path) {
+async function safeRealpath(path) {
 	try {
-		return realpathSync(path);
+		return await realpath(path);
 	} catch {
 		return resolve(path);
 	}

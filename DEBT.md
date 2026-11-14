@@ -1,79 +1,88 @@
 # DEBT.md — 相对根规格的未关闭缺口
 
-> 本文件只记录根 `AGENTS.md` 要求但当前工作区尚未做到的事项。关闭即删除；源码存在或窄测试通过不等于完成。当前设计以根 `AGENTS.md` 的 2026-11-13 生命周期修订与 §2.2–§2.6 为准。
+> 本文件只记录根 `AGENTS.md` 要求但当前工作区尚未做到的事项。关闭即删除；源码存在、窄测试通过或 `bun test` 全绿都不等于完成/验收。当前设计以根 `AGENTS.md` 的 2026-11-13 生命周期修订与 §2.2–§2.6 为准。
+>
+> 文末「已裁决的有意限制」记录人类明确批准或指令的偏离，它们不是待办。
 
-## D0 默认面仍只有 clj 执行器
-
-- **缺口**：`package.json` 的 `omp.extensions` / `pi.extensions` 只声明 `./src/clj-main.mjs`，注册 `clj_devops`、`wait`、`time_leap`、`ask_beacon`。`/herd`、`review`、`attach_*`、`ask_user`、`devops` 子代理、S1 人工确认、看板、K 路审计、TUI 均未装配。
-- **影响**：当前产品只能验证执行器，不能执行 S1–S5 使命。
-- **下一步**：按 §2.3 落地 `review` + `attach_*`，再恢复完整入口。
-
-## D2 S5 单工作区编排尚未落地
-
-- **缺口**：`main.mjs` 已移除 `fork_slices` 调用并写入 review/attach 的 `STAGE_SURFACES`，ff-only 已改为 `wantsFf` 显式 opt-in；但单工作区 S5 的 runner 接力、board 工具面与 quiescence 屏障尚未接线验证；`src/swarm/worktree.mjs` 仍是休眠代码。
-- **影响**：S5 工具面与提示词按新设计存在，但不能端到端运行。
-- **下一步**：接 `swarm/runner.mjs` 的单工作区 Reviewer ⇄ Swarm 路径；不接线 worktree。
-
-## D3 真实宿主加载与端到端手工验收未完成
+## D3 真实端到端使命验收未完成（用户暂停 dogfood）
 
 - **缺口**：没有真实 tmux 中的 S1→S5 小型使命，没有 `plans/<slug>/s5-report.md`，没有 `docs/manual-acceptance/clean-break/report.md`。
-- **已有观察**：本工作区已被真实 `omp 18.20.0` 加载（`omp plugin list` 指向本目录；`omp -p` 两次成功调用 `clj_devops` 并得到 EDN 回执）。18.16.0 隔离副本曾观察到 S1 面板批准、S2 CASE 冻结、S3/S4 成功与 S5 fork；这些只覆盖旧 `advance` 面，且不是验收。
-- **下一步**：重新 link 本工作区；按新 `review`/`attach` 生命周期跑最小使命（S1 人工批准 → S2–S4 自动 → 单工作区 S5 → K=1 审计）。证据写入 `docs/manual-acceptance/clean-break/`，不得用 `bun test` 代替。
+- **已完成的代码闭环**：唯一清单入口 `src/clj-main.mjs` 已加载 `src/herd/bootstrap.cljs` → `src/herd/main.cljs` + `src/herd/system.cljs`；`/herd` 创建使命与 `.herd/focus.edn`；八门禁工具、11 个 `board_*`、`attach_case_audit` 已注册；S1 面板四态、角色探测、Nudge、单工作区 S5 runner、K 路审计与 FAIL 返工根任务已接线。`tests/` 无 `.disabled`，旧 Cherry/CEK 测试已删除并由 CLJS 测试替代。
+- **已有冒烟**：`timeout 120 omp -p '只回复 ok'` 在 `omp 18.20.0` 下 exit 0、wall 5.1s；真实 `-p` 的 `HERD_TRACE` 记录没有 sync-ms > 200ms 的条目。`env -u BUN_OPTIONS bun test tests --parallel` 为 431 pass / 1 skip / 0 fail（44 files）。
+- **暂停原因**：用户明确暂停 dog food，准备修复后重启；未完成的真实验收不得写成已完成。
+- **下一步**：用户恢复 dogfood 后，重新 link 本工作区，按 S1 人工批准 → S2–S4 自动 → 单工作区 S5 → K=1 审计跑最小使命；证据写入 `docs/manual-acceptance/clean-break/`，不得用 `bun test` 代替。
 
-## D4 S1 人工批准与新 attach 的接线未验证
+## D4 S1 人工批准面板未在真实宿主验证
 
-- **缺口**：新 `attach_brainstorm` 需要在写盘后阻塞打开真实确认面板，支持 approve / revise / deny / pending 四态；`deny` 必须转为 `ask_user` 语义。
-- **下一步**：在真实宿主验证四态；面板必须展示磁盘上的 `plans/<slug>/s1-brainstorm.md`，不能只展示内存提交。
+- **缺口**：S1 确认端口与四态（approve / revise / deny / pending）已实现并有窄测；真实宿主/tmux 中的面板渲染、磁盘文档滚动、Esc 取消与 resume 仍未验证。
+- **已实现**：`attach_brainstorm` 写盘后阻塞打开确认面板；面板从磁盘读取 `plans/<slug>/s1-brainstorm.md` 完整字节；默认选中拒绝，approve / revise / deny 显式选择，Esc 返回 pending；`deny` 转 `ask_user` 语义；文件不可读或无自定义 UI 时 pending/拒绝批准，不使用内存提交副本。
+- **下一步**：在真实宿主逐态验证，并确认 tmux 下的宽度/滚动/键盘行为；结果记录到 `docs/manual-acceptance/`。
 
-## D5 角色身份与宿主兼容
+## D5 角色身份与宿主版本兼容
 
-- **缺口**：角色收窄依赖 `ctx.agent`；17.x/16.x 未实测；`sessionFile` 父链在 17.3.5 无效，18.16 可兑现。当前 dogfood 面没有角色 admission。
-- **下一步**：逐版本探测 `ctx.agent`；缺失时 fail-closed 并标 health degraded；不恢复独立 role-auth 注册表。
+- **缺口**：角色收窄依赖宿主报告的 `ctx.agent` 与首行 `[HERD_ROLE: ...]` token；16.x/17.x 未实测，`sessionFile` 父链在 17.3.5 无效，18.16 可兑现。18.20 只做了 `omp -p` 冒烟，不是角色验收。
+- **下一步**：逐版本探测 `ctx.agent` 与子会话文件路径；缺失时 fail-closed 并标 health degraded，不恢复独立 role-auth 注册表。真实 16.x/17.x 结果记入 `HACK.md` 与验收证据。
 
-## D7 全量交错矩阵未运行
+## D7 全量 V/T/F 交错矩阵未运行
 
-- **缺口**：未运行全量 `bun test` 并逐项核对 V01–V08、T01–T13、F01–F15；多数完整装配测试仍为 `.disabled`。
-- **下一步**：先以窄测试保护新 `review`/`attach` 与单工作区 S5；全量矩阵在完整装配接回后恢复。测试不是验收。
+- **缺口**：`env -u BUN_OPTIONS bun test tests --parallel` 已恢复为 431 pass / 1 skip / 0 fail（44 files），但尚未逐项核对根规格 §9.4 V01–V08、§3.5 T01–T13、F01–F15 的全量交错矩阵，也没有真实的跨进程/tmux 交错重放。
+- **已有材料**：`tmp/d7-matrix.md` 是 2026-11-14 的早期临时映射，记录 239 pass / 1 skip / 4 fail；该数字与当前测试面不一致，只能作为缺口清单参考，不能当成本轮验证。矩阵中 T05、T06、T11 仍无直接用例，V02、V04、V05、T03、T04、T07–T10、T12、T13 仅部分覆盖。
+- **下一步**：以当前 431 pass 为基线重新生成映射，补齐或明确接受 T05/T06/T11 等缺口；真实交错与重启恢复仍需 D3 的宿主验收，测试不是验收。
 
-## D8 审计隔离与 S5 审计闭环
+## 已裁决：审计员只做防呆（不是缺口）
 
-- **缺口**：`startAuditBatch`、`aggregate`、`writeS5Report` 已接线，但真实 `clj_auditor`、bwrap/tmux 隔离、`attach_case_audit`、全 PASS 报告与批准尚未跑通；审计员自行观察工作区与 CASE 数据，不做 frozen 哈希复核，也不写 evidence 目录。
-- **下一步**：在真实宿主用 `s2-cases.edn` 跑 K=1，再扩到 K>1；验证审计前后主工作区只读、`attach_case_audit` 回执、FAIL 返工与批准。
+- `clj_auditor` 不暴露 `write`/`mkdir`/`rm`/`mv`；`call` 可自由使用，可能修改主工作区，这是明确接受的信任边界，不是隔离缺口。审计员不再要求 bwrap。
 
-## D13 未开启装配的同步 fs 与异步调用点
+## D17 本机 `bun test` 需先清除 `BUN_OPTIONS`
 
-- **缺口**：`src/host/subprocess.mjs`、`src/sandbox/*`、`src/stages/*`、`src/swarm/*`、`src/main.mjs` 仍使用同步 fs；`file-lock`/`atomic-write` 已异步，完整装配的调用点需全部 await（`writeDevopsReport` 的测试调用点尚未 await）。
-- **影响**：完整装配接回时仍会阻塞主线程；部分 `main-bootstrap` 测试因历史实现差异失败。
-- **下一步**：按默认面同一规则异步化，并在接回时重写完整装配测试。
-
-## D15 非 dogfood 测试已禁用
-
-- **现状**：`attach-lifecycle`、`audit`、`board`、`dashboard`、`evaluator`、`host`、`main-bootstrap`、`main-consumer`、`runner`、`s5-wiring`、`stages-parsers`、`stages-scores`、`tenure`、`worktree` 共 14 个文件为 `*.test.mjs.disabled`；`bun test tests` 只跑 dogfood 面启用的测试文件。
-- **影响**：完整装配与审计路径暂时没有自动化回归；接回时必须按单工作区语义重写，不得直接恢复旧断言。
+- **现状**：宿主设置 `BUN_OPTIONS=--preload /home/kunweiz/.config/omp/zstd-preload.js`；Bun 1.4.4 在该变量存在时把 `bun test` 误解析为脚本名，输出 `Script not found "test"`。`env -u BUN_OPTIONS bun test tests --parallel` 已实测 431 pass / 1 skip / 0 fail（44 files）。
+- **影响**：放行命令必须带 `env -u BUN_OPTIONS`；该变量属于宿主环境，不得写入 `package.json` 或 CI。
+- **下一步**：无需改仓库；验收记录写明该前缀即可。
 
 ## D18 nbb 运行时：Air-Gapped 已获批准放宽为基本防呆
 
 - **现状**：`nbb` 默认暴露 `js/` 与 `globalThis`，无法兑现 §4.1 的 Air-Gapped 符号表；当前只保证不主动注入 `process`/`require`/`fs`，不承诺逃逸不可能。该放宽由人类操作员于 2026-11-13 明确批准，记录于 `MIGRATION.md`。
-- **影响**：沙盒不是安全边界；LLM 程序可经 `js/` 触碰宿主全局。
+- **已加的防呆**：`src/herd/repl.cljs` 的 `guard-source!` 在用户代码执行前拒绝 `console`、`js/console`、`globalThis.console`、`js/process.stdout`、`js/process.stderr`、`process.stdout`、`process.stderr` 与 `(.-stdout js/process)` 等直接访问，返回 `:CAPABILITY_DENIED`（`:reason :console-or-stdio-forbidden`）；字符串、UFSS fence、字符字面量与注释中的同名词不误杀。`call` 仍用 pipe 捕获 stdout/stderr，但不落盘日志；输出只保留在程序回执中。
+- **影响**：沙盒不是安全边界；LLM 程序仍可经 `js/` 触碰宿主全局。这个防呆只避免误写宿主终端/日志流，不能宣传为隔离。
 - **下一步**：若需强隔离，改用自建 SCI ctx 或子进程 worker；在此之前不得把基本防呆宣传为安全隔离。
 
-## D19 完整装配迁移未收口
+## 已裁决的有意限制（不是缺口，不进入待办）
 
-- **现状**：默认面已接通 `clj_devops`、`wait`、`time_leap`、`ask_beacon`、提示词注入与宿主工具黑名单。
-- **现状**：`stages/parsers`、`tenure`、`disclosures`、`scores`、`paths`、`mission`、`store`、`review`、`attach` 与 `util/atomic-write` 已迁移并在 canonical 测试中。
-- **缺口**：宿主工具注册（`review`/`attach_*`/`board_*`）、S1 确认面板、S5 runner、K 路审计、TUI 与 `writeS5Report` 未接线；旧 `src/*.mjs` 仍存在但不由默认入口加载。
-- **下一步**：按 `MIGRATION.md` 台账继续迁移完整装配，完成后删除旧模块。
+### 性能边界（2026-11-14，用户报告 5s UI 卡顿后确定）
 
-## D22 `wait` 超时的 runtime-parked 无法 `unpark`
+这些上限是有意保留的行为，不是未完成项；触发时以明确错误码拒绝，不静默截断。
 
-- **现状**：`park-all!` 标 `:parked :deadline :recoverable false`；`repl/unpark` 对这类程序返回 `{:state :unrecoverable :reason :deadline}`，不再抛 `:PROGRAM_UNKNOWN`。
-- **缺口**：它不是表达式级挂起；程序仍在后台运行，无法真正暂停/恢复，只能等完成或 `abandon`。
-- **影响**：回执已明示不可恢复；`park-all` 仍不是真正的表达式级挂起。
-- **下一步**：为超时程序注入可暂停的 await 点，或明确文档化为“只降级为后台完成”。
+- **写锁**：默认等待 500ms（`HERD_LOCK_WAIT_MS` 可调 50–5000ms），10ms 起指数退避并封顶 160ms，超时返回 `:LOCK_BUSY`（`:retryable true`）。
+- **`glob`**：跳过 `node_modules`、`.git`、`.herd`；默认 20 000 条目 / 2 000ms 预算；超限返回 `:LIMIT_EXCEEDED`，不截断结果。
+- **`where`**：最近行 DP 预算 1 000 000 cells + 150ms deadline；超限返回 `:budget-exhausted`。
+- **`cat` / `write`**：单文件 2 MiB 上限，超限 `:LIMIT_EXCEEDED`；`write` 全异步。
+- **handoff 扫描**：只回看最近 512 条消息找 tool-call，文档窗口 32 条，不再每轮全量扫描。
+- **usage / status UI**：100ms 合并刷新；流式 tick 用轻量 delta，不重建全量。
+- **`before_provider_request` probe**：默认关闭，仅 `HERD_CACHE_PROBE=1` 时写 `.herd/cache-probe.jsonl`（可用 `HERD_CACHE_PROBE_PATH` 改路径），单文件 1 MiB。
+- **`HERD_TRACE=1`**：启用热路径计时，写 `.herd/perf-trace.jsonl`（可用 `HERD_TRACE_PATH` 改路径），单文件 1 MiB；默认关闭。记录含 `sync-ms`，用于确认同步阻塞已回到亚 200ms。
+- **实测（2026-11-14）**：5MB payload probe off 0.02ms；1000 条 context 2.3ms；1000 次 message_update 2.4ms；`where` 1MB 0 匹配约 12ms；`glob` 20k 约 14ms；锁竞争约 0.5s 返回 `:LOCK_BUSY`；100 次 `write` 约 25ms；真实 `omp -p` trace 无 sync-ms > 200ms 条目。
 
+### vibe 模式工具面不干预（2026-11-14）
 
-## D33 scores 核心已迁移，审计证据链未收口
+- 没有 `/herd` 使命时，主会话与普通子代理（无 `[HERD_ROLE]` 收窄角色）保留全部宿主工具，并追加 `clj_devops`、`wait`、`handoff`（devops 面）；`/vibe` 主代理除外，不调用 `setActiveTools`。
+- 只有使命内主会话按阶段、显式 herd 角色按角色收窄；收窄失败记 health degraded，不静默删工具。
+- 旧宿主工具黑名单已删除。`tests/cljs-surface-vibe.test.mjs` 断言 vibe 模式不删宿主工具；`tests/cljs-surface.test.mjs` 断言使命/角色收窄。
 
-- **现状**：`stages/scores.cljs` 已实现 CASE/提交/阈值/min(U,D)/PASS-FAIL-INCOMPLETE 与 canonical 覆盖。
-- **缺口**：`writeS5Report`、批准签发与 `attach_case_audit` 接线仍未迁移。`compose-report` 对 `aggregate` 产出的 rows 触发 SCI `Invalid arity: 3`（等值手写字面量却正常），未完成的 `report.cljs` 已删除；先隔离该 analyzer 问题再恢复报告层。
-- **下一步**：接 `writeS5Report` 与批准签发，再与 `attach_case_audit` 对接。
+### TUI 看板按用户指令移除（2026-11-14）
+
+- 用户明确指令移除 TUI 看板，覆盖根规格 §6.1 的看板要求；这是已裁决的偏离，不是迁移遗漏。
+- `src/tui/dashboard-model.mjs`、`src/tui/dashboard-widget.mjs` 保留在源码树中，但没有任何入口 import 或挂载；`src/main.mjs` 仍引用它们，但 `main.mjs` 不由清单加载。
+- `tests/cljs-dashboard-wiring.test.mjs` 明确断言 `install!`、`session-start!` 与 `/herd` 都不挂载 `herdchestra-dashboard`。不得以“根规格要求”为由恢复看板，除非人类操作员撤销该指令。
+
+## D19 完整测试套件的 nbb bootstrap 成本
+
+- 条款：§9.3 属性测试、§9.7 放行标准。
+- 缺口：完整 400 tests 在 27 个独立 Bun 进程中各自加载 33 个 CLJS 模块，实测 USER 62.6s + SYS 4.8s；16 核完美满载下界约 4.2s，无法达到 1s。
+- 现状：默认 `bun run test` 只跑 `tests/fast.test.mjs`（约 0.5s，182 tests）；`bun run test:full` 跑完整套件（约 5.6s）；小数据量 + 近零开销断言已覆盖 cat 2 MiB、glob 跳过/上限、where 零匹配、probe off。
+- 建议：合并同 domain 的 CLJS 测试文件共享一次 bootstrap，或把 `herd.system`/`stages`/`swarm` 改为延迟加载；完成后重新测墙钟与 CPU。
+
+## D20 e2e 真实模型审批
+
+- 条款：§2.7 常授权无人值守、§9.5 K 路审计、§9.7 放行标准。
+- 约束：任何 e2e 不得自动使用真实模型烧钱；真实模型 e2e 必须先获得用户明确批准。
+- 默认：单测/集成测试使用 fake clock、显式事件与 mock 子代理；真实 omp + 真实模型的使命验收由用户批准后手动启动。

@@ -7620,14 +7620,14 @@ function deadlineFor(session, intentInfo) {
 			return Number(callMeta.deadlineAt);
 		}
 		if (Number.isFinite(callMeta.intentBytes)) {
-			return sessionNow(session) + Number(callMeta.intentBytes) * 50;
+			return sessionNow(session) + 2000 + Number(callMeta.intentBytes) * 200;
 		}
 	}
 	const intent = intentInfo?.intent;
 	if (typeof intent !== "string" || intent.length === 0) {
 		fail("INTENT_REQUIRED", "Sandbox calls need a non-empty intent");
 	}
-	return sessionNow(session) + TEXT_ENCODER.encode(intent).length * 50;
+	return sessionNow(session) + 2000 + TEXT_ENCODER.encode(intent).length * 200;
 }
 
 function buildCapabilityMap(session, program) {

@@ -7,7 +7,7 @@ import { UFSS_PROMPT_NOTE } from "../clj-sandbox/ufss.mjs";
  * this order by M0's `before_agent_start`; the text is preserved verbatim,
  * only the JavaScript literal escaping differs from the specification.
  *
- * Tool-First, sandbox REPL, VFS, call, and Time Leap rules live in the tool
+ * Tool-First, sandbox REPL, VFS, and call rules live in the tool
  * and parameter descriptions, not in this system-prompt aggregate.
  *
  * Depends only on the UFSS note. This module must never import stage disclosures: the

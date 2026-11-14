@@ -13,7 +13,7 @@
  */
 
 import { lookup } from "node:dns/promises";
-import { unlinkSync } from "node:fs";
+import { unlink } from "node:fs/promises";
 import net, { isIP } from "node:net";
 import { basename, dirname } from "node:path";
 import { herdError } from "../util/errors.mjs";
@@ -205,7 +205,7 @@ export function createHostEgressRelay({ socketPath, host, port, address, allowNo
 		if (stopped) throw herdError("CAPABILITY_DENIED", "egress relay was already stopped", {});
 		started = true;
 		try {
-			unlinkSync(socketPath);
+			await unlink(socketPath);
 		} catch {
 			// The path is private and normally absent.
 		}
@@ -228,7 +228,7 @@ export function createHostEgressRelay({ socketPath, host, port, address, allowNo
 				setTimeout(resolveClose, 250).unref?.();
 			});
 			try {
-				unlinkSync(socketPath);
+				await unlink(socketPath);
 			} catch {
 				// Already gone.
 			}
@@ -258,7 +258,7 @@ export function createHostEgressRelay({ socketPath, host, port, address, allowNo
 			server = null;
 		}
 		try {
-			unlinkSync(socketPath);
+			await unlink(socketPath);
 		} catch {
 			// Already gone.
 		}

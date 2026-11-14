@@ -26,7 +26,8 @@
  */
 
 import { dlopen, FFIType, read } from "bun:ffi";
-import { closeSync, constants, openSync, realpathSync } from "node:fs";
+import { closeSync, constants } from "node:fs";
+import { open, realpath } from "node:fs/promises";
 
 const SYS_LANDLOCK_CREATE_RULESET = 444;
 const SYS_LANDLOCK_ADD_RULE = 445;
@@ -142,7 +143,7 @@ function normalizePorts(value) {
 	return ports;
 }
 
-function normalizePaths(value) {
+async function normalizePaths(value) {
 	const list = Array.isArray(value) ? value : value == null ? [] : [value];
 	const paths = [];
 	for (const item of list) {
@@ -151,7 +152,7 @@ function normalizePaths(value) {
 				value: item,
 			});
 		}
-		const real = realpathSync(item);
+		const real = await realpath(item);
 		if (!paths.includes(real)) paths.push(real);
 	}
 	return paths;
@@ -171,12 +172,12 @@ function addNetRule(libs, rulesetFd, port, access) {
 	}
 }
 
-function addPathRule(libs, rulesetFd, path, access) {
-	const pathFd = openSync(path, constants.O_PATH | constants.O_CLOEXEC);
+async function addPathRule(libs, rulesetFd, path, access) {
+	const handle = await open(path, constants.O_PATH | constants.O_CLOEXEC);
 	try {
 		const attr = Buffer.alloc(12);
 		attr.writeBigUInt64LE(access, 0);
-		attr.writeInt32LE(pathFd, 8);
+		attr.writeInt32LE(handle.fd, 8);
 		const result = Number(
 			libs.add.symbols.syscall(SYS_LANDLOCK_ADD_RULE, rulesetFd, LANDLOCK_RULE_PATH_BENEATH, attr, 0),
 		);
@@ -189,14 +190,14 @@ function addPathRule(libs, rulesetFd, path, access) {
 		}
 	} finally {
 		try {
-			closeSync(pathFd);
+			await handle.close();
 		} catch {
 			// Best effort; the ruleset already owns the reference.
 		}
 	}
 }
 
-function installRuleset({ handledFs, handledNet, scoped, requiredAbi, addRules }) {
+async function installRuleset({ handledFs, handledNet, scoped, requiredAbi, addRules }) {
 	const capability = landlockCapability();
 	if (capability.abi < requiredAbi) {
 		throw sandboxError("CAPABILITY_DENIED", "the kernel Landlock ABI is too old for this layer", {
@@ -220,7 +221,7 @@ function installRuleset({ handledFs, handledNet, scoped, requiredAbi, addRules }
 		});
 	}
 	try {
-		addRules(libs, rulesetFd);
+		await addRules(libs, rulesetFd);
 		const noNewPrivileges = libs.create.symbols.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 		if (noNewPrivileges !== 0) {
 			throw sandboxError("CAPABILITY_DENIED", "could not set no_new_privs before Landlock", {
@@ -247,14 +248,14 @@ function installRuleset({ handledFs, handledNet, scoped, requiredAbi, addRules }
  * Network and IPC layer. Runs before bwrap, so it deliberately leaves
  * `handled_access_fs` empty; bwrap still has to mount the sandbox root.
  */
-export function applyNetworkLandlock({ allowedTcpPorts = [] } = {}) {
+export async function applyNetworkLandlock({ allowedTcpPorts = [] } = {}) {
 	const capability = landlockCapability();
 	if (!capability.network) {
 		return { applied: false, abi: capability.abi, reason: "landlock-abi" };
 	}
 	const ports = normalizePorts(allowedTcpPorts);
 	const scoped = capability.scopes ? LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET | LANDLOCK_SCOPE_SIGNAL : 0n;
-	const abi = installRuleset({
+	const abi = await installRuleset({
 		handledFs: 0n,
 		handledNet: LANDLOCK_ACCESS_NET_CONNECT_TCP | LANDLOCK_ACCESS_NET_BIND_TCP,
 		scoped,
@@ -281,10 +282,10 @@ export function applyNetworkLandlock({ allowedTcpPorts = [] } = {}) {
  * rules only admit directories whose external sockets must remain usable (the
  * private tmux socket and the per-auditor temp tree).
  */
-export function applyUnixSocketLandlock({ allowedSocketPaths = [], allowedReferPaths = [] } = {}) {
+export async function applyUnixSocketLandlock({ allowedSocketPaths = [], allowedReferPaths = [] } = {}) {
 	const capability = landlockCapability();
-	const unixPaths = normalizePaths(allowedSocketPaths);
-	const referPaths = normalizePaths(allowedReferPaths);
+	const unixPaths = await normalizePaths(allowedSocketPaths);
+	const referPaths = await normalizePaths(allowedReferPaths);
 	if (unixPaths.length > 0 && !capability.pathnameUnix) {
 		throw sandboxError("CAPABILITY_DENIED", "pathname UNIX hardening requires Landlock ABI 9", {
 			abi: capability.abi,
@@ -301,14 +302,14 @@ export function applyUnixSocketLandlock({ allowedSocketPaths = [], allowedReferP
 	if (handledFs === 0n) {
 		throw sandboxError("INVALID_ARGUMENT", "Landlock launcher needs at least one path rule", {});
 	}
-	const abi = installRuleset({
+	const abi = await installRuleset({
 		handledFs,
 		handledNet: 0n,
 		scoped: 0n,
 		requiredAbi: unixPaths.length > 0 ? PATHNAME_ABI : REFER_ABI,
-		addRules: (libs, rulesetFd) => {
-			for (const path of referPaths) addPathRule(libs, rulesetFd, path, LANDLOCK_ACCESS_FS_REFER);
-			for (const path of unixPaths) addPathRule(libs, rulesetFd, path, LANDLOCK_ACCESS_FS_RESOLVE_UNIX);
+		addRules: async (libs, rulesetFd) => {
+			for (const path of referPaths) await addPathRule(libs, rulesetFd, path, LANDLOCK_ACCESS_FS_REFER);
+			for (const path of unixPaths) await addPathRule(libs, rulesetFd, path, LANDLOCK_ACCESS_FS_RESOLVE_UNIX);
 		},
 	});
 	return { abi, allowedSocketPaths: unixPaths, allowedReferPaths: referPaths };
@@ -353,7 +354,7 @@ export function parseSocketLandlockArgs(argv) {
 if (import.meta.main) {
 	try {
 		const parsed = parseSocketLandlockArgs(process.argv.slice(2));
-		applyUnixSocketLandlock({
+		await applyUnixSocketLandlock({
 			allowedSocketPaths: parsed.unixPaths,
 			allowedReferPaths: parsed.referPaths,
 		});

@@ -32,7 +32,7 @@ function errorMessage(error) {
  */
 export async function bootstrapMain(pi, deps = {}) {
 	try {
-		const seed = registerAuditModelSeed(pi, deps.env ?? process.env);
+		const seed = await registerAuditModelSeed(pi, deps.env ?? process.env);
 		if (seed.registered) {
 			recordHealth({
 				entry: "main.audit-model-seed",

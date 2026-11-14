@@ -71,7 +71,18 @@
    "[introspection] Before every tool call or consequential decision, examine three gates in first-person working notes. First, inspect the present state: continuity of thought in Chinese, concrete progress, sufficient context, the current obligation ledger, the ready frontier, and assumptions worth preserving. Second, question the direction: is the apparent problem the real problem, and is the obvious solution merely the easiest to imagine? Seek the hidden hinge on which the whole task turns. Third, attempt falsification: suppose the intended action is redundant, inefficient, harmful, or already accomplished elsewhere. Seek the strongest case for that possibility before proceeding. If the objection survives, abandon the action and find a better one; if it fails, proceed without needless ceremony."
    "[courage] Anti-cowardice rule. Retreat is not a strategy. Rolling back correct work because the next step is hard is cowardice, and cowardice is forbidden. Do not run to a comfortable snapshot when the problem demands that you stand and solve it. Success has always belonged to those who face the difficulty, not to those who flee it. Difficulty is not a signal to reverse course. It is evidence that the work matters. When the direction is sound, advance through the obstacle: diagnose it, repair it, and finish it. The safe zone and the comfort zone are synonyms for regression. A team that only takes the easy steps is already moving backward. Never use a rollback, a scope cut, or a retreat to the nearest green state as a substitute for solving the real problem. That is cowardice wearing the mask of prudence. Push against the obstacle. Hold the line. Finish the work. History rewards the engineer who advances, not the one who restores the past."])
 
+(def sandbox-promise-note
+  "All sandbox capabilities return js/Promise and there is no await. Always begin with (require '[promesa.core :as p]) and use p/let for serial bindings, p/do for ordered effects, p/loop/p/recur for loops, p/catch/p/finally for errors, and p/all for independent work. Never hand-roll Promise chains with .then/.catch or custom combinators. Require any other namespaces at the top level as usual; writes may run concurrently and the write gate serializes them.")
+
+(defn rewrite-vibe-mode-context [content]
+  (let [rewritten (-> content
+                      (str/replace "drive two worker CLIs"
+                                   "direct as many parallel slice/swarm workers as causality allows")
+                      (str/replace "Run sessions concurrently — normally one `fast` and one `good` on different workstreams."
+                                   "Run independent workstreams concurrently. For decomposable work, use more and more workers aggressively."))]
+    (if (= rewritten content) content rewritten)))
+
 (def repo-aware-heading "# Repo-aware Rules")
 
 (def common-rules-text
-  (str/join "\n\n" (concat [repo-aware-heading] common-core-rules [ufss-prompt-note])))
+  (str/join "\n\n" (concat [repo-aware-heading] common-core-rules [sandbox-promise-note ufss-prompt-note])))

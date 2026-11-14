@@ -872,7 +872,7 @@ function createContext(role, roots, observations = null, observationScope = null
 const PARAMETER_TEXT = Object.freeze({
 	programName: "Optional REPL name for park/unpark; auto-generated when omitted.",
 	code: "Bare ClojureScript REPL input. Any number of top-level forms; the last value is returned.",
-	intent: "Concrete zh-cn action intent. Deadline = UTF-8 bytes * 50ms + 1000ms.",
+	intent: "Concrete zh-cn action intent. Deadline = UTF-8 bytes * 200ms + 2000ms.",
 });
 
 function parameters() {
@@ -921,7 +921,7 @@ Submit bare REPL input: any number of top-level expressions; the last value is t
 
 Batch VFS: write/mkdir/rm/mv mutate an in-memory overlay first. The batch commits atomically only when the program returns normally; an exception, (park ...), or a conflict leaves disk untouched. A stamp conflict returns :FILE_CONFLICT. (where ...) requires exactly one UTF-16 match and otherwise parks with :nearest or :candidates; resume with (unpark {:name ... :value [b e]}). (whereAll ...) returns all spans and [] on zero matches. Receipts and structured literals are EDN + UFSS; never hand-build JSON escaping.
 
-call is argv-only: no shell, pipes, redirects, globbing, or &&. Every call must include a non-empty :alternative map (1+ pair) naming built-in tools or other approaches and why they were not chosen; the framework ignores it. clj_* grants a single free 1000ms total call-wait grace at fork time; once cumulative call wait exceeds it, the program backgrounds immediately (:state :forked) and you collect results with wait (deadline = 1000ms + UTF-8 bytes * 50ms). If you want guaranteed synchronous return, do not use call.`;
+call is argv-only: no shell, pipes, redirects, globbing, or &&. clj_* grants a single free 2000ms total call-wait grace at fork time; once cumulative call wait exceeds it, the program backgrounds immediately (:state :forked) and you collect results with wait (deadline = 2000ms + UTF-8 bytes * 200ms). If you want guaranteed synchronous return, do not use call.`;
 }
 
 const TOOL_DESCRIPTION_BY_NAME = Object.freeze({

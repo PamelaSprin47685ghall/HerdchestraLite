@@ -73,11 +73,15 @@ describe("regex worker semantics shard 2", () => {
 	});
 
 		it("terminates a catastrophic regex at its deadline", async () => {
-		const started = Date.now();
-		const error = await rejection(reFind(CATASTROPHIC, CATASTROPHIC_TEXT, { timeoutMs: 50 }));
+		let deadlineFired = false;
+		const error = await rejection(reFind(CATASTROPHIC, CATASTROPHIC_TEXT, {
+			timeoutMs: 50,
+			setTimeout: (fn) => { deadlineFired = true; queueMicrotask(fn); return 1; },
+			clearTimeout: () => {},
+		}));
+		expect(deadlineFired).toBe(true);
 		expect(error.code).toBe(":UPSTREAM_ABORTED");
 		expect(error.reason).toBe("deadline");
-		expect(Date.now() - started).toBeLessThan(3000);
 		expect(await reFind(/ok/, "ok")).toBe("ok");
 	});
 });

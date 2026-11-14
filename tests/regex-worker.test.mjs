@@ -81,7 +81,7 @@ describe("regex worker semantics shard 1", () => {
 	});
 
 		it("honours an absolute deadline and a pre-aborted signal", async () => {
-		const expired = await rejection(reFind(/a/, "a", { deadlineAt: Date.now() - 1 }));
+		const expired = await rejection(reFind(/a/, "a", { deadlineAt: 0 }));
 		expect(expired.reason).toBe("deadline");
 		const controller = new AbortController();
 		controller.abort();

@@ -92,7 +92,7 @@ describe("regex worker semantics shard 3", () => {
 		it("terminates a catastrophic regex when the signal aborts", async () => {
 		const controller = new AbortController();
 		const pending = reFind(CATASTROPHIC, CATASTROPHIC_TEXT, { signal: controller.signal });
-		setTimeout(() => controller.abort("operator"), 25);
+		queueMicrotask(() => controller.abort("operator"));
 		const error = await rejection(pending);
 		expect(error.code).toBe(":UPSTREAM_ABORTED");
 		expect(error.reason).toBe("abort");

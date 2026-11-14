@@ -1,7 +1,7 @@
 /**
  * Session identity for plugin-local state.
  *
- * Beacons, Ariadne timelines, and sandbox pools belong to one host session.
+ * Sandbox pools and handoff state belong to one host session.
  * They must never key off the process, the cwd, or an agent template id:
  * those make independent sessions share state. The host exposes a stable
  * `sessionManager.getSessionId()`; the session file is only a fallback.

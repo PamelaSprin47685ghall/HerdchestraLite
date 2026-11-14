@@ -15,7 +15,7 @@
  * The outbound `context` tail is its only injection path.
  */
 export const LANGUAGE_SKILL =
-	'<skill version="1.0">强制以简体中文思考，尤其要以简体中文词开头。强制简体中文回答用户。</skill>';
+	'<skill version="1.0">强制以简体中文开始思考。强制简体中文回答用户。积木化是编写结构化程序的正确思路。</skill>';
 
 /**
  * Rewrite only the outbound copy of the host vibe-mode context.
@@ -73,10 +73,9 @@ export function buildUnattendedNudge({ stage, expectedTool, openItems = [], park
  * @returns {{ role: "user", content: Array<{ type: "text", text: string }> }}
  */
 
-export function buildOutboundTailReminder({ parkedPrograms = [], ariadneBlock = null, includeLanguage = true } = {}) {
+export function buildOutboundTailReminder({ parkedPrograms = [], includeLanguage = true } = {}) {
 	const parts = [];
 	if (includeLanguage) parts.push(LANGUAGE_SKILL);
-	if (typeof ariadneBlock === "string" && ariadneBlock.length > 0) parts.push(ariadneBlock);
 	if (Array.isArray(parkedPrograms) && parkedPrograms.length > 0) {
 		const undecided = parkedPrograms.map((item) =>
 			item?.toolName ? `- ${item.toolName}: ${item.name}` : `- ${item?.name ?? item}`,
@@ -94,10 +93,10 @@ export function buildOutboundTailReminder({ parkedPrograms = [], ariadneBlock = 
 /**
  * Append the outbound tail reminder to a shallow copy of `messages`.
  * The `<skill version="1.0">` language block is persisted once; later
- * turns add `<skill version="1.0">` Ariadne and parked reminders.
+ * turns add the parked-program reminder.
  *
  * @param {unknown} messages
- * @param {{ parkedPrograms?: Array<{ toolName?: string, name: string }>, ariadneBlock?: string | null }} [options]
+ * @param {{ parkedPrograms?: Array<{ toolName?: string, name: string }> }} [options]
  * @returns {unknown[]}
  */
 export function appendOutboundContextTail(messages, options = {}) {

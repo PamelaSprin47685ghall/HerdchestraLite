@@ -47,14 +47,18 @@ UFSS 是 **ClojureScript 字符串字面量的可逆方言**，不是独立语�
 标准格式化流水线：
 
 ```text
-ufssify(cljs) = wrap(format(cljs))
+canonical(text, highlighter?) = ufssify(unufssify(text), highlighter?)
+ufssify(cljs, highlighter?) = wrap(format(cljs), highlighter?)
 ```
 
-- 数据层：`wrap(format(pr-str(value)))`。
-- 代码层：`wrap(format(unwrap(source)))`。
+- `canonical` 是唯一输出入口；源码与 EDN 都先成为 text：源码直接传入，EDN 值由 `pprint` 转成 text。
+- `unufssify` / `ufssify` / `wrap` / `format` 是内部步骤；`unufssify` 把 UFSS fence 变成标准 CLJS 字符串，`ufssify` 反向恢复 canonical fence。
 - `format`：`@chrisoakman/standard-clojure-style` 的代码格式化器，负责布局、缩进与换行；它保注释、保 form 结构。
 - `wrap`：把标准字符串渲染为标准字符串 / 最小 fence / 顶格三引号块；`#"..."` 正则原样保留。
-- 不依赖 `cljs.pprint` 的 `*print-right-margin*`；布局由 formatter 默认规则决定。
+- `highlighter` 可选：存在时在 `ufssify` 中给 code 外层、UFSS body 与 delimiter 加 ANSI；不存在时就是原 canonical。
+- EDN 布局由 `cljs.pprint/pprint` 的运行时默认宽度决定；调用方不传 `*print-right-margin*`，也不承诺宽度可配置。
+- EDN 布局只承诺同一运行时内确定性；不同 nbb/CLJS 版本的默认宽度可能不同，测试不得逐字断言具体换行位置。
+- `canonical` 不额外追加换行；`pprint` 的尾部换行在转 text 时去掉。
 - 多行 body 顶格；闭合 `"""` 与后续 `,` 同行。
 - 字符串外的字节逐字保留。
 
@@ -102,7 +106,7 @@ ufssify(cljs) = wrap(format(cljs))
 | D1 | 自举内核只用标准字符串子集，官方 CLJS reader 可直接读 |
 | D2 | 业务 CLJS 可含 fence，由 pre-pass 展开后交给官方 reader |
 | D3 | UFSS 不改变求值语义 |
-| D4 | canonical 布局由 formatter 的默认规则决定，不受调用方 pprint 宽度影响 |
+| D4 | canonical 布局由 cljs.pprint/pprint 的运行时默认宽度与 formatter 默认规则共同决定；调用方不传 *print-right-margin*，也不承诺宽度可配置 |
 
 ### E 实现纪律
 
@@ -123,7 +127,8 @@ ufssify(cljs) = wrap(format(cljs))
 
 1. `format` 失败必须抛 `:INVALID_ARGUMENT`，`data` 携带 `:error`；不得静默保留旧源码，也不得输出半格式化文本。
 2. `wrap` 遇到无法解析的标准字符串必须抛 `:INVALID_ARGUMENT`；不得吞字，也不得原样保留非法字面量。
-3. `canonical-source` 是源码层 canonical 的唯一入口，必须满足 A3：`canonical-source(source) = source`；不满足时由调用方写回。
+3. `canonical` 是源码层 canonical 的唯一入口，必须满足 A3：`canonical(source) = source`；不满足时由调用方写回。
 4. `literals` 只做值级验证（A4/A5）；它不承担源码文本规范化。
-5. 自举内核（`ufss.cljs`、`bootstrap.cljs`）的 `canonical-source` 输出仍为标准字符串；不得向自举内核引入 fence。
+5. 自举内核（`ufss.cljs`、`bootstrap.cljs`）的 `canonical` 输出仍为标准字符串；不得向自举内核引入 fence。
 6. 源码格式化保留注释与 `(comment ...)`；注释不是数据，不参与 UFSS 字符串渲染。
+7. EDN 布局依赖运行时 `cljs.pprint` 的默认宽度；测试只验证 `(read (canonical v)) ~ v` 与结构，不逐字断言换行位置或列宽。

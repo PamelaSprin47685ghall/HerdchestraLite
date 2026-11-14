@@ -44,20 +44,7 @@
  */
 
 import { createHash, randomUUID as nodeRandomUUID } from "node:crypto";
-import {
-	closeSync,
-	fsyncSync,
-	lstatSync,
-	mkdirSync,
-	openSync,
-	readdirSync,
-	readFileSync,
-	readlinkSync,
-	realpathSync,
-	rmSync,
-	statSync,
-	writeSync,
-} from "node:fs";
+import { lstat, mkdir, open, readdir, readFile, readlink, realpath, rm, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { __test as contractCodec } from "../stages/contract.mjs";
 import { writeEdnAtomic } from "../util/atomic-write.mjs";
@@ -196,10 +183,10 @@ function isIgnoredPath(segments, name) {
 	return false;
 }
 
-function walkSnapshot(absoluteDir, relativeDir, files, errors, seenReal) {
+async function walkSnapshot(absoluteDir, relativeDir, files, errors, seenReal) {
 	let entries;
 	try {
-		entries = readdirSync(absoluteDir, { withFileTypes: true });
+		entries = await readdir(absoluteDir, { withFileTypes: true });
 	} catch (error) {
 		errors.push(
 			failure("INVALID_ARGUMENT", `cannot read directory ${relativeDir || "."}: ${messageOf(error)}`, {
@@ -218,8 +205,8 @@ function walkSnapshot(absoluteDir, relativeDir, files, errors, seenReal) {
 		const absolutePath = join(absoluteDir, entry.name);
 		if (entry.isSymbolicLink()) {
 			try {
-				const target = readlinkSync(absolutePath);
-				const stats = lstatSync(absolutePath, { bigint: true });
+				const target = await readlink(absolutePath);
+				const stats = await lstat(absolutePath, { bigint: true });
 				files.push({
 					path: relativePath,
 					kind: "symlink",
@@ -239,7 +226,7 @@ function walkSnapshot(absoluteDir, relativeDir, files, errors, seenReal) {
 			// Do not follow a directory symlink into a place outside the root;
 			// the symlink itself was recorded above.
 			try {
-				const real = realpathSync(absolutePath);
+				const real = await realpath(absolutePath);
 				if (seenReal.has(real)) continue;
 				seenReal.add(real);
 			} catch (error) {
@@ -250,13 +237,13 @@ function walkSnapshot(absoluteDir, relativeDir, files, errors, seenReal) {
 				);
 				continue;
 			}
-			walkSnapshot(absolutePath, relativePath, files, errors, seenReal);
+			await walkSnapshot(absolutePath, relativePath, files, errors, seenReal);
 			continue;
 		}
 		if (!entry.isFile()) continue;
 		try {
-			const stats = lstatSync(absolutePath, { bigint: true });
-			const bytes = readFileSync(absolutePath);
+			const stats = await lstat(absolutePath, { bigint: true });
+			const bytes = await readFile(absolutePath);
 			files.push({
 				path: relativePath,
 				kind: "file",
@@ -307,7 +294,7 @@ function digestSnapshot(files) {
  * an unusable "before" snapshot and must refuse to accept an unusable "after"
  * snapshot.
  */
-export function snapshotWorkspace(root) {
+export async function snapshotWorkspace(root) {
 	const errors = [];
 	if (!isText(root)) {
 		return {
@@ -321,7 +308,7 @@ export function snapshotWorkspace(root) {
 	const absoluteRoot = resolve(root);
 	let rootStats;
 	try {
-		rootStats = statSync(absoluteRoot, { bigint: true });
+		rootStats = await stat(absoluteRoot, { bigint: true });
 	} catch (error) {
 		return {
 			ok: false,
@@ -346,11 +333,11 @@ export function snapshotWorkspace(root) {
 	const files = [];
 	const seenReal = new Set();
 	try {
-		seenReal.add(realpathSync(absoluteRoot));
+		seenReal.add(await realpath(absoluteRoot));
 	} catch {
 		// The root itself is readable above; a missing realpath is not fatal.
 	}
-	walkSnapshot(absoluteRoot, "", files, errors, seenReal);
+	await walkSnapshot(absoluteRoot, "", files, errors, seenReal);
 	files.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
 	return {
 		ok: errors.length === 0,
@@ -623,7 +610,7 @@ export function createFileSubmissionReader({ root, slug, directory } = {}) {
 	} else if (isText(root) && isText(slug) && SLUG_PATTERN.test(slug)) {
 		baseDir = join(resolve(root), ".herd", "missions", slug, "audit");
 	}
-	return ({ caseId } = {}) => {
+	return async ({ caseId } = {}) => {
 		if (baseDir === null) {
 			return {
 				ok: false,
@@ -643,7 +630,7 @@ export function createFileSubmissionReader({ root, slug, directory } = {}) {
 		}
 		const path = join(baseDir, `${caseId}.submit.edn`);
 		try {
-			const parsed = contractCodec.parseEdn(readFileSync(path, "utf8"));
+			const parsed = contractCodec.parseEdn(await readFile(path, "utf8"));
 			if (!isPlainObject(parsed)) {
 				return {
 					ok: false,
@@ -702,7 +689,7 @@ export function createFileSubmissionReader({ root, slug, directory } = {}) {
  * the first file byte-for-byte untouched. A different batch gets a different
  * directory, so old evidence is never overwritten.
  */
-export function writeSubmissionOnce({ root, slug, caseId, submission, directory } = {}) {
+export async function writeSubmissionOnce({ root, slug, caseId, submission, directory } = {}) {
 	let baseDir = null;
 	if (isText(directory)) {
 		baseDir = resolve(directory);
@@ -744,21 +731,21 @@ export function writeSubmissionOnce({ root, slug, caseId, submission, directory 
 		"developer-score": submission.developer_score,
 		"report-markdown": submission.report_markdown,
 	})}\n`;
-	let fd = -1;
+	let handle = null;
 	let created = false;
 	try {
-		mkdirSync(dirname(path), { recursive: true });
-		fd = openSync(path, "wx", 0o600);
+		await mkdir(dirname(path), { recursive: true });
+		handle = await open(path, "wx", 0o600);
 		created = true;
-		writeSync(fd, text);
-		fsyncSync(fd);
-		closeSync(fd);
-		fd = -1;
+		await handle.writeFile(text);
+		await handle.sync();
+		await handle.close();
+		handle = null;
 		return { ok: true, path };
 	} catch (error) {
-		if (fd !== -1) {
+		if (handle !== null) {
 			try {
-				closeSync(fd);
+				await handle.close();
 			} catch {
 				// The write failure remains the primary error.
 			}
@@ -773,7 +760,7 @@ export function writeSubmissionOnce({ root, slug, caseId, submission, directory 
 		}
 		if (created) {
 			try {
-				rmSync(path, { force: true });
+				await rm(path, { force: true });
 			} catch {
 				// A partial file is worse than a system-error report; remove best effort.
 			}
@@ -1332,14 +1319,14 @@ async function confirmLateExit(record) {
 	return waitForExitConfirmation(startOutcome.value, record);
 }
 
-function prepareDirectory(path, options = {}) {
+async function prepareDirectory(path, options = {}) {
 	try {
-		mkdirSync(path, { recursive: true });
-		const stats = statSync(path);
+		await mkdir(path, { recursive: true });
+		const stats = await stat(path);
 		if (!stats.isDirectory()) return failure("INVALID_ARGUMENT", "path exists but is not a directory", { path });
 		if (isText(options.root)) {
-			const realRoot = realpathSync(resolve(options.root));
-			const realPath = realpathSync(path);
+			const realRoot = await realpath(resolve(options.root));
+			const realPath = await realpath(path);
 			if (!isInside(realRoot, realPath)) {
 				return failure("PATH_ESCAPE", `directory is a symlink that leaves the workspace: ${path}`, {
 					path,
@@ -1490,7 +1477,7 @@ export async function startAuditBatch({ root, slug, caseSpecs, deps } = {}) {
 	}
 
 	const specs = specsResult.specs;
-	const snapshotBefore = snapshotWorkspace(absoluteRoot);
+	const snapshotBefore = await snapshotWorkspace(absoluteRoot);
 	if (!snapshotBefore.ok) {
 		return refuse({
 			errors: snapshotBefore.errors,
@@ -1628,7 +1615,7 @@ export async function startAuditBatch({ root, slug, caseSpecs, deps } = {}) {
 				}
 
 				for (const directory of [evidenceDir, artifactsDir]) {
-					const problem = prepareDirectory(directory, { root: absoluteRoot });
+					const problem = await prepareDirectory(directory, { root: absoluteRoot });
 					if (problem !== null) setupErrors.push(problem);
 				}
 				const submissionRelative = `.herd/missions/${slug}/audit/${spec.case_id}.submit.edn`;
@@ -1782,7 +1769,7 @@ export async function startAuditBatch({ root, slug, caseSpecs, deps } = {}) {
 				}
 				record.spawnAttempted = true;
 				try {
-					const started = starter.start(options);
+					const started = await starter.start(options);
 					record.started = Promise.resolve(started);
 					if (isPlainObject(started) && started.handle !== undefined) record.handle = started.handle;
 					if (isPlainObject(started) && started.agentId !== undefined) record.agentId = started.agentId;
@@ -2109,7 +2096,7 @@ export async function startAuditBatch({ root, slug, caseSpecs, deps } = {}) {
 		);
 		globalErrors.push(uncertainError);
 	}
-	const snapshotAfter = uncertain ? null : snapshotWorkspace(absoluteRoot);
+	const snapshotAfter = uncertain ? null : await snapshotWorkspace(absoluteRoot);
 	const rawSubmissions = finished
 		.filter((record) => isPlainObject(record.submission))
 		.map((record) => record.submission);

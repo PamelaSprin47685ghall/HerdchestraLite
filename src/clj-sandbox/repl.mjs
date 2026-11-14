@@ -12,7 +12,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { access, mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { compileString } from "cherry-cljs/lib/compiler.js";
@@ -76,13 +76,22 @@ export * from "../sandbox/shell.mjs";
 `,
 });
 
-function ensureModuleTree(root) {
+async function pathExists(path) {
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function ensureModuleTree(root) {
 	const directory = join(root, ".herd", "eval");
 	for (const [relative, source] of Object.entries(MODULE_TREE)) {
 		const path = join(directory, relative);
-		if (existsSync(path)) continue;
-		mkdirSync(dirname(path), { recursive: true });
-		writeFileSync(path, source);
+		if (await pathExists(path)) continue;
+		await mkdir(dirname(path), { recursive: true });
+		await writeFile(path, source);
 	}
 	return directory;
 }
@@ -99,7 +108,7 @@ export async function evaluateCljs(code, { capabilities = {}, root = process.cwd
 	if (roleModule === undefined) {
 		throw new Error(`unknown sandbox role: ${role}`);
 	}
-	const directory = ensureModuleTree(root);
+	const directory = await ensureModuleTree(root);
 	const programPath = join(directory, `program-${randomUUID()}.mjs`);
 
 	const wrapped = `(ns herd.program (:require ["./${roleModule}" :as sandbox]))
@@ -110,7 +119,7 @@ ${code}
 `;
 	const compiled = await compileString(awaitSuspends(unwrapFences(wrapped).source).source);
 
-	writeFileSync(programPath, compiled);
+	await writeFile(programPath, compiled);
 	const previous = globalThis.__herdCapabilities;
 	globalThis.__herdCapabilities = capabilities;
 	try {
@@ -118,6 +127,6 @@ ${code}
 		return await module.__promise;
 	} finally {
 		globalThis.__herdCapabilities = previous;
-		rmSync(programPath, { force: true });
+		await rm(programPath, { force: true });
 	}
 }

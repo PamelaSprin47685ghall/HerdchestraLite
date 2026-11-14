@@ -39,7 +39,7 @@
  */
 
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
-import { readdirSync, readFileSync, rmSync } from "node:fs";
+import { readdir, readFile, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { writeFileAtomic } from "../util/atomic-write.mjs";
 import { herdError, isHerdError, messageOf, printEdn } from "../util/errors.mjs";
@@ -571,10 +571,10 @@ function canonicalEdnFile(value) {
 // Storage ports
 // ---------------------------------------------------------------------------
 
-function readDiskMission(path) {
+async function readDiskMission(path) {
 	let text;
 	try {
-		text = readFileSync(path, "utf8");
+		text = await readFile(path, "utf8");
 	} catch (error) {
 		if (error?.code === "ENOENT") return null;
 		throw herdError(":INVALID_ARGUMENT", `mission.edn is unreadable: ${messageOf(error)}`, {
@@ -603,10 +603,10 @@ function createDiskMissionStore(root, slug) {
 	const path = missionPath(root, slug);
 	return {
 		async read() {
-			return readDiskMission(path);
+			return await readDiskMission(path);
 		},
 		async transaction(fn) {
-			const current = readDiskMission(path);
+			const current = await readDiskMission(path);
 			const outcome = await fn(current);
 			if (outcome && outcome.commit !== false && outcome.mission !== undefined) {
 				await writeFileAtomic(dirname(path), "mission.edn", `${printEdn(outcome.mission, { indent: " " })}\n`);
@@ -653,7 +653,7 @@ function createDiskDocuments() {
 	return {
 		async readText(path) {
 			try {
-				return { ok: true, text: readFileSync(path, "utf8") };
+				return { ok: true, text: await readFile(path, "utf8") };
 			} catch (error) {
 				return { ok: false, code: error?.code ?? "EIO", message: messageOf(error) };
 			}
@@ -668,7 +668,7 @@ function createDiskDocuments() {
 		},
 		async remove(path) {
 			try {
-				rmSync(path, { force: true });
+				await rm(path, { force: true });
 				return { ok: true };
 			} catch (error) {
 				return { ok: false, code: error?.code ?? "EIO", message: messageOf(error) };
@@ -676,7 +676,7 @@ function createDiskDocuments() {
 		},
 		async listDir(path) {
 			try {
-				const entries = readdirSync(path, { withFileTypes: true });
+				const entries = await readdir(path, { withFileTypes: true });
 				return { ok: true, names: entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name) };
 			} catch (error) {
 				if (error?.code === "ENOENT") return { ok: true, names: [] };

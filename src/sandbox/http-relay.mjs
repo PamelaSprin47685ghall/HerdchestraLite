@@ -13,7 +13,7 @@
  * omp process, is per-auditor, and is closed with the sandbox.
  */
 
-import { unlinkSync } from "node:fs";
+import { unlink } from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
 import { isIP } from "node:net";
@@ -223,7 +223,7 @@ export function createHostHttpRelay({
 		if (stopped) throw herdError("CAPABILITY_DENIED", "HTTP relay was already stopped", {});
 		started = true;
 		try {
-			unlinkSync(socketPath);
+			await unlink(socketPath);
 		} catch {
 			// The path is private and normally absent.
 		}
@@ -261,7 +261,7 @@ export function createHostHttpRelay({
 			});
 			server = null;
 			try {
-				unlinkSync(socketPath);
+				await unlink(socketPath);
 			} catch {
 				// Already gone.
 			}
@@ -290,7 +290,7 @@ export function createHostHttpRelay({
 			server = null;
 		}
 		try {
-			unlinkSync(socketPath);
+			await unlink(socketPath);
 		} catch {
 			// Already gone.
 		}

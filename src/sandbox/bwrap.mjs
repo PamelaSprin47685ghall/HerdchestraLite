@@ -22,7 +22,7 @@
  * `sockaddr_un.sun_path` stays below 108 bytes.
  */
 
-import { accessSync, constants, existsSync, realpathSync } from "node:fs";
+import { access, constants, realpath } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,7 +41,16 @@ const OMP_FALLBACKS = [
 const MAX_SOCKET_PATH = 100;
 const REPO_NODE_MODULES = fileURLToPath(new URL("../../node_modules", import.meta.url));
 
-function findExecutable(candidates, name) {
+async function pathExists(path) {
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function findExecutable(candidates, name) {
 	const seen = new Set();
 	const paths = [];
 	if (typeof name === "string" && typeof Bun !== "undefined" && typeof Bun.which === "function") {
@@ -53,8 +62,8 @@ function findExecutable(candidates, name) {
 		if (seen.has(path)) continue;
 		seen.add(path);
 		try {
-			accessSync(path, constants.X_OK);
-			return realpathSync(path);
+			await access(path, constants.X_OK);
+			return await realpath(path);
 		} catch {
 			// Try the next candidate.
 		}
@@ -62,19 +71,19 @@ function findExecutable(candidates, name) {
 	return null;
 }
 
-export function findBwrap() {
+export async function findBwrap() {
 	return findExecutable(BWRAP_FALLBACKS, "bwrap");
 }
 
-export function findTmux() {
+export async function findTmux() {
 	return findExecutable(TMUX_FALLBACKS, "tmux");
 }
 
-export function findBun() {
+export async function findBun() {
 	return findExecutable(BUN_FALLBACKS, "bun");
 }
 
-export function findOmp() {
+export async function findOmp() {
 	const candidates = [];
 	const execPath = typeof process.execPath === "string" ? process.execPath : "";
 	if (execPath.length > 0 && basename(execPath) === "omp") candidates.push(execPath);
@@ -85,8 +94,8 @@ export function findOmp() {
 	}
 	for (const candidate of candidates) {
 		try {
-			accessSync(candidate, constants.X_OK);
-			const real = realpathSync(candidate);
+			await access(candidate, constants.X_OK);
+			const real = await realpath(candidate);
 			if (sandboxMountedPath(real)) return real;
 		} catch {
 			// Try the next candidate.
@@ -102,11 +111,11 @@ export function findOmp() {
  * explicit mount list is the contract. No Landlock layer, path policing, or
  * suspicious-path probing is required.
  */
-export function sandboxCapability() {
-	const bwrap = findBwrap();
-	const tmux = findTmux();
-	const bun = findBun();
-	const omp = findOmp();
+export async function sandboxCapability() {
+	const bwrap = await findBwrap();
+	const tmux = await findTmux();
+	const bun = await findBun();
+	const omp = await findOmp();
 	const available = bwrap !== null && tmux !== null && bun !== null && omp !== null;
 	return {
 		available,
@@ -138,13 +147,13 @@ function isWithin(parent, child) {
 	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
-function resolvePath(value, label) {
+async function resolvePath(value, label) {
 	if (typeof value !== "string" || value.length === 0) {
 		throw herdError("INVALID_ARGUMENT", `${label} must be a non-empty path`, { [label]: value });
 	}
 	const absolute = resolve(value);
 	try {
-		return realpathSync(absolute);
+		return await realpath(absolute);
 	} catch {
 		return absolute;
 	}
@@ -154,7 +163,7 @@ function resolvePath(value, label) {
  * Resolve the mount sources. No existence, ownership, symlink, or containment
  * audit: the caller is trusted and bwrap mounts exactly what is named here.
  */
-export function validateSandboxPaths({ root, evidenceRoot, auditTmp, socketDir, socketPath, cwd }) {
+export async function validateSandboxPaths({ root, evidenceRoot, auditTmp, socketDir, socketPath, cwd }) {
 	if (typeof socketPath !== "string" || socketPath.length === 0) {
 		throw herdError("INVALID_ARGUMENT", "socketPath must be a non-empty path", { socketPath });
 	}
@@ -166,12 +175,12 @@ export function validateSandboxPaths({ root, evidenceRoot, auditTmp, socketDir, 
 		});
 	}
 	return {
-		root: resolvePath(root, "root"),
-		evidenceRoot: resolvePath(evidenceRoot, "evidenceRoot"),
-		auditTmp: resolvePath(auditTmp, "auditTmp"),
-		socketDir: resolvePath(socketDir, "socketDir"),
+		root: await resolvePath(root, "root"),
+		evidenceRoot: await resolvePath(evidenceRoot, "evidenceRoot"),
+		auditTmp: await resolvePath(auditTmp, "auditTmp"),
+		socketDir: await resolvePath(socketDir, "socketDir"),
 		socketPath,
-		cwd: resolvePath(cwd, "cwd"),
+		cwd: await resolvePath(cwd, "cwd"),
 	};
 }
 
@@ -186,9 +195,9 @@ function envArgs(env) {
 	return args;
 }
 
-function runtimeArgs(home) {
+async function runtimeArgs(home) {
 	const args = [];
-	const executables = new Set([findBun(), findOmp()].filter((path) => path !== null));
+	const executables = new Set((await Promise.all([findBun(), findOmp()])).filter((path) => path !== null));
 	for (const executable of executables) {
 		args.push("--ro-bind", executable, executable);
 	}
@@ -201,7 +210,7 @@ function runtimeArgs(home) {
 	// The host may not populate $HOME/node_modules while the plugin repository
 	// does. Mount the repository's own dependency tree at the conventional home
 	// location so nested extension imports resolve without exposing the repo.
-	if (!existsSync(join(home, "node_modules")) && existsSync(REPO_NODE_MODULES)) {
+	if (!(await pathExists(join(home, "node_modules"))) && (await pathExists(REPO_NODE_MODULES))) {
 		args.push("--ro-bind", REPO_NODE_MODULES, join(home, "node_modules"));
 	}
 	return args;
@@ -256,8 +265,8 @@ export function sandboxMountedPath(path) {
 	return SANDBOX_MOUNT_PREFIXES.some((prefix) => isWithin(prefix, path));
 }
 
-function sandboxBunPath() {
-	const executable = findBun() ?? "bun";
+async function sandboxBunPath() {
+	const executable = (await findBun()) ?? "bun";
 	return sandboxMountedPath(executable) ? executable : "bun";
 }
 
@@ -266,7 +275,7 @@ function sandboxBunPath() {
  * `tmux -D` server; otherwise `command` runs under `/bin/sh -c` in a fresh
  * per-call sandbox.
  */
-export function buildBwrapArgs({
+export async function buildBwrapArgs({
 	root,
 	evidenceRoot,
 	auditTmp,
@@ -284,9 +293,9 @@ export function buildBwrapArgs({
 	if (network !== "isolated" && network !== "model") {
 		throw herdError("INVALID_ARGUMENT", "network must be isolated or model", { network });
 	}
-	const capability = sandboxCapability();
+	const capability = await sandboxCapability();
 	if (!capability.available) throw unavailable(capability.reason);
-	const real = validateSandboxPaths({ root, evidenceRoot, auditTmp, socketDir, socketPath, cwd });
+	const real = await validateSandboxPaths({ root, evidenceRoot, auditTmp, socketDir, socketPath, cwd });
 	const env = sandboxEnv(real, real.socketDir, network);
 	const args = [
 		capability.bwrap,
@@ -306,7 +315,7 @@ export function buildBwrapArgs({
 	args.push("--symlink", "usr/lib", "/lib");
 	args.push("--symlink", "usr/lib", "/lib64");
 	args.push(...etcArgs());
-	args.push(...runtimeArgs(homedir()));
+	args.push(...(await runtimeArgs(homedir())));
 	args.push("--tmpfs", "/tmp");
 	args.push("--ro-bind", real.root, real.root);
 	args.push("--bind", real.evidenceRoot, real.evidenceRoot);
@@ -351,9 +360,9 @@ export function shellQuote(value) {
  * model provider.
  */
 export function createSandboxedRunCommand(config) {
-	return (argv, options = {}) => {
+	return async (argv, options = {}) => {
 		const cwd = options.cwd ?? config.root;
-		const bwrapArgv = buildBwrapArgs({
+		const bwrapArgv = await buildBwrapArgs({
 			...config,
 			cwd,
 			argv,
@@ -368,8 +377,8 @@ export function createSandboxedRunCommand(config) {
  * Run one setup command through the same per-call sandbox. Used to create the
  * tmux session after the session host socket appears; never used as a proof.
  */
-export function runSandboxedSetup(config, command, { cwd = config.root, maxBytes = 1 << 20, signal = null } = {}) {
-	const argv = buildBwrapArgs({ ...config, cwd, command, sessionHost: false, network: "isolated" });
+export async function runSandboxedSetup(config, command, { cwd = config.root, maxBytes = 1 << 20, signal = null } = {}) {
+	const argv = await buildBwrapArgs({ ...config, cwd, command, sessionHost: false, network: "isolated" });
 	return defaultRunCommand(argv, { cwd, signal, maxBytes });
 }
 

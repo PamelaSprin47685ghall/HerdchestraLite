@@ -68,5 +68,5 @@
   (when-not (and (string? target-path) (pos? (count target-path)))
     (throw (invalid "path" "a non-empty string" target-path)))
   (let [target (path/resolve target-path)
-        text (str (ufss/print value) "\n")]
+        text (str (ufss/canonical value) "\n")]
     (await (write-file-atomic! (path/dirname target) (path/basename target) text))))

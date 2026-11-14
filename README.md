@@ -1,25 +1,40 @@
 # Herdchestra Lite
 
-Herdchestra Lite 是面向 `omp` 终端宿主的轻量多智能体研发插件。完整规格（S1–S5、门禁、看板、worktree、K 路审计）在仓库根 `AGENTS.md` 中；当前安装面只启用 ClojureScript 沙箱执行器，先验证最小可 dogfood 核心，再按扩张顺序接回编排层。
+Herdchestra Lite 是面向 `omp` 终端宿主的轻量多智能体研发插件。完整规格（S1–S5、门禁、看板、K 路审计）在仓库根 `AGENTS.md` 中；当前实现已把完整装配接到唯一清单入口，默认启用。
 
-> **当前状态：clj 执行器 dogfood。** 清单入口只有 `src/clj-main.mjs`，注册 `clj_devops`、`wait`、`time_leap`、`ask_beacon` 四个工具；`clj_plan`、`clj_review`、`clj_worker`、`clj_auditor` 不注册。`/herd`、五阶段门禁、旧 Scope 工具门、看板、worktree、审计与 TUI 均未装配。它们是保留代码，不是当前可用功能。
+> **当前状态：完整装配默认启用，真实端到端验收未完成。** 清单入口 `src/clj-main.mjs` 通过 `src/herd/bootstrap.cljs` 加载 `src/herd/main.cljs` 与 `src/herd/system.cljs`，注册 `clj_devops`、`wait`、`handoff`、八个门禁工具、11 个 `board_*` 与 `attach_case_audit`；`/herd <seed>` 创建使命并进入 S1。S1 是唯一手工批准门禁，S2–S4 由 `attach_*` 自动晋级，S5 走单工作区 Reviewer ⇄ Swarm 与 K 路审计。
 >
-> 唯一规格仍是根 `AGENTS.md`；未关闭缺口在 `DEBT.md`；宿主与依赖实测在 `HACK.md`；架构装配笔记在 `src/AGENTS.md`。本 README 只描述当前可核对的事实，不把测试或冒烟当成验收。
+> **TUI 看板面板已按用户 2026-11-14 指令整体移除，不再挂载。** `src/tui/*` 只是保留代码；`src/main.mjs` 仍引用它，但清单入口不加载 `src/main.mjs`。`tests/cljs-dashboard-wiring.test.mjs` 明确断言 `install!`、`session-start!` 与 `/herd` 都不挂载看板。
+>
+> 真实 tmux 中的 S1→S5 手工验收尚未完成（`DEBT.md` D3）；没有 `plans/<slug>/s5-report.md`，没有 `docs/manual-acceptance/clean-break/report.md`。不得把测试或冒烟写成验收。
+>
+> 唯一规格仍是根 `AGENTS.md`；未关闭缺口在 `DEBT.md`；宿主与依赖实测在 `HACK.md`；架构装配笔记在 `src/AGENTS.md`。本 README 只描述当前可核对的事实。
 
 ## 当前启用面
 
-- 清单入口：`package.json` 的 `omp.extensions` / `pi.extensions` 都只声明 `./src/clj-main.mjs`。
-- 运行时依赖：`cherry-cljs@0.6.38`。
-- 工具：`clj_devops`（Worker 全部文件与续体能力 + 特权 `call`）、`wait`（统一等待 clj 后台程序与宿主子代理，取最早完成）、`time_leap`（沿当前 compaction 后时间线向后裁剪，必填 `beacon`、禁止预算参数）、`ask_beacon`（只读查询已封存 Beacon，复用前缀缓存且严禁工具，绝不复活旧宇宙）。`clj_plan`、`clj_review`、`clj_worker`、`clj_auditor` 在当前清单中不注册。
-- 宿主工具黑名单：`read`、`write`、`edit`、`apply_patch`、`ast_edit`、`ast_grep`、`bash`、`exec`、`eval`、`glob`、`grep`、`find`。这些工具在 `session_start` 与 `before_agent_start` 时从当前 active 集合中移除；其他工具（`task`、`todo`、`web_search`、`lsp`、`debug` 等）保持原有激活状态。
-- 命令：`/clj-status`（显示 Cherry 加载状态、黑名单与工具列表）。
-- 系统提示词：`src/host/hack-system-prompt.mjs` 在 `before_agent_start` 注入 `COMMON_RULES_TEXT`（`# Repo-aware Rules` + `COMMON_CORE_RULES` 11 段 + `UFSS_PROMPT_NOTE`）。托管区段由 `<!-- herdchestra:system-prompt v1 -->` 标记，重复触发原位替换、不堆叠；handler 抛错时 fail-open 返回宿主原提示词并记 health。语言纪律仍只由出站 `context` 尾注注入一次。
-- 未装配：`/herd*` 命令、`advance_s1..s4`、`ask_user`、`devops` 子代理、`realign_frozen`、`board_*`、`fork_slices`/`join_slice`、`submit_case_audit`、TUI 看板、旧 Scope 注入/裁剪。
-- 同一会话内，程序续体（`park`/`unpark`）与 VFS 按工具角色缓存；不同角色不共享续体。
-- 黑名单是减法的，不是白名单：实现只从 `getActiveTools()` 过滤，不重建一个“只允许这些工具”的列表；`clj_devops` 与 `wait`、`time_leap`、`ask_beacon` 由注册方显式激活。
-- `call` 只接受 `{:argv ["<program>" "<arg>" ...] :cwd ...}`：CreateProcess 风格参数数组，`argc = (count argv)`；不经过系统 shell，因此不支持管道、重定向、通配、变量展开或 `&&`。需要 shell 语法时必须显式把 `sh`/`bash` 放进 argv 并传 `-c`。
-- 环境清洗：移除 `BUN_OPTIONS`、`NODE_OPTIONS`、`BASH_ENV`、`ENV`、`PROMPT_COMMAND`，避免宿主预加载钩子改变普通命令。`wait` 的期限是 `1000ms + otherwise_independent_work 的 UTF-8 字节数 × 50ms`；`clj_*` fork 时固定白送 1 秒 `call` 宽限，不按角色加码。
-- 普通 VFS 不再限制路径：`..`、绝对路径、越界符号链接、盲写与覆盖 `AGENTS.md` 都允许；写锁 `$W$`、批内 VFS 与已读文件的 `stamp` 冲突检查保留。
+- **清单入口**：`package.json` 的 `omp.extensions` / `pi.extensions` 都只声明 `./src/clj-main.mjs`。该入口启动 nbb，加载 `src/herd/bootstrap.cljs`，再由后者加载 `src/herd/main.cljs` 与 `src/herd/system.cljs`。并发激活共享 `globalThis.__herdBootPromise`，启动失败会清空该 promise 以便重试；`contextPis`、`activated-pis` 与 system 的 `installed-pis` 都是 per-pi `WeakSet`，同一进程里的多个 pi 各自只安装一次。
+- **运行时依赖**：`nbb@1.6.215`、`@chrisoakman/standard-clojure-style@0.29.0`、`highlight.js@11.12.0`（仅内容语言识别；高亮仍由宿主 native 高亮器完成）。
+- **工具面（插件共注册 23 个）**：
+  - 沙箱与上下文：`clj_devops`、`wait`、`handoff`。
+  - 门禁：`review`、`attach_brainstorm`、`attach_manual_tests`、`attach_dev_guide`、`attach_coordination`、`ask_user`、`devops`、`submit_devops_report`。
+  - 看板：`board_split`、`board_claim`、`board_finish`、`board_cancel`、`board_replace`、`board_release`、`board_reopen`、`board_comment`、`board_update`、`board_park_slot`、`board_take_or_die`（11 个）。
+  - 审计：`attach_case_audit`。
+- **工具面归属**：进入使命前的默认面见上方 vibe 说明。进入 `/herd` 使命后，主会话按阶段收窄：S1 为 `review`/`attach_brainstorm`/`ask_user`/`devops`；S2 为 `review`/`attach_manual_tests`/`devops`；S3 为 `review`/`attach_dev_guide`/`devops`；S4 为 `review`/`attach_coordination`/`devops`；S5 为 `review`/`ask_user`；结案后为空。
+- **子代理角色面**：`Plan DevOps` 得到 `clj_devops` + `submit_devops_report`；`Reviewer` 得到 `review`；`Swarm Worker`/`Swarm Holder` 得到 11 个 `board_*`；`Manual Auditor` 得到 `attach_case_audit`；`Blocker Oracle` 只有 `yield`。角色由宿主 `ctx.agent` 与首行 `[HERD_ROLE: ...]` token 共同判定；缺失时 fail-closed 并记 health degraded。
+- **命令 `/herd <seed>`**：创建 `.herd/missions/<slug>/mission.edn` 与看板，写 `.herd/focus.edn`，把 seed 作为 user message 发送，并进入 S1。slug 由 seed 归一化且在同工作区内唯一。
+- **S1 手工批准**：`attach_brainstorm` 先写 `plans/<slug>/s1-brainstorm.md`，再阻塞打开确认面板；面板从磁盘读取完整字节，支持滚动，默认选中拒绝，左右/Tab 显式选择批准/修改/拒绝，Enter 确认，Esc 取消。approve / revise / deny / pending 四态都有回执；`deny` 转 `ask_user` 语义，文件不可读或无自定义 UI 时 pending/拒绝批准。
+- **S2–S4 自动晋级**：`attach_manual_tests` 写入 `s2-manual-tests.md` 与 `s2-cases.edn` 并退休 S2 tenure；`attach_dev_guide` 写入 `s3-dev-guide.md`；`attach_coordination` 写入 `s4-coordination.md` 与未勾选的 Promela 模型；每次晋级读取下一阶段简报。
+- **S5 单工作区**：`src/herd/swarm/runner.cljs` 启动 Reviewer，经共享看板与 Reviewer ⇄ Swarm 接力推进；不接 worktree，不 fork 多工作区。quiescence 屏障、Nudge 与恢复路径已接线。
+- **K 路审计**：`src/herd/swarm/auditors.cljs` 为每个 CASE 建独立 `/tmp/herd-audit-<slug>-<case>-<batch>` 隔离路径，汇总后写 `s5-report.md`；批次状态在 `.herd/missions/<slug>/audit/batch.edn` 幂等（`:running`/`:pass` 直接复用，`:repair` 开新批次，`:pending` 复用 durable 提交），FAIL 会写 repair 根任务。真实 bwrap/tmux 隔离未验证（D8）。
+- **TUI 看板**：已按用户指令移除，不挂载、不创建 `herdchestra-dashboard` widget，`system/state` 无 dashboard 键。
+- **不用 `/herd` 就是 devops 面**：没有使命时，主会话与普通子代理保留全部宿主工具，并追加 `clj_devops`、`wait`、`handoff`；不删除任何宿主工具。**`/vibe` 主代理除外：完全不调用 `setActiveTools`，宿主原生 vibe 工具面原样保留。** 只有使命内的主会话按阶段收窄，显式 herd 角色按角色收窄；收窄失败只记 health degraded，不静默删工具。
+- **沙盒 console/stdio 防呆**：`src/herd/repl.cljs` 的 `guard-source!` 在用户代码执行前拒绝 `console`、`js/console`、`globalThis.console`、`js/process.stdout`、`js/process.stderr`、`process.stdout`、`process.stderr` 与 `(.-stdout js/process)` 等直接访问，返回 `:CAPABILITY_DENIED`（`:reason :console-or-stdio-forbidden`）。字符串、字符字面量、注释与 UFSS fence 中的同名词不误杀；`call` 仍用 pipe 捕获 stdout/stderr，日志写 `.herd/artifacts/call/`。这只是防呆，不是安全隔离。
+- **性能边界（有意限制，不是未完成）**：写锁默认等待 500ms（`HERD_LOCK_WAIT_MS` 可调 50–5000ms；10ms 起指数退避、封顶 160ms），超时 `:LOCK_BUSY`（`:retryable true`）；`glob` 跳过 `node_modules`/`.git`/`.herd`，默认 20 000 条目 / 2 000ms 预算，超限 `:LIMIT_EXCEEDED`；`where` 最近行 DP 1 000 000 cells + 150ms deadline；`cat`/`write` 单文件 2 MiB；handoff 扫描只回看最近 512 条消息、文档窗口 32 条；usage/status UI 100ms 合并。
+- **context 自动重写**：同一会话分支最多自动全量重写一次（host leaf 变化后重置预算）；其后的 prefix miss 只记录 `prefix-miss-suppressed`，不再次重写；compaction/reset boundary 存在时一律不重写。
+- **诊断开关**：`HERD_TRACE=1` 启用热路径计时并写 `.herd/perf-trace.jsonl`（1 MiB 上限；`HERD_TRACE_PATH` 可改路径）；`HERD_CACHE_PROBE=1` 才启用 `before_provider_request` probe 并写 `.herd/cache-probe.jsonl`（`HERD_CACHE_PROBE_PATH` 可改路径）。两者默认关闭。
+- **usage 统计**：delta 显示最近活动子代理的最后一次请求；sum 合并所有 agent key，主会话后续请求不会把 delta 抢回主会话。
+- **环境清洗**：`call` 移除 `BUN_OPTIONS`、`NODE_OPTIONS`、`BASH_ENV`、`ENV`、`PROMPT_COMMAND`，避免宿主预加载钩子改变普通命令。`wait` 的期限是 `2000ms + otherwise_independent_work 的 UTF-8 字节数 × 200ms`；`clj_*` fork 时固定白送 2 秒 `call` 宽限。
+- **VFS 边界**：普通路径不做根目录限制；`..`、绝对路径、越界符号链接与覆盖 `AGENTS.md` 都允许。写锁 `$W$`、批内 VFS 与已读文件的 `stamp` 冲突检查保留；冲突返回 `:FILE_CONFLICT`，磁盘保持外部修改。
 
 ## 启用
 
@@ -28,68 +43,61 @@ omp plugin link /absolute/path/to/HerdchestraLite
 omp plugin list --json
 ```
 
-之后启动 `omp`，`clj_devops`、`wait`、`time_leap`、`ask_beacon` 即出现在工具列表中。`/clj-status` 可在交互会话中查看 Cherry 是否加载。
+之后启动 `omp`。当前已在 `omp 18.20.0` 做过加载冒烟：`timeout 120 omp -p '只回复 ok'` exit 0、wall 5.1s。16.x/17.x 未实测（D5）。
 
-每次 `clj_*` 调用必须携带 `ariadne_budget` 与 `ariadne_goal`；`wait` 必须携带 `otherwise_independent_work`。
+## 使用
 
-直接提交 REPL 输入：任意数量的顶层表达式，最后一个值作为回执返回；`program_name` 可选，省略时自动生成。例：
+启动使命：
+
+```text
+/herd 实现一个最小可验证功能
+```
+
+使命创建后进入 S1。按面板提示批准、修改或拒绝 `s1-brainstorm.md`；批准后 S2–S4 由 attach 工具自动推进，S5 由 Reviewer 与 Swarm 在单工作区完成，K 路审计汇总后写 `plans/<slug>/s5-report.md`。
+
+未进入使命时可以直接用 `clj_devops` 执行 ClojureScript REPL（最后一个顶层值作为回执）：
 
 ```clojure
-(let [src (cat {:path "src/config.mjs"})
+(let [src (cat {:path "README.md"})
       [b e] (where {:content src
-                    :needle #"(def timeout-ms 30000)"#})]
-  (write {:path "src/config.mjs"
-          :content (str (subs src 0 b)
-                        "(def timeout-ms 60000)"
-                        (subs src e))))
+                    :needle "Herdchestra Lite"})]
+  [b e])
 ```
 
-`where` 零匹配或多匹配会挂起程序；用 `(unpark {:name "fix-timeout" :value [b e]})` 恢复。程序正常返回时，批内 VFS 在写锁内复核 `stamp` 后原子落盘；冲突返回 `:FILE_CONFLICT`，磁盘保持外部修改。
+`where` 零匹配或多匹配会挂起程序；用 `(unpark {:name "..." :value [b e]})` 恢复。程序正常返回时，批内 VFS 在写锁内复核 `stamp` 后原子落盘；冲突返回 `:FILE_CONFLICT`。
 
-## 历史冒烟（旧装配面，2026-11-12，不是验收）
-
-以下记录的是当时六工具面的观察，不代表当前四工具面。
-
-- 宿主：`omp 18.19.0`；模型：`ctyun/deepseek-v4.1-flash`。
-- `omp plugin link` 后，自动发现的插件入口成功注册六个工具。
-- 真实模型调用 `clj_worker` 写入 `LINKED_PROBE.txt`；调用 `clj_plan` 写文件被 `:CAPABILITY_DENIED` 拒绝且未创建文件；调用 `clj_devops` 的 `(call {:argv ["printf" "devops-ok"]})` 返回 `:completed` 与日志路径。
-- 真实模型在同一会话中先让 `where` 多匹配挂起，再 `unpark` 恢复并成功落盘。
-- 最终源码在独立 `/tmp` 工作区嵌套 omp 中执行裸 REPL 与 argv call：无 `program_name`、写 `/tmp` 根外文件、覆盖 `AGENTS.md`，返回 `:state :completed` 与两个文件内容。
-- 真实宿主 `getActiveTools()` 捕获结果：`task`、`wait`、`todo`、`web_search`、`debug` 与四个 `clj_*`、`wait`、`time_leap`；黑名单中的 `read`/`write`/`edit`/`bash`/`grep`/`glob`/`find`/`eval` 均不在集合中。
-- 本地直接测试覆盖 `cat`/`write` 的受保护提交、`where` 挂起/恢复、只读拒绝、`stamp` 冲突、黑名单过滤、环境清洗、期限下限与 `stat` 类型：`tests/clj-core.test.mjs` 36 pass / 0 fail。
-
-这些只证明最小执行器在真实宿主可调用，不构成根规格的 CASE 验收，也不证明 `/herd` 可用。
-
-## 本地开发检查（不是验收）
+## 验收与本地检查（不是验收）
 
 ```bash
-bun test tests/clj-core.test.mjs
-bun run check
+env -u BUN_OPTIONS bun test tests --parallel
 ```
 
-`tests/clj-core.test.mjs` 只依赖 `cherry-cljs`，不需要宿主包或模型。全量 `bun test` 仍需要宿主包链接；在 `DEBT.md` 的真实宿主与全量矩阵条目关闭前，不要把全量测试结果当成验收。
+当前结果：431 pass / 1 skip / 0 fail / 2041 expect / 432 tests / 44 files，约 16.2s。`tests/` 下没有 `.disabled` 文件；旧 Cherry/CEK 测试已删除并由 CLJS 测试替代；`tests/fixtures/s5-wiring-scenario.mjs` 已删除。
 
-## 为什么先做这一层
+关键测试覆盖：
 
-Gall's Law 要求先让一个简单系统真正工作。当前最小闭环是：宿主能加载插件 → 模型能发现 `clj_*` → 解释器能执行 REPL 输入 → VFS 能在写锁与 `stamp` 下安全落盘 → 冲突与挂起可观察。只有这些真实成立后，接回阶段门禁和蜂群才有可靠地基。
+- `tests/perf-hot-path.test.mjs`：5MB probe off、1000 条 context、1000 次 message_update、1MB `where`、20k `glob`、500ms 锁超时、2 MiB `cat`、100 次 `write`。
+- `tests/cljs-console-guard.test.mjs`：console/stdio 拒绝、字符串与注释不误杀、`call` pipe 捕获。
+- `tests/cljs-usage.test.mjs`：subagent delta/sum 与 100ms UI 合并。
+- `tests/cljs-dashboard-wiring.test.mjs`：看板从不挂载。
+- `tests/cljs-surface-vibe.test.mjs`：无使命保留宿主工具并追加 herd 三件套（devops 面），`/vibe` 主代理不干预；`tests/cljs-surface.test.mjs`：阶段/角色收窄。
+- `tests/cljs-system-install.test.mjs`：同一进程多个 pi 的 per-pi 安装不重复；`tests/clj-main-trace.test.mjs`：启动/激活 trace 与单例复用。
+- `tests/cljs-lock-contention.test.mjs`、`tests/hack-context-rewrite.test.mjs`：锁竞争回执与“每分支最多一次自动重写”。
+- `tests/cljs-system.test.mjs`、`tests/cljs-runner.test.mjs`、`tests/cljs-auditors.test.mjs`、`tests/cljs-gates.test.mjs`：`/herd`、S1 四态、S5 runner、K 路审计与门禁接线。
 
-扩张顺序（每步都必须先真实 dogfood 通过，再进入下一步）：
+这些测试只保护组件与接线，不是根规格的 CASE 验收。真实 S1→S5 tmux 使命尚未运行，`plans/<slug>/s5-report.md` 与 `docs/manual-acceptance/clean-break/report.md` 都不存在；用户已暂停 dog food，恢复后再补证据。
 
-1. 恢复 Ariadne/Time Leap 与出站尾注注入，验证真实出站 schema 与工具执行参数。
-2. 接回 `advance_s1..s4`、`ask_user`、`devops` 与 S1 手工批准，先跑 S1–S4 规划闭环。
-3. 接回看板、单 Slice Reviewer/Worker 与 `clj_review`/`clj_worker` 角色面。
-4. 接回多 worktree、K 路审计与结案批准。
+## 仍未完成/未验证
 
-## 仍未完成/未验证的主要缺口
+完整队列见 `DEBT.md`；当前主要是：
 
-完整队列见 `DEBT.md`；当前最关键的是：
-
-1. `/herd` 与五阶段门禁未装配；根规格的完整流程尚不可用。
-2. 旧 tool-gate/Scope、角色收窄、`devops` 子代理未装配；当前四个工具是主会话可直接调用的 dogfood 面。
-3. `clj-main` 没有角色 admission；任何会话都能使用 `clj_devops`。角色边界要随使命层回来。
-4. 全量宿主测试矩阵、真实 TUI、worktree join、K 路审计与批准均未验收。
-5. 当前真实冒烟只覆盖 18.19.0 主会话的四个工具，不覆盖 16.x/17.x、子代理、取消树与重启恢复。
-6. 禁用 `read`/`write` 同时切断了宿主的 `xd://` 传输设备；当前 clj-only 有意接受这一代价。`eval` 被禁用后，宿主的 JS 求值面也不可用。
+1. **D3 真实端到端**：没有真实 tmux S1→S5、没有 S5 报告与 clean-break 验收报告。测试全绿与 `omp -p` 冒烟都不能替代。
+2. **D4 S1 面板**：四态端口与窄测已就绪；真实宿主/tmux 的键盘、滚动、resume 未验证。
+3. **D5 版本兼容**：只做了 18.20 冒烟；16.x/17.x 的 `ctx.agent` 与 `sessionFile` 父链未实测。
+4. **D7 交错矩阵**：全量 V/T/F 矩阵未逐项核对；`tmp/d7-matrix.md` 是旧快照，T05/T06/T11 等仍缺直接用例。
+5. **D8 审计隔离**：真实 bwrap/tmux、主工作区只读、K>1 未跑通。
+6. **D18 沙盒边界**：nbb 仍是基本防呆，不是安全边界；不要宣传为隔离。
+7. **D17 本机命令**：`bun test` 必须带 `env -u BUN_OPTIONS`，否则 Bun 1.4.4 会把 `test` 当脚本名。
 
 ## 文档边界
 
@@ -103,4 +111,4 @@ Gall's Law 要求先让一个简单系统真正工作。当前最小闭环是：
 | `docs/manual-acceptance/clean-break/` | 开发本产品的 MANUAL ACCEPTANCE 文档；不是产品运行时 `plans/<slug>/` |
 | `docs/旧的方法论.md`、`docs/旧的架构.md`、`docs/旧的设计.html`、`docs/讨论纪要.md`、`docs/兄弟项目参考.md` | 用户既有历史资料，保留只读，不因 clean-break 删除或改写 |
 
-旧模块 `src/pi-goal/`、`src/pi-context/`、`src/editor-theme/`、`src/context/`、`src/manual-acceptance/` 已从工作树删除；不要恢复或重新 import。`src/main.mjs` 与 `src/bootstrap-main.mjs` 是完整装配的保留代码，当前清单不加载它们。
+旧模块 `src/pi-goal/`、`src/pi-context/`、`src/editor-theme/`、`src/context/`、`src/manual-acceptance/` 已从工作树删除；不要恢复或重新 import。`src/main.mjs`、`src/bootstrap-main.mjs` 与 `src/clj-sandbox/*`、`src/stages/*`、`src/swarm/*` 是保留的旧实现，当前清单不加载；`src/tui/*` 同样保留但不再挂载。

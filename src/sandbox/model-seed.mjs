@@ -13,7 +13,7 @@
  * current main model; there is no fallback model and no silent switch.
  */
 
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { join } from "node:path";
 import { herdError } from "../util/errors.mjs";
@@ -319,7 +319,7 @@ function seedModelSpec(model) {
  * from the spec. Headers/credentials are never written: the seed carries an
  * env-var name (or a non-secret placeholder fallback for the host HTTP relay).
  */
-export function writeAuditModelSeed({ auditTmp, model, baseUrl, authEnvVar, apiKeyFallback } = {}) {
+export async function writeAuditModelSeed({ auditTmp, model, baseUrl, authEnvVar, apiKeyFallback } = {}) {
 	const seedPath = join(auditTmp, "model-seed.json");
 	const seed = {
 		provider: model.provider,
@@ -330,7 +330,7 @@ export function writeAuditModelSeed({ auditTmp, model, baseUrl, authEnvVar, apiK
 		apiKeyFallback: typeof apiKeyFallback === "string" ? apiKeyFallback : null,
 		models: [seedModelSpec(model)],
 	};
-	writeFileSync(seedPath, JSON.stringify(seed), { mode: 0o600 });
+	await writeFile(seedPath, JSON.stringify(seed), { mode: 0o600 });
 	return { seedPath, provider: model.provider, modelId: model.id, baseUrl, modelCount: 1 };
 }
 
@@ -343,14 +343,14 @@ function renderProxyEnv(envVar) {
  * Write the non-secret seed and return the paths bwrap must bind. The secret
  * string is returned separately and must stay in memory.
  */
-export function prepareModelSeed({ auditTmp, socketDir, model, auth, target, realOmp, proxy } = {}) {
+export async function prepareModelSeed({ auditTmp, socketDir, model, auth, target, realOmp, proxy } = {}) {
 	const seedDir = join(auditTmp, "seed");
 	const binDir = join(auditTmp, "bin");
 	const homeDir = join(auditTmp, "home");
 	const agentDir = join(homeDir, ".omp", "agent");
-	mkdirSync(seedDir, { recursive: true, mode: 0o700 });
-	mkdirSync(binDir, { recursive: true, mode: 0o700 });
-	mkdirSync(agentDir, { recursive: true, mode: 0o700 });
+	await mkdir(seedDir, { recursive: true, mode: 0o700 });
+	await mkdir(binDir, { recursive: true, mode: 0o700 });
+	await mkdir(agentDir, { recursive: true, mode: 0o700 });
 	const configPath = join(agentDir, "config.yml");
 	const wrapperPath = join(seedDir, "omp");
 	const hostsPath = join(seedDir, "hosts");
@@ -359,25 +359,25 @@ export function prepareModelSeed({ auditTmp, socketDir, model, auth, target, rea
 	const secretDest = join(socketDir, ".model.env");
 	const relayScriptDest = join(socketDir, "relay.mjs");
 	const providerId = model.provider;
-	writeFileSync(configPath, renderModelConfig({ model, providerId }), { mode: 0o600 });
+	await writeFile(configPath, renderModelConfig({ model, providerId }), { mode: 0o600 });
 	const modelBaseUrl = proxy ? proxy.localBaseUrl : typeof auth.baseUrl === "string" ? auth.baseUrl : model.baseUrl;
 	const authEnvVar = auth.envVar ?? PROVIDER_ENV[model.provider] ?? null;
-	const seed = writeAuditModelSeed({
+	const seed = await writeAuditModelSeed({
 		auditTmp,
 		model,
 		baseUrl: modelBaseUrl,
 		authEnvVar,
 		apiKeyFallback: proxy ? "herd-local-placeholder" : null,
 	});
-	writeFileSync(wrapperPath, renderOmpWrapper({ realOmp, secretPath: secretDest }), { mode: 0o700 });
-	chmodSync(wrapperPath, 0o700);
+	await writeFile(wrapperPath, renderOmpWrapper({ realOmp, secretPath: secretDest }), { mode: 0o700 });
+	await chmod(wrapperPath, 0o700);
 	let existingHosts = "";
 	try {
-		existingHosts = readFileSync("/etc/hosts", "utf8");
+		existingHosts = await readFile("/etc/hosts", "utf8");
 	} catch {
 		existingHosts = "127.0.0.1 localhost\n";
 	}
-	writeFileSync(hostsPath, renderHosts({ host: target.host, existing: existingHosts }), { mode: 0o600 });
+	await writeFile(hostsPath, renderHosts({ host: target.host, existing: existingHosts }), { mode: 0o600 });
 	const secretEnv = proxy
 		? renderProxyEnv(auth.envVar ?? PROVIDER_ENV[model.provider])
 		: renderSecretEnv({ apiKey: auth.apiKey, envVar: auth.envVar, env: auth.env });

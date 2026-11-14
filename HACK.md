@@ -1,20 +1,24 @@
-# HACK.md — 宿主、cherry-cljs、Git 与验收环境的实测记录
+> 2026-11-14：bwrap 已从根规格移除；以下 bwrap 记录仅作历史，不是验收要求。
+
+# HACK.md — 宿主、nbb、park/unpark 与验收环境的实测记录
 
 > 本文件只记录可复检的事实、复检步骤与尚未验证项。它不是规格，不替代根 `AGENTS.md`；不修改产品源码、根规格或其他文档。
 >
-> 记录时间：2026-11-11（本机）
+> 记录时间：2026-11-11（初版）；2026-11-14 更新
 > 记录者：DevOps 只读调查
-> 记录范围：真实 `omp` 宿主、`cherry-cljs` 加载、Git/worktree 拓扑、当前验收条件。
+> 记录范围：真实 `omp` 宿主（当前 18.20.0）、nbb、park/unpark、Git/worktree 历史、当前验收条件。
+>
+> **历史边界**：2026-11-11/12 的 `advance_*`、Scope、Cherry/CEK、worktree、Landlock 记录是旧实现的历史快照；当前行为以根 `AGENTS.md` 的 2026-11-13 生命周期修订与本文 2026-11-14 记录为准。历史记录保留用于对照，不得当作当前契约。
 
 ## 1. 环境快照
 
 | 项 | 实测值 |
 |---|---|
-| 工作区 | `/home/kunweiz/Desktop/vibe/herdchestra-lite` |
-| `omp` 命令 | `/home/kunweiz/.cache/.bun/bin/omp` |
-| `omp --version` | `omp/18.16.0` |
-| `omp` 实际入口 | `/home/kunweiz/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js` |
-| 实际运行时包 | `@oh-my-pi/pi-coding-agent@17.3.5` |
+| 工作区 | `/home/kunweiz/Desktop/vibe/HerdchestraLite` |
+| `omp` 命令 | `/home/kunweiz/.local/bin/omp`（287 MB 编译 ELF，2026-11-13） |
+| `omp --version` | `omp/18.20.0`（2026-11-13；旧记录 18.16.0） |
+| `omp` 实际入口 | `/home/kunweiz/.local/bin/omp`（编译宿主；旧记录指向 `node_modules/.../dist/cli.js`） |
+| 实际运行时包 | `@oh-my-pi/pi-coding-agent@18.15.0`（仓库源码副本；旧记录 17.3.5 仅历史） |
 | 仓库内 peer 类型包 | `node_modules/@earendil-works/pi-coding-agent@1.5.2`（**不是**当前运行时） |
 | Bun | `1.4.4` |
 | Node | `v26.10.0`（仅旁证；产品由 Bun/omp 加载） |
@@ -143,7 +147,7 @@ omp --no-session --no-extensions --no-tools --no-lsp --no-pty \
 | Schema 工具 | `pi.typebox`、`pi.zod`、`pi.arktype` 均存在；`typebox.Type.Object` 可用 |
 | `session_start` 的 `ctx` | `mode: "print"`、`hasUI: false`；`ctx.agent` **存在**，`kind: "main"`、`id: "Main"`、`name: "main"`；`ctx.signal` 为 `undefined` |
 | `session_start` 的公开方法 | `getContextUsage`、`getSystemPrompt`、`ui.setWidget`、`ui.onTerminalInput` 均为 function |
-| `session_start` 的 sessionManager | `getSessionId()`、`getSessionFile()`、`getArtifactsDir()`、`getBranch()`、`getEntries()` 等公开方法存在 |
+| `session_start` 的 sessionManager | `getSessionId()`、`getSessionFile()`、`getArtifactsDir()`、`getBranch()`、`getEntries()` 等公开方法存在；`appendResetBoundary()` 写 `{type:"reset_boundary"}`，`appendCompaction(summary, shortSummary, firstKeptEntryId, tokensBefore, options)` 写 `compaction`；上下文从 `max(compaction, reset_boundary)+1` 开始；`context` 钩子的 ctx 可能不带 sessionManager，`session_start` 的 ctx 才可靠；`reset_boundary` 只管一回合；`hackContext` 的 `branch(parentId)` + `appendMessage` 在非空父节点处防止复发；`resetLeaf` 不工作，已删除 |
 | `session_start` 的设置 | `ctx.settings` 不存在；`pi.pi.settings` 存在（旧 `settingsScope` 的 `pi.pi.settings` 路径有效） |
 | `before_agent_start` 事件 | `reason: "prompt"`；`systemPrompt` 是 **string[]**（长度 2）；没有 `systemPromptOptions`；`prompt` 是 string |
 | `tool_call` 事件 | 有 `input` 字段；返回 `{ input: {...} }` 后，`execute` 收到的是修改后的参数（`original` → `revised-by-tool-call`） |
@@ -237,8 +241,8 @@ HOME="$H" omp --no-session --no-extensions --no-lsp --no-pty \
 
 目的：只验证“真实扩展是否加载、角色工具是否收敛、`hub` 是否被移除”，不验证 S1–S5 业务。
 
-1. 在 `/tmp` 写一个父探针扩展：`session_start` 中调用真实宿主 `runSubprocess`（与产品 `spawnAgent` 同一底层路径），角色用 `Manual Auditor`（主模型策略，允许显式 pin 可用 free 模型），`tools:["clj_auditor","submit_case_audit","yield"]`，`artifactsDir` 指向 `/tmp`，`eventBus` 传父 `pi.events`，`preloadedExtensionPaths` 显式列为产品 `bootstrap-main.mjs`、`tool-gate/index.mjs` 和子探针。
-2. 子探针扩展在 `before_agent_start`/`agent_end` 记录 `pi.getActiveTools()`；预期只含 `clj_auditor`、`submit_case_audit`、`ask_previous_scope`、`assume`、`yield` 一类角色工具，不含 `hub`、`task`、`read`、`write`、`edit`、`bash`、`grep`、`glob`、`ls`。
+1. 在 `/tmp` 写一个父探针扩展：`session_start` 中调用真实宿主 `runSubprocess`（与产品 `spawnAgent` 同一底层路径），角色用 `Manual Auditor`（主模型策略，允许显式 pin 可用 free 模型），`tools:["clj_auditor","attach_case_audit","yield"]`，`artifactsDir` 指向 `/tmp`，`eventBus` 传父 `pi.events`，`preloadedExtensionPaths` 显式列为产品 `bootstrap-main.mjs`、`tool-gate/index.mjs` 和子探针。
+2. 子探针扩展在 `before_agent_start`/`agent_end` 记录 `pi.getActiveTools()`；预期只含 `clj_auditor`、`attach_case_audit`、`ask_previous_scope`、`assume`、`yield` 一类角色工具，不含 `hub`、`task`、`read`、`write`、`edit`、`bash`、`grep`、`glob`、`ls`。
 3. 子代理任务首行必须是 `[HERD_ROLE: <role>]`；当前 main 已删除 role-auth/nonce，H1 必须在用户任务前写入该首行，用户正文不能占据首行。主会话正文 token 不解析。
 4. 主探针记录真实宿主 `runSubprocess` outcome（与产品 `spawnAgent` 同一子会话路径）和 child transcript 路径；产品 `spawnAgent` 的完整 `planSpawn` 包装未在本次探针中直接调用。
 5. 判定：`main.bootstrap` 与 `tool-gate` health 均 `ok`；子活动工具列表无 `hub`/host 裸工具；角色工具存在；子代理能 yield；否则记录为 readiness/产品缺陷，不把源码当证据。
@@ -327,7 +331,7 @@ createMemoryBoardStore({initial:initialBoard()}) + openBoard(...,{durable:false}
 - 首轮 active tools 恰好是 S1 面：
   `["clj_plan","advance_s1","ask_user","devops","submit_devops_report","ask_previous_scope","assume"]`。
 - system prompt 长度 12709；探针检查 `advance_s2`/`advance_s3`/`advance_s4`/
-  `fork_slices`/`join_slice`/`submit_review`/`submit_case_audit` 全部为 `false`。
+  `fork_slices`/`join_slice`/`submit_review`/`attach_case_audit` 全部为 `false`。
 - main 注册适配层合并 gate 字段后，以当前 `64c03055...` 复测：首轮 active tools
   仍正确为 S1 面；`clj_plan` 不再报 `:SCOPE_INVALID`，但模型调用仍只带
   `code/intent/program_name`，没有 `must_think_in`/`scope`；`intent` 到达
@@ -405,11 +409,11 @@ createMemoryBoardStore({initial:initialBoard()}) + openBoard(...,{durable:false}
 #### 2.6.6 Auditor per-auditor 执行器（2026-11-12；t8/t11 隔离 smoke 已跑，非验收）
 
 - 早期仅记录源码状态、静态实验与窄测试；2026-11-12 的 t8 已跑真实 bwrap + private tmux 生命周期，t11 已在其私有 tmux 内启动嵌套 omp 18.18.8 做加载/连接 smoke。两者都不是审计验收，也不替代手工验收。
-- **当前源码状态**：`src/sandbox/{bwrap,landlock,session,model-worker}.mjs` 已提供 per-auditor 的 bwrap + 两阶段 Landlock + 私有 tmux socket/session；`createAuditorSandbox` 生成 auditTmp/socket/session 并在审计开始时启动。`src/clj-sandbox/tools.mjs` 的 auditor 能力矩阵含 `call`，但 `auditorSandboxReady` 要求 `sandbox.available === true` 且 `roots.io.runCommand === sandbox.runCommand`；`CALL_FORBIDDEN_ROLES` 为空。`src/main.mjs#AUDITOR_SANDBOX = sandboxCapability()`：available=true 时 `ROLE_SURFACES` 含 `clj_auditor`、注册工具、`runMissionAudit` 放行、`submit_case_audit` 接受；不可用时 blocked/`:CAPABILITY_DENIED`，没有静默回退。隔离语义：宿主 TCP/Unix socket 不可达，框架 fixed provider relay socket 按设计可达且只转发到 pinned provider；credentials stay host-side 仅限 proxy mode，env-only provider 由 `selectAuditTransport` 拒绝。本机 `sandboxCapability()` = `{available:true, bwrap:'/usr/bin/bwrap', tmux:'/usr/bin/tmux', bun:'/home/kunweiz/.bun/bin/bun', landlockAbi:11}`。
+- **当前源码状态**：`src/sandbox/{bwrap,landlock,session,model-worker}.mjs` 已提供 per-auditor 的 bwrap + 两阶段 Landlock + 私有 tmux socket/session；`createAuditorSandbox` 生成 auditTmp/socket/session 并在审计开始时启动。`src/clj-sandbox/tools.mjs` 的 auditor 能力矩阵含 `call`，但 `auditorSandboxReady` 要求 `sandbox.available === true` 且 `roots.io.runCommand === sandbox.runCommand`；`CALL_FORBIDDEN_ROLES` 为空。`src/main.mjs#AUDITOR_SANDBOX = sandboxCapability()`：available=true 时 `ROLE_SURFACES` 含 `clj_auditor`、注册工具、`runMissionAudit` 放行、`attach_case_audit` 接受；不可用时 blocked/`:CAPABILITY_DENIED`，没有静默回退。隔离语义：宿主 TCP/Unix socket 不可达，框架 fixed provider relay socket 按设计可达且只转发到 pinned provider；credentials stay host-side 仅限 proxy mode，env-only provider 由 `selectAuditTransport` 拒绝。本机 `sandboxCapability()` = `{available:true, bwrap:'/usr/bin/bwrap', tmux:'/usr/bin/tmux', bun:'/home/kunweiz/.bun/bin/bun', landlockAbi:11}`。
 - **nested-auditor 边界**：`src/sandbox/bwrap.mjs#validateSandboxPaths` 在 `realpath(tmpdir())` 位于 auditTmp 内时以 `:CAPABILITY_DENIED` 拒绝，错误为 “nested omp is the test subject, not the auditor”。原因是 host auditor subagent 在宿主运行，bwrap 只是它的 `clj_auditor.call`/TUI 工具面；nested omp 的 `TMPDIR=auditTmp/tmp` 不能冒充 auditor，否则会与 host auditTmp 校验冲突。host auditor 的正常 TMPDIR 不受影响。`tests/sandbox-isolation.test.mjs` 覆盖 nested 拒绝；sandbox 两文件 35 pass / 0 fail（因 `/tmp` 满，TMPDIR 用 `/home/...`），不是真实 tmux/omp 证据。
 - **提示词追加**：`src/swarm/auditors.mjs#ensureIsolationPaths` 在 `buildCaseAuditorPrompt` 结果之后追加 `## Framework isolation paths`，提供实际 auditTmp/socket/session；canonical `herd-<slug>-<caseId>` 与 `/tmp/herd-audit-<slug>-<case>-<uuid>` 仍是规范模板，实际路径由 runtime 覆盖。规范原文不改写。
 - **真实 bwrap + private tmux 生命周期（t8，2026-11-12）**：用真实 `createAuditorSandbox` 启动 `available:true`、`landlockAbi:11`、`landlockNetwork:true`、`landlockPathnameUnix:true` 的沙箱与私有 tmux session/socket；跨调用 `runCommand` 观察到进入同一沙箱；主工作区只读验证通过（marker 可读、写入返回 `Read-only file system`、宿主 probe 文件不存在）；关闭后 bwrap、auditTmp、socketDir 均消失且无嵌套进程残留。该轮无产品 bug，但未提交/评分/批准任何审计，不构成验收。
-- **嵌套 omp 18.18.8 加载/连接 smoke（t11，2026-11-12）**：在 `createAuditorSandbox` 私有 tmux 中启动真实嵌套 omp 18.18.8（产品 main sha256 `3a05e48b1a0a4d7ac2c76de62f1762d19ff5aee70907c624b4ea1bfed50bea6f`），UI 启动、显式加载当前产品扩展，active tool surface 含 `advance_s1..s4`、`clj_plan/clj_devops/clj_review/clj_worker`、`devops`、`submit_devops_report`、`submit_case_audit`、`ask_user`、`ask_previous_scope`、`board_*`；通过固定 host-side 内存 canned responder（OpenAI-compatible `127.0.0.1:18443`）回复 `D12-NESTED-OK`，provider request 2 次、relay HTTP 4 次、toolCalls 0；工作区只读与关闭清理同 t8。fake 8k context 触发 compaction warning，归因 smoke 模型上下文不足，未判产品 bug。该轮仅 UI/连接/工具面 smoke：无真实模型、无角色审计、无工具调用、无提交/评分/批准。
+- **嵌套 omp 18.18.8 加载/连接 smoke（t11，2026-11-12）**：在 `createAuditorSandbox` 私有 tmux 中启动真实嵌套 omp 18.18.8（产品 main sha256 `3a05e48b1a0a4d7ac2c76de62f1762d19ff5aee70907c624b4ea1bfed50bea6f`），UI 启动、显式加载当前产品扩展，active tool surface 含 `advance_s1..s4`、`clj_plan/clj_devops/clj_review/clj_worker`、`devops`、`submit_devops_report`、`attach_case_audit`、`ask_user`、`ask_previous_scope`、`board_*`；通过固定 host-side 内存 canned responder（OpenAI-compatible `127.0.0.1:18443`）回复 `D12-NESTED-OK`，provider request 2 次、relay HTTP 4 次、toolCalls 0；工作区只读与关闭清理同 t8。fake 8k context 触发 compaction warning，归因 smoke 模型上下文不足，未判产品 bug。该轮仅 UI/连接/工具面 smoke：无真实模型、无角色审计、无工具调用、无提交/评分/批准。
 - **已撤回的假阳性**：此前有一轮 plain host 运行一度报告产品扩展已加载；复查确认产品安装未实际生效，该阳性结论撤回，不作为 D12 证据。
 - **仍未验证**：真实宿主 socket 不可达的破坏性证明、“fixed provider relay 可达且只转发 pinned provider”的完整语义、两阶段 Landlock 在完整审计生命周期内的强制、nested omp 的 prompt 追加顺序与真实模型 egress、`clj_auditor.call` 实际执行、K 路审计与 per-auditor 资源回收、真实 18.16.0 宿主基线（本 smoke 为 18.18.8）都未验证。不能写成“隔离已验证”或“审计已验收”。
 - **线程继承（源码已确认，未运行验证）**：`model-worker.mjs` 在同一个 Worker 内先 `applyNetworkLandlock` 再 spawn bwrap，bwrap 子进程因此继承 network 域；bwrap 内 CLI 再 `applyUnixSocketLandlock` 后 exec tmux。若把 bwrap 改到主线程或其他 Worker 启动，network 域不会随子进程继承，必须保持同线程。
@@ -551,7 +555,6 @@ bun -e "import { compileString } from 'cherry-cljs'; console.log(compileString('
 - 当前工作区 `package.json` 已收敛为两个入口，`dependencies` 只有 `cherry-cljs@0.6.38`；`node_modules/cherry-cljs` 已存在。
 - 截止本记录写入时，`src/` 仍是**迁移中的混合状态**：旧 `pi-goal/`、`pi-context/`、`editor-theme/`、`context/`、`manual-acceptance/` 仍在；新模块已大量出现：
   - `src/clj-sandbox/ufss.mjs`、`where.mjs`、`evaluator.mjs`、`vfs.mjs`、`tools.mjs`；
-  - `src/scope/ledger.mjs`、`projection.mjs`；
   - `src/stages/disclosures.mjs`、`parsers.mjs`、`contract.mjs`、`gate-tools.mjs`、`scores.mjs`；
   - `src/swarm/board.mjs`、`worktree.mjs`、`runner.mjs`、`auditors.mjs`；
   - `src/tui/dashboard-model.mjs`、`dashboard-widget.mjs`；
@@ -894,3 +897,103 @@ done
 - 名称唯一: 复用 dogfood-write-cat 返回 NAME_TAKEN。
 - toolFailure 改为 renderError 的 EDN+UFSS；dogfood 200 pass / 3 skip / 0 fail，约 630ms。
 - 未验收: 完整 S1-S5、审计、worktree；相关测试仍 disabled。
+
+## 10. nbb `cljs.pprint` 实测（2026-11-14）
+
+- nbb 1.6.215 自带 `cljs.pprint`；`(require '[cljs.pprint :as pp])` 与 `(pp/pprint v)` 可用。
+- SCI 版只导出 `*print-pprint-dispatch*`、`cl-format`、`code-dispatch`、`pprint`、`print-table`、`with-pprint-dispatch`；没有 `*print-right-margin*`、`*print-miser-width*`、`write`；`ns-resolve` 也拿不到宽度变量。
+- 默认宽度约 72 列；实测 `{:a (vec (range 26))}` 输出 2 行（最长 71），27 个元素时退化为每元素一行。宽度不可由调用方配置。
+- `herd.ufss/canonical` 的数据层现在用 `with-out-str` + `pprint`，去掉尾部换行后交给 `standard-clojure-style` 与 `wrap`。
+- 复检：`./node_modules/.bin/nbb --classpath src -e "(require '[herd.ufss :as u]) (u/canonical (vec (range 40)))"` 应输出多行且可被 `u/read` 读回。
+- 宿主扩展加载器解析到的 bare/bundled `nbb` 不提供 `cljs.pprint`：`nbb.loadString("(require '[cljs.pprint :as pp]) ...")` 返回 `No namespace: cljs.pprint found`，静态 `pp/pprint` 因此 unresolved。
+- `src/clj-main.mjs` 现在用 `createRequire(realpath(clj-main.mjs))` 与显式 `node_modules/nbb/index.mjs` 候选加载插件自带的 1.6.215 nbb；用 `nbb.registerModule(formatter, "@chrisoakman/standard-clojure-style")` 注册 formatter。`registerModule` 的参数顺序是 `(module, name)`。
+- `bootstrap.cljs` 的源码根从 `nbb.classpath/get-classpath` 与 `globalThis.__herdPluginSrc` 解析，不再依赖 `process.cwd()`；从 `~/tmp` 运行 `omp -p` 可正常加载扩展。
+
+## 11. Bun CLI 与 `BUN_OPTIONS`（2026-11-14）
+
+- 本机环境设置 `BUN_OPTIONS=--preload /home/kunweiz/.config/omp/zstd-preload.js`；Bun 1.4.4 在带该变量时把 `bun test` / `bun run <script>` 误解析为脚本名，输出 `Script not found "test"`。
+- 复检命令：`env -u BUN_OPTIONS bun test tests --parallel`。
+- 该变量属于宿主环境，不是仓库配置；不要把它写进 `package.json` 或 CI。
+## 12. omp 工具输出默认展开（2026-11-14，历史）
+
+- 宿主源码 `packages/coding-agent/src/modes/interactive-mode.ts` 把 `toolOutputExpanded` 硬编码为 `false`；`omp config list` 没有对应的 `tui.*` / `display.*` 键，所以不能靠 config 改默认值。
+- 公开扩展 API `ExtensionUIContext` 暴露 `getToolsExpanded()` / `setToolsExpanded(expanded)`。
+- 2026-11-14 后续修订：`herd/main.cljs` 已删除 `session_start` 的 `setToolsExpanded(true)` 调用；默认展开交给宿主与用户。非展开态保留标题、hrule 与完整多行正文，只把多行或超过 40 字符的字符串替换为 dim `$$$`；单行且不超过 40 字符的字符串正常渲染。`Ctrl+O` 仍可手动切换；插件不直接改宿主内部字段。
+- 复检：重启 omp 后，默认不再强制展开；长字符串显示 `$$$`，短单行字符串保持可见。
+## 13. 宿主 `@oh-my-pi/pi-tui` 高亮能力（2026-11-14）
+
+- `src/clj-main.mjs` 的 `await import("@oh-my-pi/pi-tui")` 在宿主可解析；实测 `typeof tui.highlightCode === "function"`。
+- `highlightCode(code, "clojure", theme)` 返回 ANSI 行；原生高亮器把 `clj`/`clojure` 映射到 Clojure。
+- CLJS 通过 `globalThis.__herdTui` 读取该模块，不静态 `:require`；测试或无 UI 环境未注入时自动回退原文。
+- 彩虹括号由 `herd.ufss/delimiter-spans` 提供深度信息，`herd.highlight` 做 ANSI overlay；不是 Neovim 插件移植。
+## 14. highlight.js 内容语言识别（2026-11-14）
+
+- 宿主 `detectLanguageId(path)` 只按路径识别；`highlightCode(text, lang, theme)` 必须显式语言，没有内容自动识别。`cat` 的结果是纯字符串，不带路径，所以不能直接使用宿主 path-based 识别。
+- 工具结果正文改用 `highlight.js@11.12.0` 的 `highlightAuto` 做内容识别；只注册 `clojure` / `javascript` / `typescript` / `json` / `bash` / `markdown` / `xml` / `yaml` / `sql`，加载 `highlight.js/lib/core` 与对应 language 模块；无其他传递依赖。
+- `src/host/language-detect.mjs` 负责加载与映射：`xml` → `html`，其余同名映射到宿主 `highlightCode` 的语言名；`src/clj-main.mjs` 装配后暴露 `globalThis.__herdDetectLanguage`；`herd.highlight` 只委托，不再包含手写语法规则。
+- 实测：`import x from "y"; const z = 1;` → `javascript`；`(+ 1 2)` → `clojure`；`{"a": 1}` → `json`；纯文本 → `nil`；`src/clj-main.mjs` 全文 → `javascript`。
+- 识别失败、模块缺失或纯文本时返回 `nil`，回退原文；不影响工具执行。高亮仍由宿主 native `highlightCode` 完成。
+## 15. `context` 钩子收到深拷贝消息（2026-11-14）
+
+- 事实：真实宿主在调用 `context` 钩子前重建消息对象；`sessionManager.getLeafEntry().message` 与 `event.messages` 末尾消息深度相等，但 `!==`。一次性 pre-hook 诊断：`identity-index: null`、`deep-index: 203`、`messages-len: 204`。
+- 后果：`src/host/hack-context.mjs` 原先只按对象身份找追加点，identity 永不命中，导致每回合 `rewriteSession` 全量重写会话；`.herd/handoff-boundary.log` 的 `entries` 每回合 +2，session 文件反复重建。
+- 修复：`persistedPrefixLength` 先按 identity 扫描，再按 `deepEqual` 从末尾扫描最后持久化消息；`hackContext` 用该值决定 append/rewrite。首刀仍重写一次，后续深拷贝消息只 append 或 no-op。回退：只保留 identity 扫描并把 `prefixLen` 设为 `-1` 即恢复旧行为。
+- 验证：Node fake-manager 深拷贝 diag 输出 `{r1:1,r2:1,r3:1,appends1:1,appends2:1,ok:true}`；真实宿主 live wrapper 日志从 `rewrite entries 39..61` 变为 `deep-noop prefix=len`，rewrite 计数停在 40；`node --check` 与 `biome check src/host/hack-context.mjs tests/hack-context.test.mjs` 均通过；回归测试已加入 `tests/hack-context.test.mjs`。
+- 未验证：源码修复需重启宿主后才加载；当前进程使用等价的 in-memory live wrapper。重启后继续观察 `.herd/handoff-boundary.log`，不应再出现每回合 `rewrite`。
+
+## 16. 上下文机制收敛：Handoff 取代 Ariadne/Time Leap（2026-11-14）
+
+- 人类操作员批准删除 Ariadne/Time Leap/Beacon，`handoff` 成为上下文换血的唯一入口。
+- 删除：`src/herd/ariadne.cljs`、`src/scope/ariadne.mjs`、`src/scope/beacon-query.mjs`、`tests/cljs-ariadne.test.mjs`、`tests/ariadne.test.mjs.disabled`、`tests/beacon-isolation.test.mjs`、`tests/cljs-context.test.mjs`。
+- `src/herd/main.cljs`：移除 `time_leap`/`ask_beacon` 工具、`ariadne` require、锚点记录与 Time Leap context 分支；默认工具面为 `clj_devops`、`wait`、`handoff`。
+- 根 `AGENTS.md` 已同步：Ariadne/Time Leap/Beacon 章节改为 Handoff；scope 注解改为 `agent_state`；`$$$` 规则加入 40 字符单行例外。
+- 复检：`env -u BUN_OPTIONS bun test tests/cljs-sandbox.test.mjs`（40 pass）；旧 `tests/cljs-context.test.mjs` 已删除，Handoff 由 `tests/cljs-handoff.test.mjs` 与 `tests/hack-context.test.mjs` 覆盖。
+- live 宿主需重启后加载新代码；当前进程仍可能保留旧工具注册。
+
+
+## 17. park/unpark 后台 Promise 语义（2026-11-14）
+
+- 人类操作员要求：`park` 保留 Promise，后台继续执行；`unpark` 等待后台完成并取回结果；park 时增量取输出，unpark 时灌输入。
+- `src/herd/sandbox.cljs`：
+  - `park` 在挂起前调用 `call-snapshot`，把自上次展示以来的 `:stdout`/`:stderr` 增量合并进 payload；有活跃 `call` 时附加 `:call-active true`。
+  - `notify-park!` 通知后移除 notifier，支持同一程序再次 park 时重新通知。
+  - `unpark` 对活跃 `call` 先写入字符串或 `{:stdin ... :eof ...}`，同时 resolve 对应 parked Promise；两者并存时不得只做一件。
+  - `abandon` 清理 notifier。
+- `src/herd/repl.cljs`：
+  - `mark-parked!` 保留原程序 entry 的 `:promise`，不再覆盖丢失。
+  - 新增 `await-resumed`：安装 fresh notifier，`Promise.race` 原程序 Promise 与再次 park 通知；完成返回原程序结果值，再次 park 返回新的 parked 回执，失败返回 failed 回执。
+  - `unpark` 对显式 park、活跃 call、deadline park、已完成/失败程序统一走 `await-resumed`；不再立即返回注入值。
+  - `track!` 在完成/失败时清理 notifier。
+- 测试：`env -u BUN_OPTIONS bun test tests/cljs-sandbox.test.mjs` → 44 pass / 0 fail（park 变更后）；折叠回归加入后 46 pass，见 §19；新增 `parks with incremental call output and unpark feeds stdin`，覆盖 `printf first` 增量、`:call-active true`、`(str "hello" (char 10))` 灌 stdin、`got:hello` 与 `done` 最终结果。
+- 未验证：真实宿主 tmux 端到端；完整 dogfood 套件随后单独运行。
+
+## 18. 根规格 2026-11-14 修订（人类批准）
+
+- §1.2 宿主版本钉住更新为 `omp` 18.20.x（实测编译宿主；仓库 18.15.0 源码副本；17.3.5 仅历史）。
+- §4.4.2/§4.4.6/§4.4.7 更新 park/unpark：保留后台 Promise、unpark 等待结果、增量输出、stdin 灌入、deadline park 可等待后台完成。
+- §7.5 区分沙箱程序 deadline（`1000ms + code UTF-8 字节数 × 50ms`）与 `wait` 调用等待期限（`2000ms + UTF-8 字节数 × 200ms`）。
+- §7.7 新增同步 fs 禁令；§9.1 增加 `MIGRATION.md`；§9.7 放行命令改为 `env -u BUN_OPTIONS bun test tests --parallel`。
+- §10.4 记录 nbb 1.6.215 的 `cljs.pprint` 默认宽度约 72 列且不可配置。
+- §0.4 补记禁用宿主 `read`/`write` 会切断 `xd://` 传输设备；§2.1 补记子代理首行 `[HERD_ROLE: ...]` token 与 `ctx.agent` fail-closed。
+- 未验证：上述规格条文涉及的真实宿主 tmux 行为仍需按放行标准手工验收。
+
+
+## 19. 非展开态字符串折叠修正（2026-11-14）
+
+- 人类操作员要求：仅单行且不超过 40 字符的字符串在非展开预览中保留；多行字符串即使很短，以及长度超过 40 字符的字符串，一律替换为 dim `$$$`。
+- 根因：`src/herd/ufss.cljs` 的 `highlight-wrap` 用 `(edn/read-string canonical)` 判定 `short?`；当多行字符串规范化为 `"""\na\nb\n"""` 时，`edn/read-string` 只读到开头的空标准字符串 `""`，于是把多行短串误判为 0 字符单行，未折叠。
+- 修复：`short?` 优先使用 `(fence-at canonical 0)` 的 `:body` 判定换行与长度；只有非 fence 时才回退 `edn/read-string`。
+- 测试：新增 `collapses short multiline strings to dim $$$ in previews` 与 `collapses short multiline strings in result previews`；`env -u BUN_OPTIONS bun test tests/cljs-sandbox.test.mjs` → 46 pass / 0 fail。
+- 未验证：真实宿主 TUI 中的视觉确认；完整 dogfood 套件随后单独运行。
+
+
+## 20. handoff 与宿主压缩的时序修复（2026-11-14）
+
+- 风险：handoff 替换与宿主 `compaction`/`reset_boundary` 交错时，`hackContext` 的旧逻辑可能在没有可对齐前缀时调用 `rewriteSession`，整段重建 entries，删除压缩边界；也可能把旧消息追加到错误分支，导致压缩摘要与 handoff 文档顺序错乱。
+- 修复：
+  - `src/herd/main.cljs` 的 `consume-handoff!` 对首次消费返回 `:fresh?`，`context-handler` 输出 `handoffReplacement: true`，只在首次替换时触发。
+  - `src/host/hack-context.mjs` 新增 `hasCompressionBoundary`；`lastPersistedMessageEntry` 遇到 `compaction`/`reset_boundary` 返回 undefined，不跨越边界回溯旧消息。
+  - 存在压缩边界时，handoff replacement 与显式 fullRewrite 走 `appendSessionDelta(manager, after, 0)`，在边界后追加，保留边界条目；普通前缀失配只记录 `boundary-prefix-miss`，不改写宿主历史。
+  - 无压缩边界时保持原行为：首次 handoff 可全量 `rewriteSession`，后续 append-only。
+- 测试：`tests/hack-context.test.mjs` 新增 `appends a handoff replacement after a compression boundary without rewriting` 与 `appends ordinary tail after a compression boundary without rewriting`；相关窄测 20 pass；完整 dogfood 套件 268 pass / 1 skip / 0 fail。
+- 未验证：真实 omp 在上下文超限触发压缩时的实际时序；仍需 tmux 手工验收。

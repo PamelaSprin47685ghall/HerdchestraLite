@@ -31,7 +31,7 @@
  */
 
 import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { access, lstat, mkdir, readFile, realpath, rm } from "node:fs/promises";
 import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -67,7 +67,16 @@ function sleep(ms) {
 	return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
-function pidAlive(pid) {
+async function pathExists(path) {
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function pidAlive(pid) {
 	if (!Number.isInteger(pid) || pid <= 0) return false;
 	try {
 		process.kill(pid, 0);
@@ -75,7 +84,7 @@ function pidAlive(pid) {
 		if (error?.code !== "EPERM") return false;
 	}
 	try {
-		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+		const stat = await readFile(`/proc/${pid}/stat`, "utf8");
 		const state = stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3);
 		return state !== "Z" && state !== "X";
 	} catch {
@@ -86,14 +95,14 @@ function pidAlive(pid) {
 async function waitForPidGone(pid, timeoutMs) {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
-		if (!pidAlive(pid)) return true;
+		if (!(await pidAlive(pid))) return true;
 		await sleep(25);
 	}
-	return !pidAlive(pid);
+	return !(await pidAlive(pid));
 }
 
-function killPid(pid, signal) {
-	if (!pidAlive(pid)) return;
+async function killPid(pid, signal) {
+	if (!(await pidAlive(pid))) return;
 	try {
 		process.kill(pid, signal);
 	} catch {
@@ -164,7 +173,7 @@ function safeSessionName(slug, caseId) {
  * Landlock ABI 2 is required for file-reparent control; newer ABI layers add
  * network and pathname-UNIX restrictions and are reported separately.
  */
-export function createAuditorSandbox({ root, slug, batchId, caseId, evidenceRoot, model, modelRegistry }) {
+export async function createAuditorSandbox({ root, slug, batchId, caseId, evidenceRoot, model, modelRegistry }) {
 	if (typeof root !== "string" || root.length === 0) {
 		throw herdError("INVALID_ARGUMENT", "createAuditorSandbox needs root", {});
 	}
@@ -174,7 +183,7 @@ export function createAuditorSandbox({ root, slug, batchId, caseId, evidenceRoot
 	if (typeof caseId !== "string" || !/^CASE-[A-Za-z0-9_-]+$/.test(caseId)) {
 		throw herdError("INVALID_ARGUMENT", "createAuditorSandbox needs a valid CASE id", { caseId });
 	}
-	const capability = sandboxCapability();
+	const capability = await sandboxCapability();
 	const auditTmp = join(tmpdir(), `herd-audit-${slug}-${caseId}-${randomUUID()}`);
 	const socketDir = join(tmpdir(), `h-${randomBytes(4).toString("hex")}`);
 	const socketPath = join(socketDir, "s");
@@ -196,10 +205,10 @@ export function createAuditorSandbox({ root, slug, batchId, caseId, evidenceRoot
 	let modelInfo = null;
 	let modelWorker = null;
 
-	mkdirSync(auditTmp, { recursive: true, mode: 0o700 });
-	mkdirSync(socketDir, { recursive: false, mode: 0o700 });
+	await mkdir(auditTmp, { recursive: true, mode: 0o700 });
+	await mkdir(socketDir, { recursive: false, mode: 0o700 });
 	for (const directory of ["home", "tmp", "run", "cache", "state", "data", "config"]) {
-		mkdirSync(join(auditTmp, directory), { recursive: true, mode: 0o700 });
+		await mkdir(join(auditTmp, directory), { recursive: true, mode: 0o700 });
 	}
 
 	const runCommand = createSandboxedRunCommand(config);
@@ -226,9 +235,9 @@ export function createAuditorSandbox({ root, slug, batchId, caseId, evidenceRoot
 		};
 	}
 
-	function killChild() {
+	async function killChild() {
 		if (childPid === null) return;
-		killPid(childPid, "SIGTERM");
+		await killPid(childPid, "SIGTERM");
 	}
 
 	async function stopModelWorker() {
@@ -295,7 +304,7 @@ export function createAuditorSandbox({ root, slug, batchId, caseId, evidenceRoot
 					: await resolveConfiguredEgressTarget({ host: target.host, port: target.port });
 			const privateTarget = target.explicitPrivate === true || resolvedTarget.private === true;
 			const transport = selectAuditTransport({ auth, target, resolved: resolvedTarget, model: current });
-			const realOmp = findOmp();
+			const realOmp = await findOmp();
 			if (realOmp === null) {
 				throw herdError("CAPABILITY_DENIED", "omp is not executable on PATH", {});
 			}
@@ -321,7 +330,7 @@ export function createAuditorSandbox({ root, slug, batchId, caseId, evidenceRoot
 			// the real address and sends the original Host/SNI.
 			const localHost = isIP(target.host) === 0 ? target.host : "127.0.0.1";
 			const localBaseUrl = `http://${localHost}:${listenPort}${target.basePath ?? ""}`;
-			seed = prepareModelSeed({
+			seed = await prepareModelSeed({
 				auditTmp,
 				socketDir,
 				model: current,
@@ -386,7 +395,7 @@ export function createAuditorSandbox({ root, slug, batchId, caseId, evidenceRoot
 			childPid = launched.pid;
 			modelWorker = launched.worker;
 			if (stopped) {
-				killChild();
+				await killChild();
 				await stopModelWorker();
 				throw herdError("AUDIT_ABORTED", "auditor sandbox was stopped while starting", { auditTmp });
 			}
@@ -397,13 +406,13 @@ export function createAuditorSandbox({ root, slug, batchId, caseId, evidenceRoot
 			if (seed !== null) seed.secretEnv = "";
 		}
 		const deadline = Date.now() + START_TIMEOUT_MS;
-		while (!existsSync(socketPath)) {
+		while (!(await pathExists(socketPath))) {
 			if (stopped) {
-				killChild();
+				await killChild();
 				await stopModelWorker();
 				throw herdError("AUDIT_ABORTED", "auditor sandbox was stopped while starting", { auditTmp });
 			}
-			if (!pidAlive(childPid)) {
+			if (!(await pidAlive(childPid))) {
 				await stop();
 				throw herdError("CAPABILITY_DENIED", "auditor sandbox tmux server exited before its socket appeared", {
 					bwrapPid: childPid,
@@ -419,13 +428,13 @@ export function createAuditorSandbox({ root, slug, batchId, caseId, evidenceRoot
 			await sleep(20);
 		}
 		if (stopped) {
-			killChild();
+			await killChild();
 			await stopModelWorker();
 			throw herdError("AUDIT_ABORTED", "auditor sandbox was stopped while starting", { auditTmp });
 		}
 		try {
-			const realRoot = realpathSync(root);
-			const realAuditTmp = realpathSync(auditTmp);
+			const realRoot = await realpath(root);
+			const realAuditTmp = await realpath(auditTmp);
 			const setupCommand = [
 				"tmux",
 				"-S",
@@ -444,7 +453,7 @@ export function createAuditorSandbox({ root, slug, batchId, caseId, evidenceRoot
 				signal: AbortSignal.timeout(START_TIMEOUT_MS),
 			});
 			if (stopped) {
-				killChild();
+				await killChild();
 				await stopModelWorker();
 				throw herdError("AUDIT_ABORTED", "auditor sandbox was stopped while starting", { auditTmp });
 			}
@@ -462,12 +471,12 @@ export function createAuditorSandbox({ root, slug, batchId, caseId, evidenceRoot
 		return info();
 	}
 
-	function removePrivateDirectory(path, pattern) {
+	async function removePrivateDirectory(path, pattern) {
 		try {
 			if (dirname(path) !== tmpdir() || !pattern.test(basename(path))) return;
-			const stats = lstatSync(path);
+			const stats = await lstat(path);
 			if (!stats.isDirectory() || stats.isSymbolicLink()) return;
-			rmSync(path, { recursive: true, force: true });
+			await rm(path, { recursive: true, force: true });
 		} catch {
 			// Best-effort cleanup of the sandbox's own directory.
 		}
@@ -486,7 +495,7 @@ export function createAuditorSandbox({ root, slug, batchId, caseId, evidenceRoot
 			// sandboxed process tree when bwrap itself dies, so killing the bwrap
 			// process is sufficient (and cannot be redirected by sandbox files).
 			if (childPid !== null) {
-				killPid(childPid, "SIGTERM");
+				await killPid(childPid, "SIGTERM");
 			}
 			// The worker thread owns the bwrap process. Terminating it before
 			// the child is reaped would send SIGKILL through bwrap's
@@ -495,10 +504,10 @@ export function createAuditorSandbox({ root, slug, batchId, caseId, evidenceRoot
 			await stopModelWorker();
 			if (childPid !== null) {
 				const gone = await waitForPidGone(childPid, STOP_GRACE_MS);
-				if (!gone) killPid(childPid, "SIGKILL");
+				if (!gone) await killPid(childPid, "SIGKILL");
 			}
-			removePrivateDirectory(socketDir, SOCKET_DIR_PATTERN);
-			removePrivateDirectory(auditTmp, /^herd-audit-[A-Za-z0-9_-]+$/);
+			await removePrivateDirectory(socketDir, SOCKET_DIR_PATTERN);
+			await removePrivateDirectory(auditTmp, /^herd-audit-[A-Za-z0-9_-]+$/);
 		})();
 		return stopPromise;
 	}

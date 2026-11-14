@@ -27,7 +27,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, statSync, writeSync } from "node:fs";
+import { access, open, readFile, stat } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, posix } from "node:path";
 import {
@@ -877,7 +877,7 @@ export function createFileBoardStore(options = {}) {
 	const agentState = options.agentState;
 
 	async function read() {
-		return readBoardFile(boardPath).state;
+		return (await readBoardFile(boardPath)).state;
 	}
 
 	async function withBoardLock(fn) {
@@ -916,7 +916,7 @@ export function createFileBoardStore(options = {}) {
 			});
 		}
 		return withBoardLock(async () => {
-			const current = readBoardFile(boardPath).state;
+			const current = (await readBoardFile(boardPath)).state;
 			const outcome = await fn(current);
 			if (!outcome || outcome.commit === false) {
 				return outcome?.response;
@@ -928,10 +928,10 @@ export function createFileBoardStore(options = {}) {
 				});
 			}
 			await writeBoardFile(boardPath, nextBoard);
-			appendEvents(eventsPath, outcome.events ?? []);
+			await appendEvents(eventsPath, outcome.events ?? []);
 			await writeEdnAtomic(checkpointPath, {
-				offset: fileSize(eventsPath),
-				digest: sha256File(boardPath),
+				offset: await fileSize(eventsPath),
+				digest: await sha256File(boardPath),
 				"board-version": nextBoard["board-version"],
 				"updated-at": new Date().toISOString(),
 			});
@@ -944,12 +944,12 @@ export function createFileBoardStore(options = {}) {
 			throw herdError("INVALID_ARGUMENT", "initialize needs a complete board value", {});
 		}
 		return withBoardLock(async () => {
-			const detail = readBoardFile(boardPath);
+			const detail = await readBoardFile(boardPath);
 			if (detail.state) return detail.state;
 			if (detail.corrupt) {
 				throw herdError("STALE_CONTROL", "board file is corrupt", { boardPath });
 			}
-			if (hasCommittedLedger(eventsPath, checkpointPath)) {
+			if (await hasCommittedLedger(eventsPath, checkpointPath)) {
 				throw herdError("STALE_CONTROL", "board is missing while event or checkpoint state exists", {
 					boardPath,
 					eventsPath,
@@ -958,10 +958,10 @@ export function createFileBoardStore(options = {}) {
 				});
 			}
 			await writeBoardFile(boardPath, board);
-			ensureFile(eventsPath);
+			await ensureFile(eventsPath);
 			await writeEdnAtomic(checkpointPath, {
-				offset: fileSize(eventsPath),
-				digest: sha256File(boardPath),
+				offset: await fileSize(eventsPath),
+				digest: await sha256File(boardPath),
 				"board-version": board["board-version"],
 				"updated-at": new Date().toISOString(),
 			});
@@ -985,12 +985,12 @@ export function createFileBoardStore(options = {}) {
  * Read one board file. Missing and corrupt are distinct so `initialize` cannot
  * overwrite a damaged board.
  */
-function readBoardFile(path) {
-	if (!existsSync(path)) return { state: null, missing: true, corrupt: false };
+async function readBoardFile(path) {
 	let text;
 	try {
-		text = readFileSync(path, "utf8");
-	} catch {
+		text = await readFile(path, "utf8");
+	} catch (error) {
+		if (error?.code === "ENOENT") return { state: null, missing: true, corrupt: false };
 		return { state: null, missing: false, corrupt: true };
 	}
 	try {
@@ -1086,44 +1086,49 @@ async function writeBoardFile(path, board) {
 	await writeFileAtomic(dirname(path), basename(path), `${printUfss(boardToEdn(board))}\n`);
 }
 
-function appendEvents(path, events) {
+async function appendEvents(path, events) {
 	if (!Array.isArray(events) || events.length === 0) return;
 	const text = `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
 	const bytes = Buffer.from(text, "utf8");
-	const fd = openSync(path, "a", 0o600);
+	const handle = await open(path, "a", 0o600);
 	try {
 		let offset = 0;
 		while (offset < bytes.length) {
-			const written = writeSync(fd, bytes, offset, bytes.length - offset);
-			if (written <= 0) throw new Error("event append made no progress");
-			offset += written;
+			const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset, null);
+			if (bytesWritten <= 0) throw new Error("event append made no progress");
+			offset += bytesWritten;
 		}
-		fsyncSync(fd);
+		await handle.sync();
 	} finally {
-		closeSync(fd);
+		await handle.close();
 	}
 }
 
-function ensureFile(path) {
-	if (existsSync(path)) return;
-	const fd = openSync(path, "a", 0o600);
-	closeSync(fd);
+async function ensureFile(path) {
+	const handle = await open(path, "a", 0o600);
+	await handle.close();
 }
 
-function fileSize(path) {
+async function fileSize(path) {
 	try {
-		return statSync(path).size;
+		return (await stat(path)).size;
 	} catch {
 		return 0;
 	}
 }
 
-function hasCommittedLedger(eventsPath, checkpointPath) {
-	return fileSize(eventsPath) > 0 || existsSync(checkpointPath);
+async function hasCommittedLedger(eventsPath, checkpointPath) {
+	if ((await fileSize(eventsPath)) > 0) return true;
+	try {
+		await access(checkpointPath);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
-function sha256File(path) {
-	return createHash("sha256").update(readFileSync(path)).digest("hex");
+async function sha256File(path) {
+	return createHash("sha256").update(await readFile(path)).digest("hex");
 }
 
 function sleep(ms) {

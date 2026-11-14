@@ -21,7 +21,7 @@
  * reachable; when it is not, the import fails before any plugin code runs.
  */
 
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as codingAgent from "@oh-my-pi/pi-coding-agent";
@@ -74,15 +74,15 @@ function resolvePath(specifier) {
  * is found before the filesystem root.
  *
  * @param {string | undefined} modulePath
- * @returns {{ path: string, version: string } | undefined}
+ * @returns {Promise<{ path: string, version: string } | undefined>}
  */
-function packageMetadata(modulePath) {
+async function packageMetadata(modulePath) {
 	if (typeof modulePath !== "string" || modulePath.length === 0) return undefined;
 	let directory = dirname(modulePath);
 	for (let depth = 0; depth < 12; depth += 1) {
 		const candidate = join(directory, "package.json");
 		try {
-			const parsed = JSON.parse(readFileSync(candidate, "utf8"));
+			const parsed = JSON.parse(await readFile(candidate, "utf8"));
 			if (typeof parsed.version === "string" && parsed.version.length > 0) {
 				return { path: candidate, version: parsed.version };
 			}
@@ -97,7 +97,7 @@ function packageMetadata(modulePath) {
 }
 
 const hostModulePath = resolvePath(HOST_PACKAGE);
-const hostPackageMetadata = packageMetadata(hostModulePath);
+const hostPackageMetadata = await packageMetadata(hostModulePath);
 const hostVersion = typeof VERSION === "string" ? VERSION : undefined;
 const cliVersion =
 	typeof process.env.OMP_VERSION === "string" && process.env.OMP_VERSION.length > 0

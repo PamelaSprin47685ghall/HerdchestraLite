@@ -29,7 +29,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { access, copyFile, readdir, readFile, rm, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { herdError, isHerdError, messageOf } from "../util/errors.mjs";
 import { inspectLock } from "../util/file-lock.mjs";
@@ -62,7 +62,6 @@ const WORKER_TOOLS = Object.freeze([
 	"board_park_slot",
 	"board_take_or_die",
 ]);
-const ORACLE_TOOLS = Object.freeze(["clj_review", "submit_oracle_advice"]);
 const ACTIVE_PHASES = new Set(["applying", "running", "uncertain"]);
 const CANCELLED_PHASES = new Set(["claimed", "preparing", "waiting-gate"]);
 const DETERMINISTIC_AGENT_ERRORS = new Set([":STALLED", ":MODEL_FALLBACK", ":SETTINGS_UNAVAILABLE"]);
@@ -598,7 +597,7 @@ export async function recover(args = {}) {
 			: missionRecoveryRuntime(root, slug, deps);
 		const missionLevel = !hasSlice;
 		const missionDir = join(runtime.root, ".herd", "missions", runtime.slug);
-		if (!existsSync(missionDir)) {
+		if (!(await pathExists(missionDir))) {
 			return {
 				ok: false,
 				error: herdError("STALE_CONTROL", "mission control state is missing", {
@@ -612,15 +611,15 @@ export async function recover(args = {}) {
 
 		const scanned = {};
 		const order = ["mission", "board", "locks", "tmp", "ledger", "worktree"];
-		scanned.mission = scanMission(runtime, missionDir);
+		scanned.mission = await scanMission(runtime, missionDir);
 		scanned.board = missionLevel ? await scanMissionBoards(runtime) : await scanBoard(runtime);
 		const boardState = missionLevel
 			? await readMissionActors(runtime)
 			: await readBoardState(runtime).catch(() => null);
 		scanned.locks = await scanLocks(runtime, boardState);
-		scanned.tmp = scanTmp(runtime, missionDir);
-		scanned.ledger = scanLedger(runtime);
-		scanned.worktree = missionLevel ? scanMissionWorktrees(runtime) : scanWorktree(runtime);
+		scanned.tmp = await scanTmp(runtime, missionDir);
+		scanned.ledger = await scanLedger(runtime);
+		scanned.worktree = missionLevel ? await scanMissionWorktrees(runtime) : await scanWorktree(runtime);
 
 		const repairRequested = args.repair === true;
 		const result = {
@@ -680,7 +679,7 @@ export async function recover(args = {}) {
 
 		for (const path of scanned.locks.staleFiles) {
 			try {
-				rmSync(path, { force: true });
+				await rm(path, { force: true });
 				result.repaired.locks.push(path);
 			} catch (error) {
 				result.requiresOperator.push({
@@ -2358,7 +2357,6 @@ export function createUpstreamBackoff(options = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Blocker Oracle
 // ---------------------------------------------------------------------------
 
 export function createOracleGate(options = {}) {
@@ -2515,7 +2513,6 @@ export async function runOracle(args = {}) {
 		const prompt =
 			typeof runtime.deps.buildOraclePrompt === "function"
 				? runtime.deps.buildOraclePrompt({
-						role: "Blocker Oracle",
 						sliceId: runtime.sliceId,
 						task: clone(task),
 						reason,
@@ -2524,7 +2521,6 @@ export async function runOracle(args = {}) {
 				: buildOraclePrompt(runtime, { task, reason, fingerprint });
 		const spawned = await callAgentOnce(runtime, {
 			agentId: nextAgentId(runtime, "oracle"),
-			role: "Blocker Oracle",
 			name: `Oracle-${runtime.sliceId}-${fingerprint.slice(0, 8)}`,
 			prompt,
 			tools: ORACLE_TOOLS,
@@ -3206,7 +3202,6 @@ function buildWorkerPrompt(runtime, slot) {
 
 function buildOraclePrompt(runtime, { task, reason, fingerprint }) {
 	return [
-		"Role: Blocker Oracle. You are read-only and you do not own the board.",
 		`Slice: ${runtime.sliceId}`,
 		`Task: ${task["task-id"]}`,
 		`Goal: ${task.goal}`,
@@ -3214,7 +3209,6 @@ function buildOraclePrompt(runtime, { task, reason, fingerprint }) {
 		`Blocking reason: ${reason}`,
 		`Fingerprint: ${fingerprint}`,
 		"Give one specific, falsifiable alternative: which interface to change, which hypothesis to verify first, which scope to cut, or which path to abandon. Do not edit files, finish tasks, change ownership, or lower acceptance thresholds.",
-		"Submit through submit_oracle_advice({task_id, advice_markdown}).",
 	].join("\n");
 }
 
@@ -3285,13 +3279,22 @@ function nowIso(runtime) {
 // Recovery windows
 // ---------------------------------------------------------------------------
 
-function scanMission(_runtime, missionDir) {
+async function pathExists(path) {
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function scanMission(_runtime, missionDir) {
 	const path = join(missionDir, "mission.edn");
-	if (!existsSync(path)) {
+	if (!(await pathExists(path))) {
 		return { window: "mission", status: "missing", path, corruptFile: null };
 	}
 	try {
-		const text = readFileSync(path, "utf8");
+		const text = await readFile(path, "utf8");
 		return {
 			window: "mission",
 			status: text.trim().length > 0 ? "present" : "empty",
@@ -3306,7 +3309,7 @@ function scanMission(_runtime, missionDir) {
 
 async function scanMissionBoards(runtime) {
 	const missionDir = join(runtime.root, ".herd", "missions", runtime.slug);
-	const directories = sliceDirectories(missionDir);
+	const directories = await sliceDirectories(missionDir);
 	if (directories.length === 0) {
 		return { window: "board", status: "none", slices: [], outcomeUnknown: [] };
 	}
@@ -3359,7 +3362,7 @@ async function scanMissionBoards(runtime) {
 async function readMissionActors(runtime) {
 	const missionDir = join(runtime.root, ".herd", "missions", runtime.slug);
 	const actors = {};
-	for (const directory of sliceDirectories(missionDir)) {
+	for (const directory of await sliceDirectories(missionDir)) {
 		const sliceId = basename(directory);
 		const handle = openBoard(runtime.root, runtime.slug, sliceId);
 		try {
@@ -3372,19 +3375,20 @@ async function readMissionActors(runtime) {
 	return { actors };
 }
 
-function scanMissionWorktrees(runtime) {
+async function scanMissionWorktrees(runtime) {
 	const directory = join(runtime.root, ".herd-worktrees", runtime.slug);
-	if (!existsSync(directory)) {
+	if (!(await pathExists(directory))) {
 		return { window: "worktree", status: "none", entries: [], retained: true };
 	}
 	try {
-		const entries = readdirSync(directory)
-			.filter((name) => !name.startsWith("."))
-			.map((name) => {
+		const names = (await readdir(directory)).filter((name) => !name.startsWith("."));
+		const entries = await Promise.all(
+			names.map(async (name) => {
 				const path = join(directory, name);
-				const present = existsSync(path);
+				const present = await pathExists(path);
 				return { sliceId: name, path, present, retained: true };
-			});
+			}),
+		);
 		return {
 			window: "worktree",
 			status: entries.some((entry) => !entry.present) ? "missing" : entries.length > 0 ? "present" : "none",
@@ -3420,7 +3424,7 @@ async function scanBoard(runtime) {
 				window: "board",
 				status: "missing",
 				path,
-				corruptFile: existsSync(path) ? path : null,
+				corruptFile: (await pathExists(path)) ? path : null,
 				next: "restore the last committed board; the runner does not recreate one",
 			};
 		}
@@ -3454,9 +3458,9 @@ async function scanLocks(runtime, boardState) {
 		if (typeof path === "string") paths.add(path);
 	}
 	const lockDirectory = join(runtime.root, ".herd", "locks");
-	if (existsSync(lockDirectory)) {
+	if (await pathExists(lockDirectory)) {
 		try {
-			for (const name of readdirSync(lockDirectory)) {
+			for (const name of await readdir(lockDirectory)) {
 				if (name.endsWith(".lock")) paths.add(join(lockDirectory, name));
 			}
 		} catch {
@@ -3499,16 +3503,16 @@ function normalizeLockInspection(value) {
 	return { ...value, state };
 }
 
-function scanTmp(_runtime, missionDir) {
+async function scanTmp(_runtime, missionDir) {
 	const files = [];
-	for (const directory of [missionDir, ...sliceDirectories(missionDir)]) {
-		if (!existsSync(directory)) continue;
+	for (const directory of [missionDir, ...(await sliceDirectories(missionDir))]) {
+		if (!(await pathExists(directory))) continue;
 		try {
-			for (const name of readdirSync(directory)) {
+			for (const name of await readdir(directory)) {
 				if (!name.startsWith(".tmp-")) continue;
 				const path = join(directory, name);
-				const stat = statSync(path);
-				files.push({ path, bytes: stat.size });
+				const stats = await stat(path);
+				files.push({ path, bytes: stats.size });
 			}
 		} catch {
 			// A directory that cannot be listed is reported by its absence.
@@ -3517,27 +3521,25 @@ function scanTmp(_runtime, missionDir) {
 	return { window: "tmp", files, retained: true };
 }
 
-function sliceDirectories(missionDir) {
+async function sliceDirectories(missionDir) {
 	const slicesDir = join(missionDir, "slices");
-	if (!existsSync(slicesDir)) return [];
+	if (!(await pathExists(slicesDir))) return [];
 	try {
-		return readdirSync(slicesDir)
-			.filter((name) => !name.startsWith("."))
-			.map((name) => join(slicesDir, name));
+		return (await readdir(slicesDir)).filter((name) => !name.startsWith(".")).map((name) => join(slicesDir, name));
 	} catch {
 		return [];
 	}
 }
 
-function scanLedger(runtime) {
+async function scanLedger(runtime) {
 	const checkpointPath = runtime.board?.checkpointPath ?? null;
 	const eventsPath = runtime.board?.eventsPath ?? join(runtime.root, ".herd", "missions", runtime.slug, "events.jsonl");
 	let offset = null;
 	let checkpointStatus = "missing";
-	if (checkpointPath && existsSync(checkpointPath)) {
+	if (checkpointPath && (await pathExists(checkpointPath))) {
 		checkpointStatus = "present";
 		try {
-			const text = readFileSync(checkpointPath, "utf8");
+			const text = await readFile(checkpointPath, "utf8");
 			const match = /(?::offset\s+|"offset"\s*:\s*)(\d+)/.exec(text);
 			offset = match ? Number(match[1]) : null;
 		} catch (error) {
@@ -3555,9 +3557,9 @@ function scanLedger(runtime) {
 		}
 	}
 	let eventsBytes = 0;
-	if (eventsPath && existsSync(eventsPath)) {
+	if (eventsPath && (await pathExists(eventsPath))) {
 		try {
-			eventsBytes = statSync(eventsPath).size;
+			eventsBytes = (await stat(eventsPath)).size;
 		} catch {
 			eventsBytes = 0;
 		}
@@ -3574,12 +3576,12 @@ function scanLedger(runtime) {
 	};
 }
 
-function scanWorktree(runtime) {
+async function scanWorktree(runtime) {
 	const path = runtime.slice.workspace ?? null;
 	if (!path) return { window: "worktree", status: "not-selected", path: null, retained: true };
 	return {
 		window: "worktree",
-		status: existsSync(path) ? "present" : "missing",
+		status: (await pathExists(path)) ? "present" : "missing",
 		path,
 		retained: true,
 	};
@@ -3633,10 +3635,10 @@ async function backupPaths(runtime, paths) {
 		return backups;
 	}
 	for (const path of paths) {
-		if (!existsSync(path)) continue;
+		if (!(await pathExists(path))) continue;
 		const target = `${path}.bak-${new Date().toISOString().replace(/[:.]/g, "-")}`;
 		try {
-			copyFileSync(path, target);
+			await copyFile(path, target);
 			backups.push(target);
 		} catch {
 			// Leave the original in place; the repair result reports the gap.

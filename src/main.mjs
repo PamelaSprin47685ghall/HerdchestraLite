@@ -10,17 +10,18 @@
  * M0: the main assembly.
  *
  * This file connects the real modules through the host's public extension API:
- * prompts, the Scope ledger/projection, the stage gates, the board/worktree
+ * prompts, the stage gates, the board/worktree
  * lifecycle, the sandbox role tools, commands, and the dashboard. It does not
  * implement board/stage/swarm semantics itself, and it does not import the old
  * pi-goal, pi-context, editor-theme, or manual-acceptance runtime.
  */
 
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { access, mkdir, readFile, readdir, realpath } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { Type } from "typebox";
 import { buildSandboxTools, describeSandboxTool } from "./clj-sandbox/tools.mjs";
 import { isKeyword, keyword, keywordName, printUfss, readUfss } from "./clj-sandbox/ufss.mjs";
@@ -69,7 +70,6 @@ import { abandonSlice } from "./swarm/worktree.mjs";
 import { deriveDashboard } from "./tui/dashboard-model.mjs";
 import { DASHBOARD_TOGGLE_SHORTCUT, mountDashboard } from "./tui/dashboard-widget.mjs";
 import { writeFileAtomic } from "./util/atomic-write.mjs";
-import { mkdir } from "node:fs/promises";
 import { herdError, printEdn, renderError } from "./util/errors.mjs";
 import { inspectLock, withLock } from "./util/file-lock.mjs";
 
@@ -112,7 +112,7 @@ const FORBIDDEN_BARE_TOOLS = Object.freeze([
 	"write",
 ]);
 
-const AUDITOR_SANDBOX = sandboxCapability();
+const AUDITOR_SANDBOX = await sandboxCapability();
 
 const ROLE_SURFACES = Object.freeze({
 	"Plan DevOps": Object.freeze(["clj_devops", "submit_devops_report", "yield"]),
@@ -130,7 +130,6 @@ const ROLE_SURFACES = Object.freeze({
 			? ["clj_auditor", "attach_case_audit", "yield"]
 			: ["attach_case_audit", "yield"],
 	),
-	"Blocker Oracle": Object.freeze(["clj_review", "submit_oracle_advice", "yield"]),
 });
 
 export async function boardRoleExitReady(state, ctx) {
@@ -155,7 +154,6 @@ export const ROLE_EXIT_TOOLS = Object.freeze({
 	"Swarm Worker": "board_finish",
 	"Swarm Holder": "board_finish",
 	"Manual Auditor": "attach_case_audit",
-	"Blocker Oracle": "submit_oracle_advice",
 });
 
 const ROLE_PROMPTS = Object.freeze({
@@ -163,7 +161,6 @@ const ROLE_PROMPTS = Object.freeze({
 	Reviewer: ROLE_PROMPTS_LATE.reviewer,
 	"Swarm Worker": ROLE_PROMPTS_LATE.swarmWorker,
 	"Swarm Holder": ROLE_PROMPTS_LATE.swarmWorker,
-	"Blocker Oracle": ROLE_PROMPTS_LATE.blockerOracle,
 });
 
 const STAGE_SURFACES = Object.freeze({
@@ -219,10 +216,21 @@ function sessionIdOf(ctx) {
 	return "main";
 }
 
-function workspaceRoot(cwd) {
+async function pathExists(path) {
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function workspaceRoot(cwd) {
 	let directory = resolve(typeof cwd === "string" && cwd.length > 0 ? cwd : process.cwd());
 	for (let depth = 0; depth < 12; depth += 1) {
-		if (existsSync(join(directory, "AGENTS.md")) || existsSync(join(directory, ".herd"))) return directory;
+		if ((await pathExists(join(directory, "AGENTS.md"))) || (await pathExists(join(directory, ".herd")))) {
+			return directory;
+		}
 		const parent = dirname(directory);
 		if (parent === directory) break;
 		directory = parent;
@@ -230,13 +238,13 @@ function workspaceRoot(cwd) {
 	return resolve(cwd ?? process.cwd());
 }
 
-function stateFor(ctx) {
+async function stateFor(ctx) {
 	const id = sessionIdOf(ctx);
 	let state = sessions.get(id);
 	if (!state) {
 		state = {
 			id,
-			root: workspaceRoot(ctx?.cwd),
+			root: await workspaceRoot(ctx?.cwd),
 			slug: undefined,
 			role: undefined,
 			roleNonce: undefined,
@@ -278,7 +286,7 @@ function stateFor(ctx) {
 	}
 	if (isObject(ctx)) {
 		state.lastContext = ctx;
-		if (typeof ctx.cwd === "string" && ctx.cwd.length > 0) state.root = workspaceRoot(ctx.cwd);
+		if (typeof ctx.cwd === "string" && ctx.cwd.length > 0) state.root = await workspaceRoot(ctx.cwd);
 		if (ctx.model !== undefined) state.model = ctx.model;
 		if (ctx.modelRegistry !== undefined) state.modelRegistry = ctx.modelRegistry;
 	}
@@ -619,7 +627,7 @@ async function finishBoardTask({ state, ctx, slug, sliceId, port, command, turnI
 		expectedBoardVersion,
 	};
 	const role = state.role === "Swarm Holder" ? "holder" : "worker";
-	const built = sandboxToolFor(role, ctx, state);
+	const built = await sandboxToolFor(role, ctx, state)
 	if (typeof built?.readSetForActor !== "function" || typeof built?.verifyObservedFacts !== "function") {
 		return {
 			ok: false,
@@ -643,14 +651,15 @@ async function finishBoardTask({ state, ctx, slug, sliceId, port, command, turnI
 		: [];
 	if (dependencyPaths.length === 0 && observedPaths.length === 0) return port.finishTask(finishArgs);
 	const workspace = state.root;
-	const dependencyAbsolute = dependencyPaths.map((relative) => {
+	const dependencyAbsolute = [];
+	for (const relative of dependencyPaths) {
 		const target = resolve(workspace, relative);
 		try {
-			return realpathSync(target);
+			dependencyAbsolute.push(await realpath(target));
 		} catch {
-			return target;
+			dependencyAbsolute.push(target);
 		}
-	});
+	}
 	const factPaths = dependencyPaths.length > 0 ? dependencyAbsolute : observedPaths;
 	const gate = writeGatePort(state, sliceId, ctx);
 	const locked = await gate.runExclusive(async () => {
@@ -741,9 +750,9 @@ function readCallMeta(toolCallId) {
 	}
 }
 
-export function sandboxRoots(role, ctx, state) {
+export async function sandboxRoots(role, ctx, state) {
 	const cwd = resolve(ctx?.cwd ?? state.root);
-	const binding = role === "auditor" ? auditorBinding(state, ctx) : undefined;
+	const binding = role === "auditor" ? await auditorBinding(state, ctx) : undefined;
 	const artifactsDir = artifactsDirFromContext(state, ctx);
 	const slug = state.slug ?? binding?.slug ?? slugFromArtifactsPath(artifactsDir) ?? "unscoped";
 	const plans = join(state.root, "plans", slug);
@@ -761,7 +770,7 @@ export function sandboxRoots(role, ctx, state) {
 				caseId: binding.caseId,
 			});
 		}
-		mkdirSync(evidence, { recursive: true });
+		await mkdir(evidence, { recursive: true });
 		const runCommand = createSandboxedRunCommand({
 			root: state.root,
 			evidenceRoot: evidence,
@@ -786,11 +795,11 @@ export function sandboxRoots(role, ctx, state) {
 		};
 	}
 	if (role === "plan") {
-		mkdirSync(plans, { recursive: true });
+		await mkdir(plans, { recursive: true });
 		return { writeRoot: plans, readRoots: [], callLogDir };
 	}
 	if (role === "devops") {
-		mkdirSync(callLogDir, { recursive: true });
+		await mkdir(callLogDir, { recursive: true });
 		return {
 			writeRoot: state.root,
 			readRoots: [],
@@ -804,7 +813,7 @@ export function sandboxRoots(role, ctx, state) {
 	};
 }
 
-export function auditorBinding(state, ctx) {
+export async function auditorBinding(state, ctx) {
 	const candidates = [
 		ctx?.auditContext,
 		ctx?.agent?.auditContext,
@@ -820,7 +829,7 @@ export function auditorBinding(state, ctx) {
 			const batchId = candidate.batchId ?? candidate.batch_id;
 			const artifactsDir = candidate.artifactsDir ?? candidate["artifacts-dir"];
 			if (typeof slug === "string" && typeof caseId === "string") {
-				const context = typeof artifactsDir === "string" ? readAuditContextDir(artifactsDir) : undefined;
+				const context = typeof artifactsDir === "string" ? await readAuditContextDir(artifactsDir) : undefined;
 				return {
 					...(context ?? {}),
 					slug,
@@ -835,7 +844,7 @@ export function auditorBinding(state, ctx) {
 		}
 		if (typeof candidate !== "string") continue;
 		for (const directory of [candidate, dirname(candidate)]) {
-			const context = readAuditContextDir(directory);
+			const context = await readAuditContextDir(directory);
 			if (context) return context;
 		}
 		const normalized = `/${candidate.replaceAll("\\", "/").replace(/^\/+/, "")}`;
@@ -859,7 +868,7 @@ export function auditorBinding(state, ctx) {
 	return undefined;
 }
 
-function evidencePorts(state, evidenceRoot, caseId, kind = "audit") {
+async function evidencePorts(state, evidenceRoot, caseId, kind = "audit") {
 	const actions = new Map();
 	const control = {
 		async markApplying(payload = {}) {
@@ -886,7 +895,7 @@ function evidencePorts(state, evidenceRoot, caseId, kind = "audit") {
 			return { ok: true };
 		},
 	};
-	mkdirSync(join(state.root, ".herd", "locks"), { recursive: true });
+	await mkdir(join(state.root, ".herd", "locks"), { recursive: true });
 	const lockPath = join(state.root, ".herd", "locks", `${state.slug ?? "unscoped"}-${kind}-${caseId}.write-w.lock`);
 	const writeGate = {
 		runExclusive: (run) =>
@@ -911,8 +920,8 @@ function evidencePorts(state, evidenceRoot, caseId, kind = "audit") {
 	};
 }
 
-function sandboxToolFor(role, ctx, state) {
-	const binding = role === "auditor" ? auditorBinding(state, ctx) : undefined;
+async function sandboxToolFor(role, ctx, state) {
+	const binding = role === "auditor" ? await auditorBinding(state, ctx) : undefined;
 	const slug = state.slug ?? binding?.slug ?? slugFromCwd(ctx?.cwd);
 	const scopedState = slug ? { ...state, slug } : state;
 	const actorIdentity = sessionIdentity(state, ctx);
@@ -920,21 +929,21 @@ function sandboxToolFor(role, ctx, state) {
 	const key = `${role}\u0000${ctx?.cwd ?? ""}\u0000${slug ?? ""}\u0000${binding?.batchId ?? ""}\u0000${binding?.caseId ?? ""}\u0000${termId ?? ""}`;
 	let built = state.sandbox.get(key);
 	if (built) return built;
-	const roots = sandboxRoots(role, ctx, scopedState);
+	const roots = await sandboxRoots(role, ctx, scopedState);
 	const sliceId = sliceIdFromCwd(ctx?.cwd);
 	const board = boardHandleFor(scopedState, sliceId);
 	const sliceControl = board ? createWriteGateControl(board) : undefined;
 	const sliceWriteGate = board && sliceId ? writeGatePort(scopedState, sliceId, ctx) : undefined;
 	const standalonePorts =
 		role === "auditor"
-			? evidencePorts(
+			? await evidencePorts(
 					scopedState,
 					roots.evidenceRoot,
 					binding?.caseId ?? "",
 					binding?.batchId ? `audit-${binding.batchId}` : "audit",
 				)
 			: role === "devops"
-				? evidencePorts(scopedState, undefined, "call", "devops")
+				? await evidencePorts(scopedState, undefined, "call", "devops")
 				: undefined;
 	built = buildSandboxTools({
 		role,
@@ -994,9 +1003,9 @@ function ednField(map, key) {
 	return undefined;
 }
 
-function readAuditContextDir(directory) {
+async function readAuditContextDir(directory) {
 	try {
-		const value = readUfss(readFileSync(join(directory, "audit-context.edn"), "utf8"));
+		const value = readUfss(await readFile(join(directory, "audit-context.edn"), "utf8"));
 		const slug = ednField(value, "slug");
 		const batchId = ednField(value, "batch-id");
 		const caseId = ednField(value, "case-id");
@@ -1017,8 +1026,8 @@ function readAuditContextDir(directory) {
 	return undefined;
 }
 
-export function writeAuditSubmission(state, binding, params) {
-	const result = writeSubmissionOnce({
+export async function writeAuditSubmission(state, binding, params) {
+	const result = await writeSubmissionOnce({
 		root: state.root,
 		slug: binding.slug,
 		caseId: binding.caseId,
@@ -1139,10 +1148,10 @@ export async function writeDevopsReport(state, ctx, report) {
 	state.devopsCallId = undefined;
 }
 
-export function readDevopsReport(directory, callId) {
+export async function readDevopsReport(directory, callId) {
 	if (typeof callId !== "string" || !DEVOPS_CALL_ID_RE.test(callId)) return undefined;
 	try {
-		const value = readUfss(readFileSync(devopsReportPath(directory, callId), "utf8"));
+		const value = readUfss(await readFile(devopsReportPath(directory, callId), "utf8"));
 		const status = ednField(value, "status");
 		const reportMarkdown = ednField(value, "report-markdown");
 		const inspectedPaths = ednField(value, "inspected-paths");
@@ -1159,8 +1168,8 @@ export function readDevopsReport(directory, callId) {
 	}
 }
 
-export function devopsReportAfterChildFailure(outcome, directory, callId) {
-	const report = readDevopsReport(directory, callId);
+export async function devopsReportAfterChildFailure(outcome, directory, callId) {
+	const report = await readDevopsReport(directory, callId);
 	if (!report) return undefined;
 	return {
 		ok: true,
@@ -1172,25 +1181,31 @@ export function devopsReportAfterChildFailure(outcome, directory, callId) {
 	};
 }
 
-function uniqueBoardSlug(root) {
+async function uniqueBoardSlug(root) {
 	if (typeof root !== "string" || root.length === 0) return undefined;
 	const missions = join(root, ".herd", "missions");
 	try {
-		const names = readdirSync(missions).filter(
-			(name) => existsSync(join(missions, name, "board.edn")) || existsSync(join(missions, name, "slices")),
-		);
-		return names.length === 1 ? names[0] : undefined;
+		const entries = [];
+		for (const name of await readdir(missions)) {
+			if (
+				(await pathExists(join(missions, name, "board.edn"))) ||
+				(await pathExists(join(missions, name, "slices")))
+			) {
+				entries.push(name);
+			}
+		}
+		return entries.length === 1 ? entries[0] : undefined;
 	} catch {
 		return undefined;
 	}
 }
 
-function boardToolContext(state, ctx) {
+async function boardToolContext(state, ctx) {
 	const slug =
 		state.slug ??
 		slugFromArtifactsPath(artifactsDirFromContext(state, ctx)) ??
 		slugFromCwd(ctx?.cwd) ??
-		uniqueBoardSlug(ctx?.cwd ?? state.root);
+		(await uniqueBoardSlug(ctx?.cwd ?? state.root));
 	if (!slug) {
 		throw herdError(":HOST_API_MISMATCH", "board tool needs trusted mission context", {});
 	}
@@ -1249,10 +1264,10 @@ function registerSandboxTool(pi, toolName, role) {
 			{ additionalProperties: false },
 		),
 		async execute(toolCallId, params, signal, _onUpdate, ctx) {
-			const state = stateFor(ctx);
+			const state = await stateFor(ctx)
 			try {
 				const effectiveRole = role === "worker" && state.role === "Swarm Holder" ? "holder" : role;
-				const built = sandboxToolFor(effectiveRole, ctx, state);
+				const built = await sandboxToolFor(effectiveRole, ctx, state)
 				return await built.tool.execute(toolCallId, params, signal);
 			} catch (error) {
 				return toolFail(error, { tool: toolName });
@@ -1415,8 +1430,8 @@ function registerBoardTools(pi) {
 			description: spec.description,
 			parameters: gatedObject(spec.properties, { additionalProperties: false }),
 			async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-				const state = stateFor(ctx);
-				const { slug, sliceId } = boardToolContext(state, ctx);
+				const state = await stateFor(ctx)
+				const { slug, sliceId } = await boardToolContext(state, ctx)
 				const handle = openBoard(state.root, slug, sliceId);
 				if (handle.durable !== true) {
 					recordHealth({
@@ -1504,8 +1519,8 @@ function registerScopeAndAuditTools(pi) {
 				return toolFail(herdError(":CAPABILITY_DENIED", "auditor sandbox is unavailable", {}));
 			}
 			if (typeof params?.case_id !== "string") return toolFail(herdError("INVALID_ARGUMENT", "case_id is required"));
-			const state = stateFor(ctx);
-			const binding = auditorBinding(state, ctx);
+			const state = await stateFor(ctx)
+			const binding = await auditorBinding(state, ctx)
 			if (!binding) {
 				return toolFail(herdError(":HOST_API_MISMATCH", "auditor batch/case context is missing", {}));
 			}
@@ -1518,47 +1533,14 @@ function registerScopeAndAuditTools(pi) {
 				);
 			}
 			try {
-				writeAuditSubmission(state, binding, params);
+				await writeAuditSubmission(state, binding, params);
 				return toolOk({ ok: true, case_id: binding.caseId });
 			} catch (error) {
 				return toolFail(error);
 			}
 		},
 	});
-	pi.registerTool({
-		name: "submit_oracle_advice",
-		label: "Submit Oracle Advice",
-		description: "Deliver one read-only Blocker Oracle's proposed alternatives.",
-		parameters: gatedObject(
-			{
-				task_id: Type.String({ minLength: 1 }),
-				advice_markdown: Type.String({ minLength: 1 }),
-			},
-			{ additionalProperties: false },
-		),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const state = stateFor(ctx);
-			const slug = state.slug ?? slugFromCwd(ctx?.cwd);
-			const sliceId = sliceIdFromCwd(ctx?.cwd);
-			if (!slug || !sliceId) {
-				return toolFail(herdError(":HOST_API_MISMATCH", "oracle advice needs a mission and Slice context", {}));
-			}
-			const board = boardHandleFor({ ...state, slug }, sliceId);
-			if (!board) return toolFail(herdError(":STALE_CONTROL", "oracle advice has no board", {}));
-			try {
-				const result = await apply({
-					board,
-					command: { type: "comment", taskId: params.task_id, text: params.advice_markdown },
-					actor: sessionIdentity(state, ctx),
-					turnId: "oracle",
-					requestId: `oracle-${params.task_id}-${createHash("sha256").update(params.advice_markdown).digest("hex").slice(0, 12)}`,
-				});
-				return toolErrorFromResult(result);
-			} catch (error) {
-				return toolFail(error);
-			}
-		},
-	});
+
 }
 
 function registerAbandonSliceTool(pi) {
@@ -1575,7 +1557,7 @@ function registerAbandonSliceTool(pi) {
 			{ additionalProperties: false },
 		),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const state = stateFor(ctx);
+			const state = await stateFor(ctx)
 			if (state.role !== "Swarm Holder") {
 				return toolFail(herdError(":CAPABILITY_DENIED", "only a Swarm Holder may abandon a Slice", {}));
 			}
@@ -1608,7 +1590,7 @@ function extensionToolApi(pi) {
 		const wrapped = {
 			...tool,
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
-				const state = stateFor(ctx);
+				const state = await stateFor(ctx)
 				const slug = trustedDevopsSlug(state, ctx, params?.slug);
 				if (typeof slug !== "string" || slug.length === 0) {
 					return toolFail(herdError(":HOST_API_MISMATCH", "devops slug context is missing", {}));
@@ -1801,7 +1783,7 @@ function gateHost(pi) {
 		const documentPath = join(args.root, "plans", args.slug, "s1-brainstorm.md");
 		let markdown;
 		try {
-			markdown = readFileSync(documentPath, "utf8");
+			markdown = await readFile(documentPath, "utf8");
 		} catch (error) {
 			return {
 				decision: "error",
@@ -1978,7 +1960,7 @@ function gateHost(pi) {
 				}
 				saved.persisted = true;
 			}
-			const report = readDevopsReport(saved?.artifactsDir ?? reportDirectory, callId);
+			const report = await readDevopsReport(saved?.artifactsDir ?? reportDirectory, callId)
 			if (!report) {
 				return {
 					ok: false,
@@ -2110,18 +2092,32 @@ function runnerDeps(state, slice) {
 	};
 }
 
-function ffReady(state, workspace) {
+const execFileAsync = promisify(execFile);
+
+async function runGitCommand(args) {
+	try {
+		const { stdout } = await execFileAsync("git", args, { encoding: "utf8" });
+		return { status: 0, stdout };
+	} catch (error) {
+		return { status: typeof error?.code === "number" ? error.code : 1, stdout: String(error?.stdout ?? "") };
+	}
+}
+
+async function ffReady(state, workspace) {
 	if (typeof workspace !== "string" || workspace.length === 0) return { ok: false, reason: "workspace-missing" };
-	const base = spawnSync("git", ["-C", state.root, "rev-parse", "HEAD"], { encoding: "utf8" });
-	const head = spawnSync("git", ["-C", workspace, "rev-parse", "HEAD"], { encoding: "utf8" });
+	const base = await runGitCommand(["-C", state.root, "rev-parse", "HEAD"]);
+	const head = await runGitCommand(["-C", workspace, "rev-parse", "HEAD"]);
 	if (base.status !== 0 || head.status !== 0) {
 		return { ok: false, reason: "git-unavailable" };
 	}
-	const ancestor = spawnSync(
-		"git",
-		["-C", workspace, "merge-base", "--is-ancestor", base.stdout.trim(), head.stdout.trim()],
-		{ encoding: "utf8" },
-	);
+	const ancestor = await runGitCommand([
+		"-C",
+		workspace,
+		"merge-base",
+		"--is-ancestor",
+		base.stdout.trim(),
+		head.stdout.trim(),
+	]);
 	return ancestor.status === 0
 		? { ok: true }
 		: { ok: false, reason: "ff-not-ready", base: base.stdout.trim(), head: head.stdout.trim() };
@@ -2412,24 +2408,11 @@ async function caseSpecsFor(state) {
 	if (!mission) return { ok: false, error: "mission-missing" };
 	const casesRead = await readS2Cases(state.root, state.slug);
 	if (casesRead?.ok !== true) {
-		return { ok: false, error: casesRead?.error?.message ?? "frozen cases.edn is unavailable" };
-	}
-	const summaryRead = await readS1Summary(state.root, state.slug);
-	if (summaryRead?.ok !== true) {
-		return { ok: false, error: summaryRead?.error?.message ?? "frozen S1 summary is unavailable" };
+		return { ok: false, error: casesRead?.error?.message ?? "s2-cases.edn is unavailable" };
 	}
 	const fresh = await readMission(state.root, state.slug);
 	if (fresh?.ok !== true) return { ok: false, error: "mission cannot be re-read before audit" };
 	mission = fresh.mission;
-	const frozenCases = mission.frozen?.["s2-cases"]?.sha256;
-	const frozenSummary = mission.frozen?.["s1-summary"]?.sha256;
-	if (frozenCases !== casesRead.sha256 || frozenSummary !== summaryRead.sha256) {
-		return {
-			ok: false,
-			error: "frozen contract changed while preparing the audit; retry from the new revision",
-			code: ":CONTRACT_HASH_MISMATCH",
-		};
-	}
 	const cases = [];
 	for (let index = 0; index < casesRead.cases.length; index += 1) {
 		const raw = casesRead.cases[index];
@@ -2455,20 +2438,7 @@ async function caseSpecsFor(state) {
 			rubric: raw.rubric,
 		});
 	}
-	return {
-		ok: true,
-		mission,
-		cases,
-		caseEdn: {
-			bytes: Buffer.from(casesRead.bytes, "utf8"),
-			sha256: casesRead.sha256,
-		},
-		s1Summary: {
-			path: summaryRead.path,
-			bytes: Buffer.from(summaryRead.bytes, "utf8"),
-			sha256: summaryRead.sha256,
-		},
-	};
+	return { ok: true, mission, cases };
 }
 
 function snapshotFileSignature(file) {
@@ -2501,7 +2471,7 @@ function compareProtectedSnapshots(before, after, reportPath) {
 }
 
 async function recheckMission(args) {
-	const after = snapshotWorkspace(args.root);
+	const after = await snapshotWorkspace(args.root);
 	if (after?.ok !== true) {
 		return { ok: false, code: ":AUDIT_WORKSPACE_MUTATED", message: "workspace snapshot failed" };
 	}
@@ -2512,7 +2482,7 @@ async function recheckMission(args) {
 	}
 	let bytes;
 	try {
-		bytes = readFileSync(args.reportPath);
+		bytes = await readFile(args.reportPath);
 	} catch (error) {
 		return { ok: false, code: ":APPROVAL_REQUIRED", message: String(error?.message ?? error) };
 	}
@@ -2525,7 +2495,6 @@ async function recheckMission(args) {
 		missionId: args.missionId,
 		revision: args.revision,
 		reportSha256: digest,
-		contractLine: args.contract?.contractLine,
 		snapshotDigest: after.digest,
 	};
 }
@@ -2556,12 +2525,12 @@ async function startRepairSlices(state, slices) {
 	return started;
 }
 
-export function auditReady(state) {
+export async function auditReady(state) {
 	if (!state?.slug || !state?.root) return false;
 	const directory = join(state.root, ".herd", "missions", state.slug);
 	let board;
 	try {
-		board = readUfss(readFileSync(join(directory, "board.edn"), "utf8"));
+		board = readUfss(await readFile(join(directory, "board.edn"), "utf8"));
 	} catch {
 		return false;
 	}
@@ -2585,7 +2554,7 @@ export function auditReady(state) {
 		}
 	}
 	try {
-		const cases = readUfss(readFileSync(join(directory, "s2-cases.edn"), "utf8"));
+		const cases = readUfss(await readFile(join(directory, "s2-cases.edn"), "utf8"));
 		if (!Array.isArray(cases) || cases.length === 0) return false;
 		for (const entry of cases) {
 			if (!(entry instanceof Map) || typeof ednField(entry, "case-id") !== "string") return false;
@@ -2670,16 +2639,11 @@ async function runMissionAudit(state) {
 		const contract = {
 			missionId: auditMission["mission-id"],
 			revision: auditMission.revision,
-			contractLine: auditMission["contract-line"],
-			frozen: auditMission.frozen,
 		};
 		const batch = await startAuditBatch({
 			root: state.root,
 			slug: state.slug,
 			caseSpecs: specs.cases,
-			caseEdn: specs.caseEdn,
-			s1Summary: specs.s1Summary,
-			contract,
 			deps: {
 				spawnAgent: (options) => startAgent(options, state),
 				settings: state.settings ?? hostSettings(state.pi),
@@ -2690,21 +2654,16 @@ async function runMissionAudit(state) {
 				model: state.model,
 				preloadedExtensionPaths: extensionPaths,
 				systemPrompt: appendPrompt(COMMON_RULES_TEXT, LANGUAGE_SKILL),
-				buildPrompt: ({ caseSpec, s1Summary }) =>
+				buildPrompt: ({ caseSpec }) =>
 					buildCaseAuditorPrompt({
-						mission: {
-							missionId: contract.missionId,
-							slug: state.slug,
-							contractLine: contract.contractLine,
-							s1Summary,
-						},
+						mission: { missionId: contract.missionId, slug: state.slug },
 						caseSpec,
 					}),
-				collectSubmission: ({ caseId, auditor }) => {
+				collectSubmission: async ({ caseId, auditor }) => {
 					const directory = auditor?.artifactsDir
 						? resolve(state.root, auditor.artifactsDir)
 						: join(state.root, ".herd", "artifacts", state.slug, "audit", caseId);
-					const context = readAuditContextDir(directory);
+					const context = await readAuditContextDir(directory)
 					if (!context) {
 						return {
 							ok: false,
@@ -2716,7 +2675,7 @@ async function runMissionAudit(state) {
 						slug: context.slug,
 						batchId: context.batchId,
 					});
-					const result = reader({ caseId });
+					const result = await reader({ caseId });
 					return result?.ok === true ? { submissions: [result.submission] } : { ok: false, error: result?.error };
 				},
 
@@ -2736,6 +2695,7 @@ async function runMissionAudit(state) {
 		}
 		const result = aggregate({
 			...batch.aggregateInput,
+			contract,
 			audit: {
 				environment: `omp ${process.env.OMP_VERSION ?? "unknown"}`,
 				host: process.env.OMP_VERSION ?? "unknown",
@@ -2787,14 +2747,14 @@ function isEscapeInput(data) {
 	return data === "\x1b" || /^\x1b\[27(?:;\d+)*u$/.test(data);
 }
 
-function escapeLayer(ctx, state, data) {
+async function escapeLayer(ctx, state, data) {
 	if (!isEscapeInput(data) || state.role) return undefined;
 	if (state.tui?.expanded === true) {
 		state.tui.toggle();
 		return { consume: true };
 	}
 	const pendingPath = state.slug ? join(state.root, ".herd", "missions", state.slug, "pending-gate.edn") : undefined;
-	if (pendingPath && existsSync(pendingPath)) {
+	if (pendingPath && (await pathExists(pendingPath))) {
 		ctx?.ui?.notify?.("S1 待批准：请先批准或修改文档，再用 /herd-cancel 取消。", "warning");
 		return { consume: true };
 	}
@@ -2825,7 +2785,7 @@ function registerCommands(pi) {
 		async handler(args, ctx) {
 			const seed = String(args ?? "").trim();
 			if (!seed) return notify(ctx, "用法：/herd <seed>", "warning");
-			const state = stateFor(ctx);
+			const state = await stateFor(ctx)
 			const slug = slugFor(seed);
 			const created = await createMission(state.root, { slug, seed });
 			if (created?.ok !== true) return notify(ctx, `创建使命失败：${created?.error?.message ?? "unknown"}`, "error");
@@ -2850,7 +2810,7 @@ function registerCommands(pi) {
 	pi.registerCommand("herd-status", {
 		description: "Show the current mission dashboard or health.",
 		async handler(args, ctx) {
-			const state = stateFor(ctx);
+			const state = await stateFor(ctx)
 			const mode = String(args ?? "").trim();
 			if (mode === "health") {
 				const health = readHealth();
@@ -2868,7 +2828,7 @@ function registerCommands(pi) {
 	pi.registerCommand("herd-list", {
 		description: "List known missions.",
 		async handler(_args, ctx) {
-			const state = stateFor(ctx);
+			const state = await stateFor(ctx)
 			const list = await listMissions(state.root);
 			if (list?.ok !== true) return notify(ctx, `无法列出使命：${list?.error?.message ?? "unknown"}`, "error");
 			const lines = list.missions.map((entry) => `${entry.slug}  ${entry.mission.stage}`);
@@ -2879,7 +2839,7 @@ function registerCommands(pi) {
 		description: "Focus one mission by slug.",
 		async handler(args, ctx) {
 			const slug = String(args ?? "").trim();
-			const state = stateFor(ctx);
+			const state = await stateFor(ctx)
 			const read = await readMission(state.root, slug);
 			if (read?.ok !== true) return notify(ctx, `无法聚焦 ${slug}：${read?.error?.message ?? "unknown"}`, "error");
 			state.slug = slug;
@@ -2897,7 +2857,7 @@ function registerCommands(pi) {
 	pi.registerCommand("herd-unfocus", {
 		description: "Clear the focused mission.",
 		async handler(_args, ctx) {
-			const state = stateFor(ctx);
+			const state = await stateFor(ctx)
 			state.slug = undefined;
 			state.mission = undefined;
 			rememberFocus(state, null);
@@ -2909,7 +2869,7 @@ function registerCommands(pi) {
 	pi.registerCommand("herd-cancel", {
 		description: "Cancel the focused mission's active runner trees.",
 		async handler(_args, ctx) {
-			const state = stateFor(ctx);
+			const state = await stateFor(ctx)
 			if (!state.slug) return notify(ctx, "没有聚焦的使命。", "warning");
 			state.cancelled = true;
 			const result = await cancelTree({ root: state.root, slug: state.slug, reason: "operator" });
@@ -2920,7 +2880,7 @@ function registerCommands(pi) {
 	pi.registerCommand("herd-recovery", {
 		description: "Scan the six recovery windows for the focused mission.",
 		async handler(args, ctx) {
-			const state = stateFor(ctx);
+			const state = await stateFor(ctx)
 			if (!state.slug) return notify(ctx, "没有聚焦的使命。", "warning");
 			const repair = String(args ?? "").trim() === "repair";
 			const confirm = async (info) => {
@@ -2952,7 +2912,7 @@ function registerCommands(pi) {
 	pi.registerCommand("herd-settings", {
 		description: "Show effective mission and task model settings.",
 		async handler(_args, ctx) {
-			const state = stateFor(ctx);
+			const state = await stateFor(ctx)
 			let settings;
 			try {
 				settings = hostSettings(state.pi);
@@ -3124,8 +3084,8 @@ export default async function activate(pi) {
 		root: process.cwd(),
 		base: "HEAD",
 		now: () => new Date().toISOString(),
-		roleOf: (ctx) => stateFor(ctx).role ?? "Coordinator",
-		slugOf: (ctx) => trustedMissionSlug(stateFor(ctx), ctx),
+		roleOf: async (ctx) => (await stateFor(ctx)).role ?? "Coordinator",
+		slugOf: async (ctx) => trustedMissionSlug(await stateFor(ctx), ctx),
 	});
 	registerBoardTools(toolApi);
 	registerScopeAndAuditTools(toolApi);
@@ -3140,15 +3100,15 @@ export default async function activate(pi) {
 	if (typeof pi.registerShortcut === "function") {
 		pi.registerShortcut(DASHBOARD_TOGGLE_SHORTCUT, {
 			description: "Toggle the Herdchestra dashboard",
-			handler: (ctx) => {
-				const state = stateFor(ctx);
+			handler: async (ctx) => {
+				const state = await stateFor(ctx)
 				state.tui?.toggle();
 			},
 		});
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
-		const state = stateFor(ctx);
+		const state = await stateFor(ctx)
 		state.pi = pi;
 		state.settings = hostSettings(pi);
 		try {
@@ -3170,7 +3130,7 @@ export default async function activate(pi) {
 		if (!isSubagentContext(ctx)) await restoreMissionFocus(state, ctx);
 		mountSessionDashboard(ctx, state);
 		if (!state.escUnsubscribe && typeof ctx?.ui?.onTerminalInput === "function") {
-			state.escUnsubscribe = ctx.ui.onTerminalInput((data) => escapeLayer(ctx, state, data));
+			state.escUnsubscribe = ctx.ui.onTerminalInput(async (data) => escapeLayer(ctx, state, data));
 		} else if (typeof ctx?.ui?.onTerminalInput !== "function") {
 			recordHealth({
 				entry: "main.esc",
@@ -3199,7 +3159,7 @@ export default async function activate(pi) {
 				});
 			}
 		}
-		if (!isSubagentContext(ctx) && missionStageKey(state.mission?.stage) === "s5" && auditReady(state)) {
+		if (!isSubagentContext(ctx) && missionStageKey(state.mission?.stage) === "s5" && (await auditReady(state))) {
 			void runMissionAudit(state);
 		}
 		recordHealth({
@@ -3220,7 +3180,7 @@ export default async function activate(pi) {
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
-		const state = stateFor(ctx);
+		const state = await stateFor(ctx)
 		const fromNudge = event?.messageType === "custom" && event?.message?.customType === "herd-nudge";
 		if (!fromNudge) {
 			clearTimeout(state.idleTimer);
@@ -3292,10 +3252,6 @@ export default async function activate(pi) {
 		};
 	});
 
-	pi.on("context", (_event, _ctx) => {
-		return undefined;
-	});
-
 	pi.on("before_provider_request", (event) => {
 		try {
 			rewriteOutboundPayload(event.payload);
@@ -3305,13 +3261,13 @@ export default async function activate(pi) {
 		return event.payload;
 	});
 
-	pi.on("tool_execution_start", (event, ctx) => {
-		const state = stateFor(ctx);
+	pi.on("tool_execution_start", async (event, ctx) => {
+		const state = await stateFor(ctx)
 		if (typeof event?.toolCallId === "string") state.lastToolCallId = event.toolCallId;
 	});
 
-	pi.on("tool_execution_end", (event, ctx) => {
-		const state = stateFor(ctx);
+	pi.on("tool_execution_end", async (event, ctx) => {
+		const state = await stateFor(ctx)
 		state.idleAttempts = 0;
 		state.upstreamAttempts = 0;
 		clearTimeout(state.idleTimer);
@@ -3336,8 +3292,8 @@ export default async function activate(pi) {
 		void refreshDashboard(state);
 	});
 
-	pi.on("turn_end", (_event, ctx) => {
-		const state = stateFor(ctx);
+	pi.on("turn_end", async (_event, ctx) => {
+		const state = await stateFor(ctx)
 		if (state.role || missionStageKey(state.mission?.stage) !== "s5") return;
 		for (const port of state.runnerPorts.values()) {
 			port.nudge?.turnEnd?.({
@@ -3350,7 +3306,7 @@ export default async function activate(pi) {
 	});
 
 	pi.on("agent_end", async (event, ctx) => {
-		const state = stateFor(ctx);
+		const state = await stateFor(ctx)
 		if ((!state.slug && !state.role) || state.cancelled) return;
 		if (event?.willContinue === true) return;
 		const failure = classifyAgentEnd(event, {

@@ -76,3 +76,72 @@ clean-break 不删除、不改写以下既有资料：
 - CHANGELOG 新增 clean-break 进行中节；旧实现记录保留为 `[0.1.0]` 历史，不再代表当前行为。
 - 新增 `src/AGENTS.md`（架构装配与单向依赖）、`DEBT.md`（未关闭缺口）、本文件（历史取舍）。
 - 未修改根 `AGENTS.md`，未修改 `docs/manual-acceptance/clean-break/` 中已批准的需求/指南/协调文档。
+
+## 2026-11-14 UFSS 数据层改用 cljs.pprint
+
+**决定**：`herd.ufss/print` 的数据层从 `wrap(format(pr-str(value)))` 改为 `wrap(format(pprint(value)))`；`pprint` 使用 nbb 自带 `cljs.pprint` 的默认宽度。`UFSS.md` §5、D4 与根 `AGENTS.md` 的 UFSS 打印裁决行同步改写。
+
+**原因**：`pr-str` 不折行，大 map/vector 会变成单行；`pprint` 至少提供宽度感知的换行，且不需要新增 npm 依赖。
+
+**代价**：nbb 的 SCI 版 `cljs.pprint` 不暴露 `*print-right-margin*`、`*print-miser-width*` 或 `write`，宽度固定（约 72），长集合可能退化为每元素一行；具体布局随 nbb 版本可能变化，测试不得逐字固化换行位置。若将来需要可控宽度，必须另行设计，不能靠调用方绑定 pprint 宽度。
+
+**保留的旧行为**：数据层仍先生成文本，再经 `standard-clojure-style` 与 `wrap`；字符串 fence、最小深度、多行顶格与 A2/A4 双射不变。
+
+## 2026-11-14 Ariadne 字段改名：turn_horizon / kpi_aim
+
+**决定**：`ariadne_budget` → `turn_horizon`，`ariadne_goal` → `kpi_aim`。`turn_horizon` 是相对回合视野，软到期；`kpi_aim` 是写给 `turn_horizon` 到期时自己的意图陈述，不是可验证指标。工具 Schema 的英文描述放在 `src/herd/main.cljs` 的 `turn-horizon-schema` / `kpi-aim-schema`。
+
+**原因**：`budget` 暗示可消耗资源与硬配额；`goal` 暗示最终目标，无法表达中间层。`turn_horizon` 明确是回合跨度；`kpi_aim` 用 `aim` 削弱 KPI 的可验证感，强调到期回看时的意图。
+
+**代价**：这是一次破坏性改名；所有 `clj_*` 调用、完整装配的 Ariadne store、测试与文档同步更新，不保留别名。内部 receipt 键也改为 `aims` / `aim` / `updatedHorizon`。`time_leap` 的提醒删除了“恰好是当前 Ariadne 到期前还能进行的回合数”这一显然尾句。
+
+## 2026-11-14 宿主 nbb 解析与 cwd 修复
+
+**问题**：宿主的 bare/bundled `nbb` 不提供 `cljs.pprint/pprint`；`bootstrap.cljs` 用 `process.cwd()` 找源码，从 `~/tmp` 启动时找不到 `src/herd/ufss.cljs`。
+
+**决定**：`clj-main.mjs` 从插件真实路径加载 pinned `nbb` 1.6.215，并用 `nbb.registerModule(formatter, "@chrisoakman/standard-clojure-style")` 注册 formatter；`bootstrap.cljs` 从 `nbb.classpath/get-classpath` 与 `globalThis.__herdPluginSrc` 解析源码根。`herd.ufss` 继续使用 `cljs.pprint/pprint`，不新增依赖。
+
+**验证**：从 `~/tmp` 运行 `omp -p` 不再报 extension load error；`env -u BUN_OPTIONS bun test tests --parallel` 为 235 pass / 1 skip / 0 fail。
+## 2026-11-14 kpi_aim → todo_horizon
+
+**决定**：`kpi_aim` → `todo_horizon`。`turn_horizon` 是时间窗口，`todo_horizon` 是这个窗口里要完成的事情；工具 Schema 的英文描述、Ariadne store、测试与当前文档同步改名。
+
+**原因**：`todo_horizon` 与 `turn_horizon` 成对：一个说多久，一个说做什么；比 KPI/aim 更直接，也避免 KPI 的指标感。
+
+**代价**：破坏性改名；所有 `clj_*` 调用、Ariadne store、测试与文档同步更新，不保留别名。`time_leap` 的 `Aim:` 标签也改为 `Todo:`。
+
+## 2026-11-14 参数改为嵌套 scope
+
+**决定**：`turn_horizon` + `todo_horizon` → `scope: { turnsRemaining, todosRemaining }`。`turn_horizon` 与 `todo_horizon` 不再作为顶层参数出现。
+
+**原因**：时间窗口与这个窗口内要完成的事情是一个整体；嵌套 `scope` 让调用参数更清楚，也方便工具 renderer 直接取 `args.scope`。
+
+**代价**：破坏性改名；所有 `clj_*` 调用、Ariadne store、测试、README/MIGRATION 与 AGENTS.md 同步更新，不保留别名。`time_leap` 拒收 `scope`。
+## 2026-11-14 Clojure 工具 UI：canonical 源码 + 关键字 + 彩虹括号
+
+**决定**：`clj_devops` 调用行显示 `ufss/canonical-source` 规范化后的源码；关键字高亮使用宿主 `@oh-my-pi/pi-tui` 的 `highlightCode("clojure")`，彩虹括号使用 `herd.ufss/delimiter-spans` 的深度信息叠加 ANSI。Neovim 的 `nvim-treesitter` + `rainbow-delimiters.nvim` 只作为美学参考。
+
+**原因**：宿主已有 Clojure 关键字高亮；UFSS 已有 reader 层，复用同一个扫描器即可得到可靠的 delimiter 深度，不需要新增依赖或运行 Neovim。
+
+**代价**：canonical 化失败或高亮模块不可用时回退原文；渲染性能与 formatter/highlighter 成本绑定，后续如需要可缓存。
+## 2026-11-14 UFSS API 收敛为 canonical
+
+**决定**：删除 `print` 与 `canonical-source`；`canonical(value-or-text, highlighter?)` 成为唯一输出入口。`canonical = ufssify(unufssify(text), highlighter?)`，EDN 值先由 `pprint` 变成 text。`ufssify` 本身也接受可选 highlighter：有则给 code、UFSS body、delimiter 加 ANSI，没有就是原 canonical。
+
+**原因**：EDN 也是 source，数据层与代码层不再需要两条路径；`highlight?` 布尔也不需要，高亮器是否存在就是模式开关。
+
+**代价**：调用点从 `print` / `canonical-source` 迁移到 `canonical`；字符串输入按 source 解释，EDN 字符串值需要先 `pprint`/`pr-str`。高亮器契约是 `(text, lang) -> ANSI`，`lang` 为 `"clojure"`、`nil`（自动 body）、`:dim`（fence）或 `[:rainbow depth]`（delimiter）。
+## 2026-11-14 工具输出内容语言识别交给 highlight.js
+
+**决定**：删除 `herd.highlight/detect-language` 中手写的 JSON/Clojure/JS/Bash/Markdown/HTML/YAML/SQL 规则；改由 `highlight.js` 的 `highlightAuto` 识别，`src/host/language-detect.mjs` 只做加载与宿主语言名映射，`src/clj-main.mjs` 暴露 `globalThis.__herdDetectLanguage`，CLJS 侧委托调用。
+
+**原因**：无路径的 `cat` 结果无法使用宿主的 path-based `detectLanguageId`；手写规则对 `.mjs` 等真实文件漏判。`highlight.js` 只负责识别，渲染仍由宿主 native `highlightCode` 完成，符合“和 omp 自带配套”的边界。
+
+**被拒方案**：先试 `prismjs@1.30.0`，其核心不导出 `highlightAuto`，因此放弃；不手写更多语言规则，也不引入 ML 模型或 Neovim。
+## 2026-11-14 删除 `call` 的 `:alternative` 提示词要求
+
+**决定**：从根 `AGENTS.md` §4.5、`src/clj-sandbox/tools.mjs` 的 `call` 描述与交接材料中删除 `:alternative` 要求。`call` 仍只接受 `argv`（可选 `cwd`），继续禁止 shell、管道、重定向、通配与 `&&`。
+
+**原因**：该字段从未被框架校验或使用，只制造无回报的提示词负担；把它保留为“提示词要求”会让模型误以为存在第二套决策记录，实际没有任何消费者。
+
+**代价**：失去一条“调用前考虑内置工具”的提示。该判断仍由 `COMMON` 的工具优先条款与角色提示词承担，不再要求每次 `call` 填表。

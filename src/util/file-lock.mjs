@@ -30,6 +30,11 @@ export const LOCK_RANKS = Object.freeze({
 const STALE_AFTER_MS = 30_000;
 const LOCK_MODE = 0o600;
 
+function nowMs() {
+	const clock = globalThis.__herdClock;
+	return clock && typeof clock.now === "function" ? clock.now() : Date.now();
+}
+
 function invalidArgument(message, data) {
 	return herdError(":INVALID_ARGUMENT", message, data);
 }
@@ -228,7 +233,7 @@ function lockAgeMs(content, mtimeMs) {
 	const raw = content.startedAt ?? content.started_at;
 	const startedAt = typeof raw === "string" ? Date.parse(raw) : Number.NaN;
 	const bornAt = Number.isFinite(startedAt) ? startedAt : mtimeMs;
-	return Number.isFinite(bornAt) ? Math.max(0, Date.now() - bornAt) : 0;
+	return Number.isFinite(bornAt) ? Math.max(0, nowMs() - bornAt) : 0;
 }
 
 function missingLock() {
@@ -402,14 +407,14 @@ function waitForLockChange(target, timeoutMs, signal) {
  */
 export async function acquireLockWhenFree(path, meta, { timeoutMs = 10_000, signal } = {}) {
 	const target = normalizePath(path);
-	const deadline = Date.now() + Math.max(0, Number.isFinite(timeoutMs) ? timeoutMs : 10_000);
+	const deadline = nowMs() + Math.max(0, Number.isFinite(timeoutMs) ? timeoutMs : 10_000);
 	for (;;) {
 		const acquired = await acquireLock(target, meta);
 		if (acquired.ok || acquired.stale === true || acquired.busy !== true) return acquired;
 		if (signal?.aborted) {
 			return { ok: false, code: ":UPSTREAM_ABORTED", message: "lock wait was cancelled", lock: lockPathState(target) };
 		}
-		const remaining = deadline - Date.now();
+		const remaining = deadline - nowMs();
 		if (remaining <= 0) return acquired;
 		await waitForLockChange(target, remaining, signal);
 	}

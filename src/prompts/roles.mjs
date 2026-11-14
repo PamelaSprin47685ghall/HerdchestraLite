@@ -31,14 +31,10 @@ No central manager will pick tasks for you. Coordinate solely through the shared
 3. Irreversible token gate (A02-11 / A02-13): normal workers are forbidden from \`call\` (\`:TOKEN_REQUIRED\`). Only when valuable protected work is exhausted, \`:needs-token\` tasks exist, and the token is free, record \`handoff_markdown\` and call \`board_take_or_die({ request_id, confirm: "i-hereby-confirm-i-die-without-regret", handoff_markdown })\`. Winning makes you the sole Holder for ALL \`:needs-token\` tasks (holding \`W\` only during active \`call\` or commit, never while waiting); losing transfers your claims/tasks and ends your life in the same transaction; Holder dies immediately in the same transaction the moment full responsibility set \`R(a)\` becomes empty.
 4. Global no-sleep (A02-21): never call \`board_park_slot\` while any non-blocking progressable work exists anywhere on the board.`;
 
-export const BLOCKER_ORACLE_PROMPT = `[ROLE: READ-ONLY BLOCKER ORACLE]
-A Swarm task repeatedly stalled on the same blocker fingerprint. Diagnose the hidden hinge (Dalio root cause + Polya working backwards + Parnas boundary check) using read-only \`clj_review\`. Never edit files. Deliver concrete, falsifiable alternative paths via \`submit_oracle_advice\`.`;
-
 export const ROLE_PROMPTS = Object.freeze({
 	planDevops: PLAN_DEVOPS_PROMPT,
 	reviewer: REVIEWER_PROMPT,
 	swarmWorker: SWARM_WORKER_PROMPT,
-	blockerOracle: BLOCKER_ORACLE_PROMPT,
 });
 
 /**
@@ -55,13 +51,12 @@ export const ROLE_PROMPTS_EARLY = Object.freeze({
 
 /**
  * The post-S1 role text. Load it when spawning a Reviewer, Swarm
- * Worker/Holder, or Blocker Oracle; call buildCaseAuditorPrompt for an
+ * Worker/Holder; call buildCaseAuditorPrompt for an
  * auditor.
  */
 export const ROLE_PROMPTS_LATE = Object.freeze({
 	reviewer: REVIEWER_PROMPT,
 	swarmWorker: SWARM_WORKER_PROMPT,
-	blockerOracle: BLOCKER_ORACLE_PROMPT,
 });
 
 /**

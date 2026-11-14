@@ -13,7 +13,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { openSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { parentPort, workerData } from "node:worker_threads";
 import { applyNetworkLandlock } from "./landlock.mjs";
 
@@ -21,8 +21,10 @@ const { argv, cwd, allowedTcpPorts, modelEnv, stderrLog, wait } = workerData ?? 
 
 try {
 	if (!Array.isArray(argv) || argv.length === 0) throw new Error("model worker needs bwrap argv");
-	applyNetworkLandlock({ allowedTcpPorts });
-	const stderr = typeof stderrLog === "string" && stderrLog.length > 0 ? openSync(stderrLog, "w") : "ignore";
+	await applyNetworkLandlock({ allowedTcpPorts });
+	const stderrHandle =
+		typeof stderrLog === "string" && stderrLog.length > 0 ? await open(stderrLog, "w") : undefined;
+	const stderr = stderrHandle === undefined ? "ignore" : stderrHandle.fd;
 	const child = spawn(argv[0], argv.slice(1), {
 		cwd,
 		env: process.env,

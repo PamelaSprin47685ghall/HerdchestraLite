@@ -12,7 +12,7 @@
  * fails the sandbox instead of silently producing an offline session.
  */
 
-import { writeFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import net from "node:net";
 
 const [socketPath, listenPort, readyPath] = process.argv.slice(2);
@@ -31,9 +31,9 @@ const server = net.createServer((client) => {
 });
 
 server.once("error", () => process.exit(1));
-server.listen(Number(listenPort), "127.0.0.1", () => {
+server.listen(Number(listenPort), "127.0.0.1", async () => {
 	try {
-		writeFileSync(readyPath, "ready\n", { mode: 0o600 });
+		await writeFile(readyPath, "ready\n", { mode: 0o600 });
 	} catch {
 		process.exit(1);
 	}
