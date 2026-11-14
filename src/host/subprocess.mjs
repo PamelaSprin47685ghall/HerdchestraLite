@@ -558,7 +558,7 @@ export async function planSpawn(options, ports = {}) {
 		startedAt: undefined,
 	};
 	try {
-		const agentId = port.agentId ?? randomUUID();
+		const agentId = options.agentId ?? port.agentId ?? randomUUID();
 		meta.agentId = agentId;
 		meta.startedAt = now();
 		if (!isPlainObject(options)) {

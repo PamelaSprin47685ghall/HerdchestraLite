@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as nbb from "nbb";
 import { loadLanguageDetector } from "../src/host/language-detect.mjs";
+import { ensureActivated } from "./helpers/nbb-boot.mjs";
 
 let tool;
 let waitTool;
@@ -60,9 +61,7 @@ beforeAll(async () => {
 	};
 	globalThis.__herdTui = { highlightCode: (code) => code.split("\n") };
 	globalThis.__herdDetectLanguage = loadLanguageDetector(createRequire(import.meta.url));
-	nbb.addClassPath(fileURLToPath(new URL("../src/", import.meta.url)));
-	await nbb.loadFile(fileURLToPath(new URL("../src/herd/bootstrap.cljs", import.meta.url)));
-	await nbb.loadString("(herd.main/activate-session! js/globalThis.__pi)");
+	await ensureActivated();
 	const start = globalThis.__pi.hooks.get("session_start");
 	if (start) start({}, {});
 	tool = globalThis.__pi.tools.get("clj_devops");
@@ -120,6 +119,18 @@ function captureHostWrites() {
 }
 
 describe("CLJS console and stdio guard", () => {
+	beforeAll(() => {
+		globalThis.__herdNative = {
+			getRunner: () => ({
+				hasNativeTool: (name) => name === "read" || name === "write",
+				invokeNativeTool: async (name, params) => {
+					if (name === "read") return { content: [{ type: "text", text: await readFile(params.path, "utf8") }] };
+					await writeFile(params.path, params.content, "utf8");
+					return { content: [] };
+				},
+			}),
+		};
+	});
 	it("denies direct console and stdio access before running any code", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "herd-console-guard-"));
 		const previous = process.cwd();

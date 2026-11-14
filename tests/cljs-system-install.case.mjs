@@ -1,11 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import * as nbb from "nbb";
+import { ensureModules } from "./helpers/nbb-boot.mjs";
 
-const SRC = fileURLToPath(new URL("../src/herd/", import.meta.url));
 const MODULES = [
 	"util/atomic_write",
 	"stages/parsers",
@@ -51,28 +47,14 @@ const BOARD_TOOLS = [
 	"board_take_or_die",
 	"board_update",
 ];
-let moduleRoot;
 
 beforeAll(async () => {
-	nbb.addClassPath(fileURLToPath(new URL("../src/", import.meta.url)));
-	moduleRoot = await mkdtemp(join(tmpdir(), "cljs-system-install-src-"));
-	await nbb.loadFile(join(SRC, "ufss.cljs"));
-	for (const name of MODULES) {
-		const source = await readFile(join(SRC, `${name}.cljs`), "utf8");
-		const unwrapped = await nbb.loadString(`(require '[herd.ufss :as u]) (u/unwrap ${JSON.stringify(source)})`);
-		const target = join(moduleRoot, "herd", `${name}.cljs`);
-		await mkdir(dirname(target), { recursive: true });
-		await writeFile(target, unwrapped);
-	}
-	nbb.addClassPath(moduleRoot);
-	for (const name of MODULES) {
-		await nbb.loadFile(join(moduleRoot, "herd", `${name}.cljs`));
-	}
+	await ensureModules(MODULES);
 });
 
-afterAll(async () => {
-	if (moduleRoot) await rm(moduleRoot, { recursive: true, force: true });
-});
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const PRELUDE = `
 (require '[herd.system :as system])

@@ -1,10 +1,10 @@
-import { beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import * as nbb from "nbb";
 import { loadLanguageDetector } from "../src/host/language-detect.mjs";
-import { installFakeClock } from "./fake-clock.mjs";
+import { ensureActivated, getSharedClock } from "./helpers/nbb-boot.mjs";
 
 const here = (path) => fileURLToPath(new URL(`../${path}`, import.meta.url));
 const evalClj = (source) => nbb.loadString(`(require '[herd.main :as m]) ${source}`);
@@ -56,7 +56,8 @@ const subCtx = (id, ui) => ({ hasUI: true, ui, agent: { id, kind: "sub" } });
 const lastLine = (lines) => lines[lines.length - 1];
 
 beforeAll(async () => {
-	clock = installFakeClock();
+	clock = getSharedClock();
+	clock.reset();
 	globalThis.__herdLockRoot = here("tmp/herd-working-message-lock");
 	globalThis.__herdNative = {
 		getRunner: () => ({
@@ -98,14 +99,14 @@ beforeAll(async () => {
 	};
 	globalThis.__herdTui = { highlightCode: (code) => code.split("\n") };
 	globalThis.__herdDetectLanguage = loadLanguageDetector(createRequire(import.meta.url));
-	nbb.addClassPath(here("src/"));
-	await nbb.loadFile(here("src/herd/bootstrap.cljs"));
+	await ensureActivated();
 	messageEnd = globalThis.__pi.hooks.get("message_end");
 	messageUpdate = globalThis.__pi.hooks.get("message_update");
 	toolExecutionUpdate = globalThis.__pi.hooks.get("tool_execution_update");
 });
 
 beforeEach(async () => {
+	clock.reset();
 	await resetState();
 });
 
@@ -235,4 +236,8 @@ describe("working message host-overwrite recovery", () => {
 		}
 		expect(timerCalls).toBe(0);
 	});
+});
+
+afterAll(() => {
+	clock?.restore?.();
 });

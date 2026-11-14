@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import * as nbb from "nbb";
 import { acquireIpcLock, lockEndpointFor, shutdownIpcDaemon } from "../src/host/lock-daemon.mjs";
 import { installFakeClock, uninstallFakeClock } from "./fake-clock.mjs";
+import { ensureModules } from "./helpers/nbb-boot.mjs";
 
 const LOCK_DAEMON_PATH = fileURLToPath(new URL("../src/host/lock-daemon.mjs", import.meta.url));
 let root;

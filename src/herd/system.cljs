@@ -5,6 +5,7 @@
    ["node:path" :as path]
    [clojure.string :as str]
    [herd.repl :as repl]
+   [herd.stages.approval :as approval]
    [herd.stages.audit :as audit]
    [herd.stages.disclosures :as disclosures]
    [herd.stages.gates :as gates]
@@ -484,7 +485,8 @@
            (fn [session]
              (-> session
                  (assoc :ctx ctx :root root :turn-tools #{} :successful-tools #{}
-                        :turn-id (new-turn-id))
+                        :turn-id (new-turn-id)
+                        :prompt (let [p (event-prompt event)] (subs p 0 (min (count p) 2000))))
                  (dissoc :gate-cache))))
     (if (subagent? ctx)
       (do
@@ -1015,7 +1017,13 @@
               (awaiting-receipt slug (or (:reason (second decision)) :host-pending))))))
       (await ((:attach! service) :attach_brainstorm request options)))))
 
-(defn- ^:async gate-execute! [service deps tool params ctx call-id]
+(defn pop-pending-barrier! [key]
+  (let [barrier (get-in @state [:sessions key :pending-barrier])]
+    (when barrier
+      (swap! state update-in [:sessions key] dissoc :pending-barrier))
+    barrier))
+
+(defn- ^:async gate-execute! [pi service deps tool params ctx call-id]
   (let [key (session-key ctx)
         turn-id (get-in @state [:sessions key :turn-id])
         cached (get-in @state [:sessions key :gate-cache])
@@ -1109,7 +1117,17 @@
                   :slug slug
                   :role role
                   :mission refreshed
-                  :open-items open-items})))
+                  :open-items open-items})
+          (let [next-stage (tenure/normalize-stage (:stage refreshed))]
+            (when (and next-stage (not= next-stage stage))
+              (await (apply-surface! pi ctx))
+              (when-let [briefing (disclosures/current-briefing next-stage)]
+                (swap! state assoc-in [:sessions key :pending-barrier]
+                       {:tool-call-id call-id
+                        :stage next-stage
+                        :slug slug
+                        :seed (:seed refreshed)
+                        :briefing briefing}))))))
       (swap! state update-in [:sessions key] dissoc :gate-cache))
     result))
 
@@ -1404,7 +1422,7 @@
             written (if swarm?
                       {:ok true}
                       (await (store/write-board! root slug board)))]
-        (if-not (:ok written)
+        (if-not (and (map? written) (or (:ok written) (string? (:path written))))
           (gate-failure :STALE_CONTROL
                         "the S5 board could not be initialized"
                         {:field :board :slug slug})
@@ -1416,7 +1434,16 @@
 (defn- s5-deps [root slug mission handle]
   (let [subagent (s5-subagent-port)
         audit-deps (or (get-in @state [:options :audit-deps]) {})]
-    (cond-> (merge audit-deps
+    (cond-> (merge {:approval-port
+                    (fn [req]
+                      (let [sha (:report-sha256 req)
+                            rev (or (:revision req) (:revision mission) 0)
+                            key (or (:approval-key (:options @state)) "herd-local-approval-key")]
+                        {:ok true
+                         :approval {:revision rev
+                                    :report-sha256 sha
+                                    :token (approval/approval-token (assoc mission :revision rev) sha key)}}))}
+                   audit-deps
                    {:root root
                     :slug slug
                     :mission mission
@@ -1452,8 +1479,20 @@
                                  :error (get-in started [:error :message])})
                 started)
               (do
-                (swap! state assoc-in [:reviewers slug] (:reviewer started))
-                (assoc started :status :reviewer-started)))))))))
+                (swap! state update :reviewers dissoc slug)
+                (let [handle (:handle prepared)
+                      latest-board (when handle (await (swarm-store/read-board handle)))
+                      latest-read (await (store/read-mission root slug))
+                      latest-mission (or (:mission latest-read) mission)
+                      latest-stage (tenure/normalize-stage (:stage latest-mission))]
+                  (if (and (= :s5 latest-stage)
+                           (swarm-model/board-state? latest-board)
+                           (pos? (count (:tasks latest-board)))
+                           (:ok (runner/quiescence latest-board {})))
+                    (let [relayed (await (runner/relay! (s5-deps root slug latest-mission handle)
+                                                        {:board latest-board :mission latest-mission}))]
+                      (assoc started :status :reviewer-relayed :relay relayed))
+                    (assoc started :status :reviewer-started)))))))))))
 
 (defn- audit-batch-port [deps board]
   (let [injected (or (get-in @state [:options :run-audit-batch])
@@ -1724,7 +1763,7 @@
             wrapped (assoc definition
                            :execute (bridge-execute-tool
                                       (fn [call-id params _signal _on-update ctx]
-                                        (gate-execute! service deps tool params ctx call-id))))]
+                                        (gate-execute! pi service deps tool params ctx call-id))))]
         (register-tool! pi wrapped)))
     service))
 
@@ -1781,10 +1820,21 @@
                 :developer_score {:type "number" :minimum 0 :maximum 100}
                 :report_markdown {:type "string" :minLength 1}}})
 
+(defn- parse-auditor-context [prompt]
+  (when (string? prompt)
+    (let [ws (second (re-find #"(?m)^Main workspace:\s*(.+)$" prompt))
+          slug (second (re-find #"\(slug:\s*([a-z0-9][a-z0-9-]{0,63})\)" prompt))]
+      (when (and (text? ws) (text? slug))
+        {:root (str/trim ws) :slug (str/trim slug)}))))
+
 (defn- ^:async audit-execute! [params ctx _call-id]
   (let [request (js->clj (or params #js {}) :keywordize-keys true)
-        root (resolve-root ctx)
-        slug (await (ensure-focus! ctx root))
+        ctx-root (resolve-root ctx)
+        ctx-slug (await (ensure-focus! ctx ctx-root))
+        parsed (when (nil? ctx-slug)
+                 (parse-auditor-context (get-in @state [:sessions (session-key ctx) :prompt])))
+        root (or (:root parsed) ctx-root)
+        slug (or (:slug parsed) ctx-slug)
         role (await (role-of ctx root slug))]
     (cond
       (not (subagent? ctx))

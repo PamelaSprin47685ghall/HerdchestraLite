@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { fileURLToPath } from "node:url";
 import * as nbb from "nbb";
+import { ensureActivated } from "./helpers/nbb-boot.mjs";
 
 const here = (path) => fileURLToPath(new URL("../" + path, import.meta.url));
 
@@ -50,8 +51,7 @@ beforeAll(async () => {
 	boot.pi = { Text: FakeText, Container: FakeContainer };
 	globalThis.__pi = boot;
 	globalThis.__herdTui = { highlightCode: (code) => code };
-	nbb.addClassPath(here("src/"));
-	await nbb.loadFile(here("src/herd/bootstrap.cljs"));
+	await ensureActivated();
 	applySurface = await nbb.loadString("(var-get (resolve (quote herd.main/apply-tool-surface!)))");
 });
 

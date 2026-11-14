@@ -2,8 +2,10 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import { fileURLToPath } from "node:url";
 import * as nbb from "nbb";
 
-beforeAll(() => {
-	nbb.addClassPath(fileURLToPath(new URL("../src/", import.meta.url)));
+import { ensureModules } from "./helpers/nbb-boot.mjs";
+
+beforeAll(async () => {
+	await ensureModules(["stages/parsers"]);
 });
 
 async function evaluate(form) {

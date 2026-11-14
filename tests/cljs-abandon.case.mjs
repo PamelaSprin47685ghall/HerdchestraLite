@@ -4,27 +4,16 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as nbb from "nbb";
+import { ensureModules } from "./helpers/nbb-boot.mjs";
 
-const SRC = fileURLToPath(new URL("../src/herd/", import.meta.url));
 const MODULES = ["ufss", "sandbox", "repl"];
 let moduleRoot;
 let originalCwd;
 
 beforeAll(async () => {
 	originalCwd = process.cwd();
-	nbb.addClassPath(fileURLToPath(new URL("../src/", import.meta.url)));
-	moduleRoot = mkdtempSync(join(tmpdir(), "cljs-abandon-src-"));
-	for (const name of MODULES) {
-		const source = readFileSync(join(SRC, `${name}.cljs`), "utf8");
-		const unwrapped = await nbb.loadString(`(require '[herd.ufss :as u]) (u/unwrap ${JSON.stringify(source)})`);
-		const target = join(moduleRoot, "herd", `${name}.cljs`);
-		mkdirSync(dirname(target), { recursive: true });
-		writeFileSync(target, unwrapped);
-	}
-	nbb.addClassPath(moduleRoot);
-	for (const name of MODULES) {
-		await nbb.loadFile(join(moduleRoot, "herd", `${name}.cljs`));
-	}
+	moduleRoot = mkdtempSync(join(tmpdir(), "cljs-abandon-ws-"));
+	await ensureModules(MODULES);
 	process.chdir(moduleRoot);
 	await nbb.loadString(`
 (require '[herd.sandbox :as sandbox] '[herd.repl :as repl])

@@ -249,7 +249,7 @@ No central manager will pick tasks for you. Coordinate solely through the shared
      :reasons [{:code :STALE_CONTROL :message "board is missing"}]
      :board-version nil}
     (let [reasons (atom [])
-          tasks (:tasks board)
+          tasks (into {} (remove (fn [[_ task]] (= :done (:state task)))) (:tasks board))
           actions (:actions board)
           active-actions (->> actions
                               (filter (fn [[_ action]]
@@ -531,6 +531,16 @@ No central manager will pick tasks for you. Coordinate solely through the shared
         slots (slot-pool deps board)
         wake-slot (:wake-slot! deps)
         subagent (subagent-port deps)
+        handle (:board deps)
+        _ (when (map? handle)
+            (doseq [slot slots]
+              (when-not (get-in board [:actors (:agent-id slot)])
+                (await (apply/apply-board!
+                         {:board handle
+                          :command {:type "register_actor" :agentId (:agent-id slot) :slotId (:slot-id slot)}
+                          :actor (or (:actor deps) "Coordinator")
+                          :turn-id (str "wake-" (js/Date.now))
+                          :request-id (str "reg-" (:agent-id slot))})))))
         start-one (fn [slot]
                     (let [request (worker-request deps mission board slot options)]
                       (cond

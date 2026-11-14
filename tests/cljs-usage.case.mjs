@@ -1,10 +1,10 @@
-import { beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { readFile, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import * as nbb from "nbb";
 import { loadLanguageDetector } from "../src/host/language-detect.mjs";
-import { installFakeClock } from "./fake-clock.mjs";
+import { ensureActivated, getSharedClock } from "./helpers/nbb-boot.mjs";
 
 const here = (path) => fileURLToPath(new URL(`../${path}`, import.meta.url));
 const evalClj = (source) => nbb.loadString(`(require '[herd.main :as m]) ${source}`);
@@ -56,7 +56,8 @@ const subCtx = (id, ui) => ({ hasUI: true, ui, agent: { id, kind: "sub" } });
 const lastLine = (lines) => lines[lines.length - 1];
 
 beforeAll(async () => {
-	clock = installFakeClock();
+	clock = getSharedClock();
+	clock.reset();
 	globalThis.__herdLockRoot = here("tmp/herd-usage-lock");
 	globalThis.__herdNative = {
 		getRunner: () => ({
@@ -97,8 +98,7 @@ beforeAll(async () => {
 	};
 	globalThis.__herdTui = { highlightCode: (code) => code.split("\n") };
 	globalThis.__herdDetectLanguage = loadLanguageDetector(createRequire(import.meta.url));
-	nbb.addClassPath(here("src/"));
-	await nbb.loadFile(here("src/herd/bootstrap.cljs"));
+	await ensureActivated();
 	messageEnd = globalThis.__pi.hooks.get("message_end");
 	messageStart = globalThis.__pi.hooks.get("message_start");
 	messageUpdate = globalThis.__pi.hooks.get("message_update");
@@ -106,6 +106,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+	clock.reset();
 	clock.reset();
 	await resetUsage();
 });
@@ -252,4 +253,8 @@ describe("working usage across subagents", () => {
 		expect(lastLine(lines)).toContain("Δ:");
 		expect(lastLine(lines)).toContain("Σ:");
 	});
+});
+
+afterAll(() => {
+	clock?.restore?.();
 });

@@ -2,9 +2,12 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import { fileURLToPath } from "node:url";
 import * as nbb from "nbb";
 import { hackContext } from "../src/host/hack-context.mjs";
+import { ensureActivated } from "./helpers/nbb-boot.mjs";
+
+let localPi;
 
 beforeAll(async () => {
-	globalThis.__pi = {
+	localPi = {
 		tools: new Map(),
 		hooks: new Map(),
 		active: [],
@@ -21,11 +24,10 @@ beforeAll(async () => {
 			this.active = [...next];
 		},
 	};
-	nbb.addClassPath(fileURLToPath(new URL("../src/", import.meta.url)));
-	await nbb.loadFile(fileURLToPath(new URL("../src/herd/bootstrap.cljs", import.meta.url)));
-	await nbb.loadString("(herd.main/activate-session! js/globalThis.__pi)");
+	globalThis.__pi = localPi;
+	await ensureActivated();
 	const handler = await nbb.loadString("herd.main/context-handler");
-	hackContext(globalThis.__pi, (event, ctx) => handler(event, ctx));
+	hackContext(localPi, (event, ctx) => handler(event, ctx));
 });
 
 const clj = (form) => nbb.loadString(form);
@@ -57,9 +59,9 @@ describe("two-anchor decoder", async () => {
 });
 
 describe("handoff tool", async () => {
-	const handler = () => globalThis.__pi.hooks.get("context");
+	const handler = () => localPi.hooks.get("context");
 	const queue = (markdown, toolCallId, ctx) =>
-		globalThis.__pi.tools.get("handoff").execute(toolCallId, { markdown }, null, null, ctx);
+		localPi.tools.get("handoff").execute(toolCallId, { markdown }, null, null, ctx);
 
 	it("queues v9 and cuts to the document", async () => {
 		const ctx = { agent: { id: "handoff-s1" } };

@@ -217,11 +217,12 @@ async function runSubagent(request) {
 			modelRegistry,
 			settings,
 			capabilities,
+			agentId: optionOf(request, "agentId", "agent-id"),
 			roleNonce: randomUUID().replaceAll("-", ""),
-			preloadedExtensionPaths: [pluginEntryPath],
+			preloadedExtensionPaths: [pluginEntryPath ?? globalThis[BOOT_KEY]?.pluginEntryPath],
 			artifactsDir: requestArtifactsDir(request),
 			sessionFile: requestSessionFile(request),
-			signal: request.signal,
+			signal: request.signal ?? undefined,
 			keepAlive: false,
 			visible: request.visible ?? eventBus !== undefined,
 			requireArtifacts: request.requireArtifacts ?? role === "Manual Auditor",
@@ -359,6 +360,7 @@ async function boot() {
 			state.promise = (async () => {
 				const entry = await realpath(fileURLToPath(import.meta.url));
 				pluginEntryPath = entry;
+				state.pluginEntryPath = entry;
 				const pluginSrc = dirname(entry);
 				const pluginRoot = dirname(pluginSrc);
 				if (trace !== null) {

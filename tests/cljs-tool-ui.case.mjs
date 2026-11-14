@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import * as nbb from "nbb";
 import { loadLanguageDetector } from "../src/host/language-detect.mjs";
+import { ensureActivated } from "./helpers/nbb-boot.mjs";
 
 const ALL_TOOLS = [
 	"clj_devops",
@@ -65,8 +66,10 @@ const theme = {
 	fg: (role, text) => `${role}:${text}`,
 };
 
+let localPi;
+
 beforeAll(async () => {
-	globalThis.__pi = {
+	localPi = {
 		tools: new Map(),
 		commands: new Map(),
 		hooks: new Map(),
@@ -90,14 +93,17 @@ beforeAll(async () => {
 	};
 	globalThis.__herdTui = { highlightCode: (code) => code.split("\n") };
 	globalThis.__herdDetectLanguage = loadLanguageDetector(createRequire(import.meta.url));
-	nbb.addClassPath(fileURLToPath(new URL("../src/", import.meta.url)));
-	await nbb.loadFile(fileURLToPath(new URL("../src/herd/bootstrap.cljs", import.meta.url)));
+	globalThis.__pi = localPi;
+	await ensureActivated();
 });
 
 describe("CLJS tool UI renderers", () => {
+	beforeAll(() => {
+		globalThis.__pi = localPi;
+	});
 	it("registers renderCall and renderResult on every Herdchestra tool", () => {
 		for (const name of ALL_TOOLS) {
-			const def = globalThis.__pi.tools.get(name);
+			const def = localPi.tools.get(name);
 			expect(def, name).toBeDefined();
 			expect(typeof def.renderCall, `${name}.renderCall`).toBe("function");
 			expect(typeof def.renderResult, `${name}.renderResult`).toBe("function");
@@ -105,7 +111,7 @@ describe("CLJS tool UI renderers", () => {
 	});
 
 	it("renders wait and handoff with clj_devops visual language", () => {
-		const waitDef = globalThis.__pi.tools.get("wait");
+		const waitDef = localPi.tools.get("wait");
 		const waitCall = waitDef.renderCall({ otherwise_independent_work: "a".repeat(60) }, { expanded: false }, theme);
 		expect(waitCall.children[0].text).toContain("accent:Wait");
 		expect(waitCall.children[0].text).toContain("dim:--- [等待沙箱");
@@ -121,7 +127,7 @@ describe("CLJS tool UI renderers", () => {
 		expect(waitRes.children[1].text).toContain("success:✓");
 		expect(waitRes.children[1].text).toContain("dim:--- [job-1]");
 
-		const handoffDef = globalThis.__pi.tools.get("handoff");
+		const handoffDef = localPi.tools.get("handoff");
 		const handoffCall = handoffDef.renderCall(
 			{ markdown: `# Title\n${"line\n".repeat(10)}` },
 			{ expanded: false },
@@ -136,7 +142,7 @@ describe("CLJS tool UI renderers", () => {
 	});
 
 	it("renders stage gate and devops tools cleanly across collapsed, expanded, and error states", () => {
-		const reviewDef = globalThis.__pi.tools.get("review");
+		const reviewDef = localPi.tools.get("review");
 		const emptyReview = reviewDef.renderCall({ findings: [] }, { expanded: false }, theme);
 		expect(emptyReview.children[0].text).toContain("accent:Submit Review");
 		expect(emptyReview.children[0].text).toContain("空账确认");
@@ -167,7 +173,7 @@ describe("CLJS tool UI renderers", () => {
 		expect(reviewQuiescent.children[1].text).toContain("success:✓");
 		expect(reviewQuiescent.children[1].text).toContain("待调用 attach_brainstorm");
 
-		const manualTestsDef = globalThis.__pi.tools.get("attach_manual_tests");
+		const manualTestsDef = localPi.tools.get("attach_manual_tests");
 		const mtCall = manualTestsDef.renderCall(
 			{
 				markdown: `# Methodology\n${"detail\n".repeat(10)}`,
@@ -190,7 +196,7 @@ describe("CLJS tool UI renderers", () => {
 		expect(mtCall.children[2].text).toContain("CASE-01");
 		expect(mtCall.children[2].text).toContain("dim:$$$");
 
-		const attachBrainstorm = globalThis.__pi.tools.get("attach_brainstorm");
+		const attachBrainstorm = localPi.tools.get("attach_brainstorm");
 		const attachRes = attachBrainstorm.renderResult(
 			{ content: [{ type: "text", text: "{:ok true :status :attached :stage :s1 :next-stage :s2}" }] },
 			{ expanded: false },
@@ -198,7 +204,7 @@ describe("CLJS tool UI renderers", () => {
 		);
 		expect(attachRes.children[1].text).toContain("s1 → s2");
 
-		const devopsDef = globalThis.__pi.tools.get("devops");
+		const devopsDef = localPi.tools.get("devops");
 		const devopsRes = devopsDef.renderResult(
 			{
 				content: [
@@ -215,7 +221,7 @@ describe("CLJS tool UI renderers", () => {
 	});
 
 	it("renders all 11 board_* tools and attach_case_audit with accurate tags and error status", () => {
-		const splitDef = globalThis.__pi.tools.get("board_split");
+		const splitDef = localPi.tools.get("board_split");
 		const splitCall = splitDef.renderCall(
 			{
 				parent_id: "T-1",
@@ -249,7 +255,7 @@ describe("CLJS tool UI renderers", () => {
 		expect(conflictRes.children[1].text).toContain("error::BOARD_CONFLICT");
 		expect(conflictRes.children[1].text).toContain("board version changed");
 
-		const takeDef = globalThis.__pi.tools.get("board_take_or_die");
+		const takeDef = localPi.tools.get("board_take_or_die");
 		const wonRes = takeDef.renderResult(
 			{
 				content: [
@@ -265,7 +271,7 @@ describe("CLJS tool UI renderers", () => {
 		expect(wonRes.children[1].text).toContain("抢令成功 (Holder)");
 		expect(wonRes.children[1].text).toContain("v9 · epoch 4");
 
-		const auditDef = globalThis.__pi.tools.get("attach_case_audit");
+		const auditDef = localPi.tools.get("attach_case_audit");
 		const auditCall = auditDef.renderCall(
 			{
 				case_id: "CASE-07",
@@ -300,7 +306,7 @@ describe("CLJS tool UI renderers", () => {
 		const bareTheme = {};
 		const cljTools = new Set(["clj_devops", "clj_plan", "clj_review", "clj_worker", "clj_auditor"]);
 		for (const name of ALL_TOOLS) {
-			const def = globalThis.__pi.tools.get(name);
+			const def = localPi.tools.get(name);
 			const c1 = def.renderCall(undefined, { expanded: false, isPartial: true }, bareTheme);
 			const c2 = def.renderCall({}, { expanded: true, isPartial: true }, theme);
 			const r1 = def.renderResult({ content: [] }, { expanded: false, isPartial: true }, bareTheme);

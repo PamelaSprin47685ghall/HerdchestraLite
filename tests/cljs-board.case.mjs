@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as nbb from "nbb";
+import { ensureModules } from "./helpers/nbb-boot.mjs";
 
-const SRC = fileURLToPath(new URL("../src/herd/", import.meta.url));
 const MODULES = [
 	"util/atomic_write",
 	"swarm/edn",
@@ -22,24 +22,7 @@ const MODULES = [
 let moduleRoot;
 
 beforeAll(async () => {
-	nbb.addClassPath(fileURLToPath(new URL("../src/", import.meta.url)));
-	moduleRoot = mkdtempSync(join(tmpdir(), "cljs-board-src-"));
-	await nbb.loadFile(join(SRC, "ufss.cljs"));
-	for (const name of MODULES) {
-		const source = readFileSync(join(SRC, `${name}.cljs`), "utf8");
-		const unwrapped = await nbb.loadString(`(require '[herd.ufss :as u]) (u/unwrap ${JSON.stringify(source)})`);
-		const target = join(moduleRoot, "herd", `${name}.cljs`);
-		mkdirSync(dirname(target), { recursive: true });
-		writeFileSync(target, unwrapped);
-	}
-	nbb.addClassPath(moduleRoot);
-	for (const name of MODULES) {
-		await nbb.loadFile(join(moduleRoot, "herd", `${name}.cljs`));
-	}
-});
-
-afterAll(() => {
-	if (moduleRoot) rmSync(moduleRoot, { recursive: true, force: true });
+	await ensureModules(MODULES);
 });
 
 const JSON_OUT = (expr) => `(js/JSON.stringify (clj->js ${expr}))`;

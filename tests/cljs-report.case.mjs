@@ -6,13 +6,17 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as nbb from "nbb";
 
+import { ensureModules } from "./helpers/nbb-boot.mjs";
+
 beforeAll(async () => {
-	nbb.addClassPath(fileURLToPath(new URL("../src/", import.meta.url)));
-	for (const name of ["report", "audit"]) {
-		const source = readFileSync(new URL(`../src/herd/stages/${name}.cljs`, import.meta.url), "utf8");
-		const unwrapped = await nbb.loadString(`(require '[herd.ufss :as u]) (u/unwrap ${JSON.stringify(source)})`);
-		await nbb.loadString(unwrapped);
-	}
+	await ensureModules([
+		"util/atomic_write",
+		"stages/paths",
+		"stages/parsers",
+		"stages/scores",
+		"stages/report",
+		"stages/audit",
+	]);
 });
 
 let root;

@@ -5,14 +5,16 @@ import { fileURLToPath } from "node:url";
 import * as nbb from "nbb";
 import { loadLanguageDetector } from "../src/host/language-detect.mjs";
 import { lockEndpointFor, shutdownIpcDaemon } from "../src/host/lock-daemon.mjs";
-import { installFakeClock } from "./fake-clock.mjs";
+import { ensureActivated, getSharedClock } from "./helpers/nbb-boot.mjs";
 
 let tool;
 let waitTool;
 let clock;
+let localPi;
 
 beforeAll(async () => {
-	clock = installFakeClock();
+	clock = getSharedClock();
+	clock.reset();
 	globalThis.__herdLockRoot = fileURLToPath(new URL("../tmp/herd-sandbox-lock", import.meta.url));
 	globalThis.__herdNative = {
 		getRunner: () => ({
@@ -42,7 +44,7 @@ beforeAll(async () => {
 		}
 	}
 
-	globalThis.__pi = {
+	localPi = {
 		tools: new Map(),
 		hooks: new Map(),
 		active: ["read", "bash", "board_finish", "clj_devops", "wait"],
@@ -62,12 +64,12 @@ beforeAll(async () => {
 	};
 	globalThis.__herdTui = { highlightCode: (code) => code.split("\n") };
 	globalThis.__herdDetectLanguage = loadLanguageDetector(createRequire(import.meta.url));
-	nbb.addClassPath(fileURLToPath(new URL("../src/", import.meta.url)));
-	await nbb.loadFile(fileURLToPath(new URL("../src/herd/bootstrap.cljs", import.meta.url)));
-	const start = globalThis.__pi.hooks.get("session_start");
+	globalThis.__pi = localPi;
+	await ensureActivated();
+	const start = localPi.hooks.get("session_start");
 	if (start) start({}, {});
-	tool = globalThis.__pi.tools.get("clj_devops");
-	waitTool = globalThis.__pi.tools.get("wait");
+	tool = localPi.tools.get("clj_devops");
+	waitTool = localPi.tools.get("wait");
 });
 
 beforeEach(() => {
@@ -80,7 +82,7 @@ afterAll(async () => {
 
 describe("CLJS host wiring", () => {
 	it("injects repo-aware rules once", async () => {
-		const handler = globalThis.__pi.hooks.get("before_agent_start");
+		const handler = localPi.hooks.get("before_agent_start");
 		expect(handler).toBeDefined();
 		const first = await handler({ systemPrompt: "base" }, {});
 		expect(first.systemPrompt).toContain("# Repo-aware Rules");
@@ -102,7 +104,7 @@ describe("CLJS host wiring", () => {
 	});
 
 	it("injects one managed prompt block into array prompts", async () => {
-		const handler = globalThis.__pi.hooks.get("before_agent_start");
+		const handler = localPi.hooks.get("before_agent_start");
 		const first = await handler({ systemPrompt: ["base"] }, {});
 		expect(Array.isArray(first.systemPrompt)).toBe(true);
 		expect(first.systemPrompt.every((part) => typeof part === "string")).toBe(true);
@@ -113,7 +115,7 @@ describe("CLJS host wiring", () => {
 	});
 
 	it("replaces an existing managed prompt region", async () => {
-		const handler = globalThis.__pi.hooks.get("before_agent_start");
+		const handler = localPi.hooks.get("before_agent_start");
 		const start = "<!-- herdchestra:system-prompt v1 -->";
 		const end = "<!-- /herdchestra:system-prompt -->";
 		const prompt = start + "\nold rules\n" + end + "\n\nbase";
@@ -124,18 +126,18 @@ describe("CLJS host wiring", () => {
 	});
 
 	it("drops host edit/shell tools in the devops surface", async () => {
-		const start = globalThis.__pi.hooks.get("session_start");
+		const start = localPi.hooks.get("session_start");
 		await start({}, { cwd: process.cwd(), hasUI: false, agent: { id: "main-session" } });
-		expect(globalThis.__pi.active).toContain("board_finish");
-		expect(globalThis.__pi.active).toContain("clj_devops");
-		expect(globalThis.__pi.active).toContain("wait");
-		expect(globalThis.__pi.active).toContain("handoff");
-		expect(globalThis.__pi.active).not.toContain("read");
-		expect(globalThis.__pi.active).not.toContain("bash");
+		expect(localPi.active).toContain("board_finish");
+		expect(localPi.active).toContain("clj_devops");
+		expect(localPi.active).toContain("wait");
+		expect(localPi.active).toContain("handoff");
+		expect(localPi.active).not.toContain("read");
+		expect(localPi.active).not.toContain("bash");
 	});
 
 	it("requires a self-reported control-flow state and no scope", () => {
-		const definition = globalThis.__pi.tools.get("clj_devops");
+		const definition = localPi.tools.get("clj_devops");
 		expect(definition.parameters.required).toContain("agent_state");
 		expect(definition.parameters.required).not.toContain("scope");
 		expect(definition.parameters.properties.scope).toBeUndefined();
@@ -153,7 +155,7 @@ describe("CLJS host wiring", () => {
 
 	it("does not force tool output expansion at session start", () => {
 		const calls = [];
-		const start = globalThis.__pi.hooks.get("session_start");
+		const start = localPi.hooks.get("session_start");
 		start(
 			{},
 			{
@@ -169,7 +171,7 @@ describe("CLJS host wiring", () => {
 	});
 
 	it("renders clj_devops call with humanized title", () => {
-		const definition = globalThis.__pi.tools.get("clj_devops");
+		const definition = localPi.tools.get("clj_devops");
 		const call = definition.renderCall(
 			{
 				name: "read-ufss-state",
@@ -186,7 +188,7 @@ describe("CLJS host wiring", () => {
 	});
 
 	it("renders Chinese labels for every agent state", () => {
-		const definition = globalThis.__pi.tools.get("clj_devops");
+		const definition = localPi.tools.get("clj_devops");
 		const expected = {
 			Orienting: "探索定向",
 			Converging: "稳定收敛",
@@ -208,7 +210,7 @@ describe("CLJS host wiring", () => {
 	});
 
 	it("collapses UFSS strings to dim $$$ in call previews", () => {
-		const definition = globalThis.__pi.tools.get("clj_devops");
+		const definition = localPi.tools.get("clj_devops");
 		const call = definition.renderCall(
 			{
 				name: "collapsed-call",
@@ -225,7 +227,7 @@ describe("CLJS host wiring", () => {
 	});
 
 	it("collapses short multiline strings to dim $$$ in previews", () => {
-		const definition = globalThis.__pi.tools.get("clj_devops");
+		const definition = localPi.tools.get("clj_devops");
 		const call = definition.renderCall(
 			{
 				name: "multiline-short",
@@ -240,7 +242,7 @@ b")`,
 	});
 
 	it("collapses short multiline strings in result previews", () => {
-		const definition = globalThis.__pi.tools.get("clj_devops");
+		const definition = localPi.tools.get("clj_devops");
 		const result = definition.renderResult(
 			{
 				content: [
@@ -258,7 +260,7 @@ b"}`,
 	});
 
 	it("collapses UFSS fence bodies to dim $$$ in previews", () => {
-		const definition = globalThis.__pi.tools.get("clj_devops");
+		const definition = localPi.tools.get("clj_devops");
 		const call = definition.renderCall(
 			{
 				name: "collapsed-fence",
@@ -275,7 +277,7 @@ b"}`,
 	});
 
 	it("keeps text after $$$ when the collapsed call wraps", () => {
-		const definition = globalThis.__pi.tools.get("clj_devops");
+		const definition = localPi.tools.get("clj_devops");
 		const call = definition.renderCall(
 			{
 				name: "wrapped-after",
@@ -292,7 +294,7 @@ b"}`,
 	});
 
 	it("keeps text after $$$ when the collapsed result wraps", () => {
-		const definition = globalThis.__pi.tools.get("clj_devops");
+		const definition = localPi.tools.get("clj_devops");
 		const result = definition.renderResult(
 			{
 				content: [
@@ -312,7 +314,7 @@ b"}`,
 	});
 
 	it("keeps short single-line strings visible in collapsed previews", () => {
-		const definition = globalThis.__pi.tools.get("clj_devops");
+		const definition = localPi.tools.get("clj_devops");
 		const call = definition.renderCall(
 			{
 				name: "short-collapsed-call",
@@ -327,7 +329,7 @@ b"}`,
 	});
 
 	it("keeps 40-character strings and collapses 41-character strings", () => {
-		const definition = globalThis.__pi.tools.get("clj_devops");
+		const definition = localPi.tools.get("clj_devops");
 		const theme = { fg: (role, text) => `${role}:${text}` };
 		const forty = "x".repeat(40);
 		const fortyOne = "x".repeat(41);
@@ -348,7 +350,7 @@ b"}`,
 	});
 
 	it("keeps short single-line fence strings visible", () => {
-		const definition = globalThis.__pi.tools.get("clj_devops");
+		const definition = localPi.tools.get("clj_devops");
 		const call = definition.renderCall(
 			{
 				name: "short-fence",
@@ -362,7 +364,7 @@ b"}`,
 		expect(call.children[2].text).not.toContain("$$");
 	});
 	it("keeps UFSS strings visible in expanded call previews", () => {
-		const definition = globalThis.__pi.tools.get("clj_devops");
+		const definition = localPi.tools.get("clj_devops");
 		const call = definition.renderCall(
 			{
 				name: "expanded-call",
@@ -376,7 +378,7 @@ b"}`,
 	});
 
 	it("collapses UFSS strings to dim $$$ in result previews", () => {
-		const definition = globalThis.__pi.tools.get("clj_devops");
+		const definition = localPi.tools.get("clj_devops");
 		const result = definition.renderResult(
 			{ content: [{ type: "text", text: '{:value "secret-value-that-is-longer-than-forty-characters"}' }] },
 			{ expanded: false },
@@ -389,7 +391,7 @@ b"}`,
 	});
 
 	it("keeps UFSS strings visible in expanded result previews", () => {
-		const definition = globalThis.__pi.tools.get("clj_devops");
+		const definition = localPi.tools.get("clj_devops");
 		const result = definition.renderResult(
 			{ content: [{ type: "text", text: '{:value "secret-value-that-is-longer-than-forty-characters"}' }] },
 			{ expanded: true },
@@ -443,7 +445,7 @@ b"}`,
 	});
 
 	it("auto-highlights javascript result bodies", () => {
-		const definition = globalThis.__pi.tools.get("clj_devops");
+		const definition = localPi.tools.get("clj_devops");
 		const previous = globalThis.__herdTui.highlightCode;
 		const seen = [];
 		globalThis.__herdTui.highlightCode = (text, lang) => {
@@ -494,7 +496,7 @@ b"}`,
 	});
 
 	it("highlights result output with the same highlighter", () => {
-		const definition = globalThis.__pi.tools.get("clj_devops");
+		const definition = localPi.tools.get("clj_devops");
 		const previous = globalThis.__herdTui.highlightCode;
 		globalThis.__herdTui.highlightCode = (text) => [`\u001b[36m${text}\u001b[0m`];
 		try {
@@ -510,7 +512,7 @@ b"}`,
 	});
 
 	it("skips syntax highlighting for large collapsed tool results", () => {
-		const definition = globalThis.__pi.tools.get("clj_devops");
+		const definition = localPi.tools.get("clj_devops");
 		let calls = 0;
 		const original = globalThis.__herdTui.highlightCode;
 		globalThis.__herdTui.highlightCode = (code) => {
@@ -532,7 +534,7 @@ b"}`,
 	});
 
 	it("renders a horizontal rule before clj_devops output", () => {
-		const definition = globalThis.__pi.tools.get("clj_devops");
+		const definition = localPi.tools.get("clj_devops");
 		const result = definition.renderResult(
 			{ content: [{ type: "text", text: "output" }] },
 			{ expanded: true },

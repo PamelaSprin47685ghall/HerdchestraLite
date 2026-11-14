@@ -235,7 +235,7 @@ Read and validate the CASE dataset. `options.dataset` short-circuits I/O and
  ONLY]
 
 """
-         "Mission: " (or (:mission-id mission) "unknown") " (slug: " slug """
+         "Mission: " (or (:mission-id mission) "unknown") " (slug: " slug ")\nMain workspace: " (or (:root context) "") "\n" """
 )
 
 
@@ -293,7 +293,7 @@ Automatic tests, CI, builds, coverage, and paperwork are not acceptance evidence
         slug (:slug context)]
     {:role "Manual Auditor"
      :name (str "Auditor-" slug "-" (:case_id case-spec))
-     :prompt (build-auditor-prompt context)
+     :prompt (build-auditor-prompt (assoc context :root (:root deps)))
      :cwd (:cwd isolation)
      :artifacts-dir (or (:artifacts-dir isolation)
                         (:artifacts-dir deps)
@@ -349,7 +349,7 @@ Automatic tests, CI, builds, coverage, and paperwork are not acceptance evidence
         case-id (:case_id (:case context))
         batch-id (:batch-id context)
         started-at (now-ms deps)
-        prepare (or (:prepare-isolation! deps) prepare-isolation-default!)
+        prepare (or (:prepare-isolation! deps) (partial prepare-isolation-default! deps))
         isolation-result (try
                            [:ok (await (prepare {:root (:root deps)
                                                  :slug slug

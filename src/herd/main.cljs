@@ -342,9 +342,20 @@ Index of the last persisted handoff document, searched in the trailing
           (recur (dec i)))))))
 (defn- consume-handoff! [ctx messages]
   (let [key (session-key ctx)
+        barrier (system/pop-pending-barrier! key)
+        _ (when barrier
+            (swap! last-handoffs assoc key
+                   {:tool-call-id (:tool-call-id barrier)
+                    :fresh-pending? true
+                    :text (str handoff-preamble newline-char newline-char "---" newline-char newline-char
+                               "Mission: " (:slug barrier) newline-char
+                               "Seed: " (:seed barrier) newline-char newline-char
+                               (:briefing barrier))}))
         pending (get @last-handoffs key)]
     (or (when pending
-          (let [fresh? (nil? (:text pending))
+          (let [fresh? (or (nil? (:text pending)) (true? (:fresh-pending? pending)))
+                _ (when (:fresh-pending? pending)
+                    (swap! last-handoffs update key dissoc :fresh-pending?))
                 text (or (:text pending)
                          (let [cut (handoff-cut-index messages (:tool-call-id pending))
                                before (if (>= cut 0) (.slice messages 0 cut) messages)
