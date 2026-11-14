@@ -7,7 +7,8 @@
    [herd.swarm.edn :as edn]
    [herd.swarm.model :as model]
    [herd.ufss :as ufss]
-   [herd.util.atomic-write :as atomic]))
+   [herd.util.atomic-write :as atomic]
+   [nbb.classpath :as cp-path]))
 
 (defn- ^:async file-exists? [target]
   (-> (.access fs target)
@@ -79,69 +80,74 @@
             :board-version (:board-version board)
             :updated-at (.toISOString (js/Date.))})))
 
-(defn- sleep-ms [ms]
-  (js/Promise. (fn [resolve] (js/setTimeout resolve ms))))
+(def ^:private os (js/require "node:os"))
 
-(defn- ^:async stale-lock? [lock-path]
-  (try
-    (let [text (await (.readFile fs lock-path "utf8"))
-          meta (try (js/JSON.parse text) (catch :default _ nil))
-          pid (when meta (.-pid meta))]
-      (or (not (number? pid))
-          (not (try
-                 (js/process.kill pid 0)
-                 true
-                 (catch :default _ false)))))
-    (catch :default _ false)))
+(defn- board-endpoint [lock-path]
+  (or (let [override (.-__herdLockEndpoint js/globalThis)]
+        (when (string? override) override))
+      (let [resolved (path/resolve (path/dirname lock-path))
+            hash (subs (.digest (.update (.createHash crypto "sha256") resolved) "hex") 0 16)
+            platform (.-platform js/process)]
+        (cond
+          (= platform "win32") (str "\\\\.\\pipe\\herd-lock-" hash)
+          (= platform "linux") (str (char 0) "herd-lock-" hash)
+          :else (path/join (.tmpdir os) (str "herd-lock-" hash ".sock"))))))
 
-(defn- ^:async try-acquire-board-lock [lock-path]
-  (try
-    (await (.mkdir fs (path/dirname lock-path) #js {:recursive true}))
-    (let [meta {:lock-id (str "board-" (.randomUUID crypto))
-                :purpose "board"
-                :pid (.-pid js/process)
-                :host (try (.hostname (js/require "node:os")) (catch :default _ nil))
-                :started-at (.toISOString (js/Date.))
-                :token (.randomUUID crypto)}]
-      (await (.writeFile fs lock-path (js/JSON.stringify (clj->js meta)) #js {:flag "wx"}))
-      {:ok true :meta meta})
-    (catch :default error
-      (if (= "EEXIST" (.-code error))
-        {:ok false :busy true}
-        (throw error)))))
+(defn- daemon-candidates []
+  (let [delim (.-delimiter path)
+        cp-entries (->> (.split (or (cp-path/get-classpath) "") delim)
+                        (remove (fn [entry] (or (string/blank? entry) (.includes entry ".herd")))))
+        roots (distinct (remove nil?
+                                (concat [(.-__herdPluginSrc js/globalThis)]
+                                        cp-entries
+                                        [(path/join (js/process.cwd) "src")])))]
+    (mapv (fn [root] (path/join root "host" "lock-daemon.mjs")) roots)))
 
-(defn- ^:async release-board-lock [lock-path]
-  (-> (.unlink fs lock-path)
-      (.catch (fn [_] nil))))
+(defn- ^:async load-lock-daemon []
+  (if-let [cached (.-__herdLockDaemon js/globalThis)]
+    cached
+    (let [candidates (daemon-candidates)]
+      (loop [index 0]
+        (if (>= index (count candidates))
+          (throw (ex-info "lock daemon module not found" {:code :HOST_API_MISMATCH}))
+          (let [candidate (nth candidates index)
+                ok? (await (file-exists? candidate))]
+            (if ok?
+              (let [loaded (js/require candidate)]
+                (aset js/globalThis "__herdLockDaemon" loaded)
+                loaded)
+              (recur (inc index)))))))))
+
+(defonce ^:private board-lock-queues (atom {}))
+
+(defn- ^:async run-ipc-board-lock [lock-path f]
+  (let [daemon (await (load-lock-daemon))
+        endpoint (board-endpoint lock-path)
+        key (str "board:" (path/resolve lock-path))
+        lease (try
+                (await (.acquireIpcLock daemon #js {:endpoint endpoint :key key :waitMs 5000}))
+                (catch :default error
+                  (if (= "LOCK_BUSY" (.-code error))
+                    (throw (ex-info "board lock is busy"
+                                    {:code :BOARD_CONFLICT :lock-path lock-path :timeout-ms 5000}))
+                    (throw error))))]
+    (try
+      (await (js/Promise.resolve (f)))
+      (finally
+        (await (.release lease))))))
 
 (defn- ^:async with-board-lock* [lock-path f]
-  (let [deadline (+ (js/Date.now) 5000)]
-    (loop []
-      (let [acquired (await (try-acquire-board-lock lock-path))]
-        (cond
-          (:ok acquired)
-          (-> (js/Promise.resolve (f))
-              (.then (fn [value]
-                       (-> (release-board-lock lock-path)
-                           (.then (fn [_] value)))))
-              (.catch (fn [error]
-                        (-> (release-board-lock lock-path)
-                            (.then (fn [_] (throw error)))))))
-
-          (>= (js/Date.now) deadline)
-          (throw (ex-info "board lock is busy"
-                          {:code :BOARD_CONFLICT :lock-path lock-path :timeout-ms 5000}))
-
-          (await (stale-lock? lock-path))
-          (do
-            (await (release-board-lock lock-path))
-            (recur))
-
-          :else
-          (do
-            (await (sleep-ms 5))
-            (recur)))))))
-
+  (let [key (str "board:" (path/resolve lock-path))
+        queued (atom nil)]
+    (swap! board-lock-queues
+           (fn [queues]
+             (let [previous (get queues key (js/Promise.resolve nil))
+                   next-run (-> previous
+                                (.catch (fn [_] nil))
+                                (.then (fn [_] (run-ipc-board-lock lock-path f))))]
+               (reset! queued next-run)
+               (assoc queues key (.catch next-run (fn [_] nil))))))
+    (await @queued)))
 (defn- ^:async with-board-lock [lock-path f]
   (if (nil? lock-path)
     (await (js/Promise.resolve (f)))

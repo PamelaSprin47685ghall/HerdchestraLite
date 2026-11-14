@@ -35,8 +35,8 @@
 (defn- byte-length [text]
   (js/Buffer.byteLength text "utf8"))
 
-(defn- sandbox-deadline [code]
-  (+ 2000 (* 200 (byte-length code))))
+(defn- sandbox-deadline [text]
+  (+ 2000 (* 200 (byte-length text))))
 
 (defonce receipts (atom {}))
 
@@ -101,6 +101,16 @@
                       {:code :INVALID_ARGUMENT :field :agent_state})))
     state))
 
+(defn- append-workers-reminder [text params]
+  (let [n (when params (.-more_workers_without_hitting_mythical_man_month params))]
+    (if (and (number? n) (js/Number.isFinite n) (pos? (js/Math.floor n)))
+      (str text
+           "\n"
+           #"<system-reminder><skill version="1.0">你刚刚在工具参数中说还可以增派 "#
+           (js/Math.floor n)
+           " 个工人，现在请你立刻兑现。</skill></system-reminder>")
+      text)))
+
 (defn- execute-role [role tool-call-id params _signal _on-update ctx]
   (validate-agent-state! params)
   (let [request-digest (digest params)]
@@ -115,14 +125,16 @@
         (-> (repl/run name code (sandbox-deadline code) role)
             (.then (fn [result]
                      (let [raw (ufss/canonical result)
-                           text (if transition? (prepend-state-comment state raw) raw)]
+                           with-comment (if transition? (prepend-state-comment state raw) raw)
+                           text (append-workers-reminder with-comment params)]
                        (when tool-call-id
                          (swap! receipts assoc tool-call-id
                                 {:digest request-digest :text text :error? false}))
                        (clj->js (tool-result text)))))
             (.catch (fn [error]
                       (let [raw (error-text error)
-                            text (if transition? (prepend-state-comment state raw) raw)]
+                            with-comment (if transition? (prepend-state-comment state raw) raw)
+                            text (append-workers-reminder with-comment params)]
                         (when tool-call-id
                           (swap! receipts assoc tool-call-id
                                  {:digest request-digest :text text :error? true}))
@@ -159,21 +171,27 @@
                          (.then (fn [host-result]
                                   (clj->js
                                     (tool-result
-                                      (ufss/canonical {:state :host-wait
-                                                       :message (host-text host-result)})))))
+                                      (append-workers-reminder
+                                        (ufss/canonical {:state :host-wait
+                                                         :message (host-text host-result)})
+                                        params)))))
                          (.catch (fn [error]
                                    (clj->js
                                      (tool-result
-                                       (ufss/canonical (assoc result
-                                                         :host-error (error-text error))))))))
-                     (clj->js (tool-result (ufss/canonical result))))
-                   (clj->js (tool-result (ufss/canonical result))))))
+                                       (append-workers-reminder
+                                         (ufss/canonical (assoc result
+                                                           :host-error (error-text error)))
+                                         params))))))
+                     (clj->js (tool-result (append-workers-reminder (ufss/canonical result) params))))
+                   (clj->js (tool-result (append-workers-reminder (ufss/canonical result) params))))))
         (.catch (fn [error]
                   (clj->js
                     (tool-result
-                      (ufss/canonical {:state :waiting
-                                       :reason :deadline
-                                       :message (str error)}))))))))
+                      (append-workers-reminder
+                        (ufss/canonical {:state :waiting
+                                         :reason :deadline
+                                         :message (str error)})
+                        params))))))))
 (def ^:private newline-char (js/String.fromCharCode 10))
 
 (defn- handoff-parameters []
@@ -376,7 +394,10 @@ Index of the last persisted handoff document, searched in the trailing
   {:type "string"
    :enum agent-state-values
    :description "Self-reported control-flow state. Orienting: divergent exploration and framing. Converging: steady progress that verifiably narrows the goal gap. Consolidating: checkpointing and preserving completed work. Stagnant: repeated ineffective actions without state change. Drifting: activity diverging from the original goal. Densifying: context has accumulated rich details and working memory is crowded with data; success may still come smoothly, but focus must stay razor-sharp. Reorienting: rolling back, pruning, or replanning after stagnation or drift. Settled: the goal is reached and verified."})
-(defn- workers-schema [] {:type "integer" :minimum 0})
+(defn- workers-schema []
+  {:type "integer"
+   :minimum 0
+   :description "自检：按 Brooks《人月神话》推导此刻还能增派多少工人。只数与既有契约互不相交、跨切片通信成本 O(1) 且现在已就绪的切片；无法证明互不相交的一律计 0。"})
 (defn- work-schema [] {:type "string" :minLength 1})
 
 (defn- devops-parameters []
@@ -392,7 +413,8 @@ Index of the last persisted handoff document, searched in the trailing
   {:type "object"
    :additionalProperties false
    :required ["otherwise_independent_work"]
-   :properties {:otherwise_independent_work (work-schema)}})
+   :properties {:otherwise_independent_work (work-schema)
+                :more_workers_without_hitting_mythical_man_month (workers-schema)}})
 
 (defn- safe-execute [handler]
   (fn [tool-call-id params signal on-update ctx]

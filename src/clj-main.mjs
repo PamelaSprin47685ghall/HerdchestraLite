@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, stat } from "node:fs/promises";
-import { existsSync, realpathSync } from "node:fs";
+import { access, appendFile, mkdir, realpath, stat } from "node:fs/promises";
+
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { hackContext } from "./host/hack-context.mjs";
 import { detectCapabilities, host as hostModule } from "./host/imports.mjs";
+import * as lockDaemon from "./host/lock-daemon.mjs";
 import { getNativeRunner, installRunnerCapture } from "./host/native-runner.mjs";
 import { spawnAgent } from "./host/subprocess.mjs";
 
@@ -342,7 +343,7 @@ function bootState() {
 	return state;
 }
 
-async function boot(extensionApi) {
+async function boot() {
 	const trace = traceOn();
 	const bootStarted = trace === null ? 0 : performance.now();
 	const state = bootState();
@@ -356,7 +357,7 @@ async function boot(extensionApi) {
 		} else {
 			state.boots += 1;
 			state.promise = (async () => {
-				const entry = realpathSync(fileURLToPath(import.meta.url));
+				const entry = await realpath(fileURLToPath(import.meta.url));
 				pluginEntryPath = entry;
 				const pluginSrc = dirname(entry);
 				const pluginRoot = dirname(pluginSrc);
@@ -364,23 +365,26 @@ async function boot(extensionApi) {
 					void traceBootEvent("boot-start", { pid: process.pid, cwd: process.cwd(), pluginSrc });
 				}
 				const require = createRequire(entry);
-				const resolveFile = (name, relative) => {
+				const resolveFile = async (name, relative) => {
 					const candidates = [
 						join(pluginRoot, "node_modules", name, relative),
 						join(pluginRoot, "..", "node_modules", name, relative),
 					];
-					const found = candidates.find((candidate) => existsSync(candidate));
-					return found ?? require.resolve(name);
+					for (const candidate of candidates) {
+						try {
+							await access(candidate);
+							return candidate;
+						} catch {}
+					}
+					return require.resolve(name);
 				};
-				const nbb = await traced(trace, "nbb-import", () =>
-					import(pathToFileURL(resolveFile("nbb", "index.mjs")).href),
+				const nbbPath = await resolveFile("nbb", "index.mjs");
+				const nbb = await traced(trace, "nbb-import", () => import(pathToFileURL(nbbPath).href));
+				const formatterPath = await resolveFile(
+					"@chrisoakman/standard-clojure-style",
+					"dist/standard-clojure-style.js",
 				);
-				const formatter = await traced(trace, "formatter-import", () =>
-					import(
-						pathToFileURL(resolveFile("@chrisoakman/standard-clojure-style", "dist/standard-clojure-style.js"))
-							.href
-					),
-				);
+				const formatter = await traced(trace, "formatter-import", () => import(pathToFileURL(formatterPath).href));
 				nbb.registerModule(formatter, "@chrisoakman/standard-clojure-style");
 				let tui = {};
 				try {
@@ -425,11 +429,11 @@ export default async function (extensionApi) {
 	pi = extensionApi;
 	globalThis.__pi = pi;
 	globalThis.__herdHost = { runSubagent };
+	globalThis.__herdLockDaemon = lockDaemon;
 	if (trace !== null) {
 		const preview = bootState();
 		reusedBoot =
-			preview.promise !== null ||
-			(globalThis.__herdBootPromise !== undefined && globalThis.__herdBootPromise !== null);
+			preview.promise !== null || (globalThis.__herdBootPromise !== undefined && globalThis.__herdBootPromise !== null);
 		void traceBootEvent("activate-start", {
 			pid: process.pid,
 			registered: preview.contextPis.has(extensionApi),
@@ -447,7 +451,7 @@ export default async function (extensionApi) {
 			globalThis.__herdNative = null;
 		}
 	}
-	const state = await boot(extensionApi);
+	const state = await boot();
 	if (typeof state.activateSession === "function") await state.activateSession(pi);
 	if (!state.contextPis.has(pi)) {
 		state.contextPis.add(pi);

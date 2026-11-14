@@ -80,9 +80,7 @@ describe("vibe tool surface", () => {
 		globalThis.__pi = pi;
 		await applySurface({ agent: { id: "vibe-main" }, hasUI: true, mode: "vibe" });
 		expect(pi.calls.length).toBe(1);
-		expect(new Set(pi.active)).toEqual(
-			new Set(["debug", "vibe_spawn", "clj_devops", "wait", "handoff"]),
-		);
+		expect(new Set(pi.active)).toEqual(new Set(["debug", "vibe_spawn", "clj_devops", "wait", "handoff"]));
 		expect(pi.active).not.toContain("bash");
 	});
 	it("lets the mission surface take over without appending", async () => {

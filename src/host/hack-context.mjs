@@ -384,7 +384,6 @@ function syncAutomaticRewriteLeaf(manager) {
 	if (ledger) ledger.leafId = currentLeafId(manager);
 }
 
-
 function contentChars(value) {
 	if (typeof value === "string") return value.length;
 	if (Array.isArray(value)) {

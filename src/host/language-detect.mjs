@@ -1,14 +1,4 @@
-const DETECT_LANGUAGES = [
-	"clojure",
-	"javascript",
-	"typescript",
-	"json",
-	"bash",
-	"markdown",
-	"xml",
-	"yaml",
-	"sql",
-];
+const DETECT_LANGUAGES = ["clojure", "javascript", "typescript", "json", "bash", "markdown", "xml", "yaml", "sql"];
 
 const HOST_LANGUAGE = {
 	clojure: "clojure",

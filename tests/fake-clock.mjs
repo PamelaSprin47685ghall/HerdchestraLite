@@ -17,10 +17,11 @@ export function installFakeClock() {
 		clearTimeout: (id) => {
 			timers.delete(id);
 		},
-		waitForTimer: () => new Promise((resolve) => {
-			if (timers.size > 0) resolve();
-			else timerWaiters.push(resolve);
-		}),
+		waitForTimer: () =>
+			new Promise((resolve) => {
+				if (timers.size > 0) resolve();
+				else timerWaiters.push(resolve);
+			}),
 		advance: (ms) => {
 			now += ms;
 			let ran = true;

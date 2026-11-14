@@ -15,9 +15,7 @@ mock.module("@oh-my-pi/pi-coding-agent", () => ({
 	runSubagentFollowUpTurn: async () => undefined,
 }));
 
-const { TRACE_LIMIT, bootTraceRecord, traceBootEvent, traceEnabled, traceTarget } = await import(
-	"../src/clj-main.mjs"
-);
+const { TRACE_LIMIT, bootTraceRecord, traceBootEvent, traceEnabled, traceTarget } = await import("../src/clj-main.mjs");
 
 const NEWLINE = String.fromCharCode(10);
 let root;

@@ -673,17 +673,39 @@
         (if (string? text) text (str value)))
       (catch :default _ (str value)))))
 
+(defn- last-assistant-message [event]
+  (let [messages (.-messages event)]
+    (if-not (array? messages)
+      nil
+      (loop [index (dec (.-length messages))]
+        (if (neg? index)
+          nil
+          (let [message (aget messages index)]
+            (if (= "assistant" (.-role message))
+              message
+              (recur (dec index)))))))))
+
+(defn- last-assistant-stop [event]
+  (when-let [message (last-assistant-message event)]
+    (.-stopReason message)))
+
 (defn- event-blob [event]
   (when event
-    (str/join newline-char
-              (remove nil?
-                      [(safe-json-text (.-error event))
-                       (safe-json-text (.-errorMessage event))
-                       (safe-json-text (.-message event))
-                       (safe-json-text (.-reason event))
-                       (safe-json-text (.-result event))
-                       (safe-json-text (.-stderr event))
-                       (safe-json-text (.-messages event))]))))
+    (let [assistant (last-assistant-message event)
+          stop (when assistant (.-stopReason assistant))
+          assistant-err? (contains? #{"error" "aborted"} stop)]
+      (str/join newline-char
+                (remove nil?
+                        [(safe-json-text (.-error event))
+                         (safe-json-text (.-errorMessage event))
+                         (safe-json-text (.-reason event))
+                         (safe-json-text (.-stderr event))
+                         (when (true? (.-isError event))
+                           (safe-json-text (.-result event)))
+                         (when assistant-err?
+                           (safe-json-text (.-error assistant)))
+                         (when assistant-err?
+                           (safe-json-text (.-errorMessage assistant)))])))))
 
 (defn- user-cancelled? [event]
   (or (true? (.-userAborted event))
@@ -695,18 +717,6 @@
                (or (= "user" reason)
                    (and (string? reason)
                         (str/includes? (str/lower-case reason) "user"))))))))
-
-(defn- last-assistant-stop [event]
-  (let [messages (.-messages event)]
-    (if-not (array? messages)
-      nil
-      (loop [index (dec (.-length messages))]
-        (if (neg? index)
-          nil
-          (let [message (aget messages index)]
-            (if (= "assistant" (.-role message))
-              (.-stopReason message)
-              (recur (dec index)))))))))
 
 (defn- upstream-failure-kind [event]
   (let [blob (or (event-blob event) "")
@@ -842,7 +852,8 @@
   nil)
 
 (defn- note-tool-end! [pi event ctx]
-  (guard-upstream! pi event)
+  (when (true? (.-isError event))
+    (guard-upstream! pi event))
   (try
     (let [key (session-key ctx)
           name (.-toolName event)

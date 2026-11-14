@@ -35,9 +35,7 @@ beforeAll(async () => {
 	await nbb.loadFile(join(SRC, "ufss.cljs"));
 	for (const name of MODULES) {
 		const source = readFileSync(join(SRC, `${name}.cljs`), "utf8");
-		const unwrapped = await nbb.loadString(
-			`(require '[herd.ufss :as u]) (u/unwrap ${JSON.stringify(source)})`,
-		);
+		const unwrapped = await nbb.loadString(`(require '[herd.ufss :as u]) (u/unwrap ${JSON.stringify(source)})`);
 		const target = join(moduleRoot, "herd", `${name}.cljs`);
 		mkdirSync(dirname(target), { recursive: true });
 		writeFileSync(target, unwrapped);
@@ -54,7 +52,13 @@ afterAll(() => {
 
 beforeEach(() => {
 	workspace = mkdtempSync(join(tmpdir(), "cljs-auditors-ws-"));
-	for (const name of ["s1-brainstorm.md", "s2-manual-tests.md", "s3-dev-guide.md", "s4-coordination.md", "s4-coordination.pml"]) {
+	for (const name of [
+		"s1-brainstorm.md",
+		"s2-manual-tests.md",
+		"s3-dev-guide.md",
+		"s4-coordination.md",
+		"s4-coordination.pml",
+	]) {
 		mkdirSync(join(workspace, "plans", "demo"), { recursive: true });
 		writeFileSync(join(workspace, "plans", "demo", name), `document ${name}`);
 	}
@@ -172,7 +176,7 @@ describe("CLJS K-path audit scheduling", () => {
         deps (make-deps
                {:subagent (partial record-auditor state)})
         result (await (auditors/start-auditors! deps (take 2 valid-cases) {}))]
-    ${JSON_OUT `{:ok (:ok result)
+    ${JSON_OUT`{:ok (:ok result)
                  :statuses (mapv :status (:results result))
                  :order (mapv :case_id (:submissions result))
                  :peak @peak
@@ -206,7 +210,7 @@ describe("CLJS K-path audit scheduling", () => {
                                                      :report-sha256 (:report-sha256 request)
                                                      :token "tok"}})}})
         result (await (auditors/run-audit-batch! deps {}))]
-    ${JSON_OUT `{:ok (:ok result)
+    ${JSON_OUT`{:ok (:ok result)
                  :verdict (:verdict result)
                  :case-ids (:case-ids result)
                  :row-order (mapv :case-id (get-in result [:aggregate :rows]))
@@ -245,7 +249,7 @@ describe("CLJS K-path audit scheduling", () => {
         board (await (store/read-board handle))
         repair-task (first (filter (fn [[_ task]] (= "CASE-B" (:ledger-key task)))
                                   (:tasks board)))]
-    ${JSON_OUT `{:ok (:ok result)
+    ${JSON_OUT`{:ok (:ok result)
                  :verdict (:verdict result)
                  :repaired (get-in result [:repair :repaired])
                  :repair-task-ids (get-in result [:repair :task-ids])
@@ -291,7 +295,7 @@ describe("CLJS K-path audit scheduling", () => {
         missing (await (auditors/execute-attach-case-audit!
                          deps {:case_id "CASE-A" :user_score 90 :developer_score 85
                                :report_markdown ""} nil "call-5"))]
-    ${JSON_OUT `{:first-ok (:ok first)
+    ${JSON_OUT`{:first-ok (:ok first)
                  :first-path (:path first)
                  :duplicate-code (:code duplicate)
                  :unknown-code (:code unknown)
@@ -316,7 +320,7 @@ describe("CLJS K-path audit scheduling", () => {
                 :subagent (fn [_request]
                             (js/Promise. (fn [_resolve _reject] nil)))})
         result (await (auditors/start-auditors! deps [(first valid-cases)] {}))]
-    ${JSON_OUT `{:ok (:ok result)
+    ${JSON_OUT`{:ok (:ok result)
                  :status (get-in result [:results 0 :status])
                  :code (get-in result [:results 0 :error :code])
                  :timeouts (:timeouts result)}`}))`);
@@ -339,7 +343,7 @@ describe("CLJS K-path audit scheduling", () => {
         missing-path (await (auditors/read-case-dataset
                               root "demo"
                               {:dataset (take 2 valid-cases)}))]
-    ${JSON_OUT `{:duplicate-ok (:ok duplicate)
+    ${JSON_OUT`{:duplicate-ok (:ok duplicate)
                  :duplicate-codes (mapv :code (:errors duplicate))
                  :threshold-ok (:ok threshold)
                  :threshold-codes (mapv :code (:errors threshold))
@@ -360,7 +364,7 @@ describe("CLJS K-path audit scheduling", () => {
   (let [deps (make-deps
                {:subagent mutating-auditor})
         result (await (auditors/run-audit-batch! deps {}))]
-    ${JSON_OUT `{:ok (:ok result)
+    ${JSON_OUT`{:ok (:ok result)
                  :state (:state result)
                  :code (:code result)
                  :workspace-mutated (get-in result [:aggregate :workspace-mutated])
@@ -381,7 +385,7 @@ describe("CLJS K-path audit scheduling", () => {
         pi (js-obj "registerTool" (fn [definition] (reset! recorded definition)))
         result (auditors/register-audit-tools! pi {:root root :slug "demo"
                                                    :case-ids #{"CASE-A"}})]
-    ${JSON_OUT `{:registered (:registered result)
+    ${JSON_OUT`{:registered (:registered result)
                  :name (.-name @recorded)
                  :required (vec (array-seq (.-required (.-parameters @recorded))))
                  :load-mode (.-loadMode @recorded)
@@ -414,7 +418,7 @@ describe("CLJS K-path audit scheduling", () => {
         starts-after-first @starts
         second (await (auditors/run-audit-batch! deps {}))
         persisted (await (auditors/read-batch-state! root "demo"))]
-    ${JSON_OUT `{:first-ok (:ok first)
+    ${JSON_OUT`{:first-ok (:ok first)
                  :first-verdict (:verdict first)
                  :starts-after-first starts-after-first
                  :second-ok (:ok second)
@@ -453,7 +457,7 @@ describe("CLJS K-path audit scheduling", () => {
         deps (make-deps
                {:subagent (fn [_request] (swap! starts inc) {:ok true})})
         result (await (auditors/run-audit-batch! deps {}))]
-    ${JSON_OUT `{:ok (:ok result)
+    ${JSON_OUT`{:ok (:ok result)
                  :state (:state result)
                  :code (:code result)
                  :reused (:reused result)
@@ -500,7 +504,7 @@ describe("CLJS K-path audit scheduling", () => {
         second (await (auditors/run-audit-batch! deps {}))
         second-persisted (await (auditors/read-batch-state! root "demo"))
         history (get-in second-persisted [:record :history])]
-    ${JSON_OUT `{:first-ok (:ok first)
+    ${JSON_OUT`{:first-ok (:ok first)
                  :first-verdict (:verdict first)
                  :first-state (get-in first-persisted [:record :state])
                  :first-batch (:batch-id first)
@@ -537,7 +541,7 @@ describe("CLJS K-path audit scheduling", () => {
         deps (make-deps
                {:subagent (fn [_request] (swap! starts inc) {:ok true})})
         result (await (auditors/run-audit-batch! deps {}))]
-    ${JSON_OUT `{:ok (:ok result)
+    ${JSON_OUT`{:ok (:ok result)
                  :state (:state result)
                  :code (:code result)
                  :starts @starts}`}))`);
@@ -569,7 +573,7 @@ describe("CLJS K-path audit scheduling", () => {
                 :subagent timeout-auditor})
         result (await (auditors/run-audit-batch! deps {}))
         persisted (await (auditors/read-batch-state! root "demo"))]
-    ${JSON_OUT `{:ok (:ok result)
+    ${JSON_OUT`{:ok (:ok result)
                  :verdict (:verdict result)
                  :timeouts (:timeouts result)
                  :persisted-state (get-in persisted [:record :state])
@@ -596,7 +600,7 @@ describe("CLJS K-path audit scheduling", () => {
                    {:subagent (fn [_request] (throw (js/Error. "boom")))})
         declined (await (auditors/start-auditors! declining [(first valid-cases)] {}))
         thrown (await (auditors/start-auditors! throwing [(first valid-cases)] {}))]
-    ${JSON_OUT `{:declined-status (get-in declined [:results 0 :status])
+    ${JSON_OUT`{:declined-status (get-in declined [:results 0 :status])
                  :declined-code (get-in declined [:results 0 :error :code])
                  :thrown-status (get-in thrown [:results 0 :status])
                  :thrown-code (get-in thrown [:results 0 :error :code])}`}))`);
@@ -620,7 +624,7 @@ describe("CLJS K-path audit scheduling", () => {
         resized {:ok true
                  :files [{:path "plans/demo/s1-brainstorm.md"
                           :sha256 "bbb" :stamp (assoc stamp :size 11) :missing false}]}]
-    ${JSON_OUT `{:same-stamp (auditors/snapshot-equal? before after)
+    ${JSON_OUT`{:same-stamp (auditors/snapshot-equal? before after)
                  :resized (auditors/snapshot-equal? before resized)}`}))`);
 
 		expect(out["same-stamp"]).toBe(true);
@@ -632,7 +636,7 @@ describe("CLJS K-path audit scheduling", () => {
 (defn ^:async scenario []
   (let [installed (auditors/install! {:root root :slug "demo" :dataset valid-cases})
         definition ((:submitToolDefinition installed))]
-    ${JSON_OUT `{:run-batch-fn (fn? (:runBatch installed))
+    ${JSON_OUT`{:run-batch-fn (fn? (:runBatch installed))
                  :tool-fn (fn? (:submitToolDefinition installed))
                  :tool-name (:name definition)
                  :registered (contains? definition :registered)}`}))`);
@@ -664,7 +668,7 @@ describe("CLJS K-path audit scheduling", () => {
         result (await (auditors/run-audit-batch! deps {}))
         persisted (await (auditors/read-batch-state! root "demo"))
         history (get-in persisted [:record :history])]
-    ${JSON_OUT `{:state (:state result)
+    ${JSON_OUT`{:state (:state result)
                  :history-count (count history)
                  :first-batch (get-in history [0 :batch-id])
                  :last-batch (get-in history [4 :batch-id])}`}))`);

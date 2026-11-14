@@ -1,10 +1,11 @@
-import { beforeAll, beforeEach, describe, expect, it } from "bun:test";
-import { installFakeClock } from "./fake-clock.mjs";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { readFile, rm, writeFile } from "node:fs/promises";
 import * as nbb from "nbb";
 import { loadLanguageDetector } from "../src/host/language-detect.mjs";
+import { lockEndpointFor, shutdownIpcDaemon } from "../src/host/lock-daemon.mjs";
+import { installFakeClock } from "./fake-clock.mjs";
 
 let tool;
 let waitTool;
@@ -69,9 +70,12 @@ beforeAll(async () => {
 	waitTool = globalThis.__pi.tools.get("wait");
 });
 
-beforeEach(async () => {
+beforeEach(() => {
 	clock.reset();
-	await rm(fileURLToPath(new URL("../tmp/herd-sandbox-lock/.herd/locks/clj-core.cross-process.lock", import.meta.url)), { force: true });
+});
+
+afterAll(async () => {
+	await shutdownIpcDaemon(lockEndpointFor(fileURLToPath(new URL("../tmp/herd-sandbox-lock", import.meta.url))));
 });
 
 describe("CLJS host wiring", () => {
@@ -150,14 +154,17 @@ describe("CLJS host wiring", () => {
 	it("does not force tool output expansion at session start", () => {
 		const calls = [];
 		const start = globalThis.__pi.hooks.get("session_start");
-		start({}, {
-			hasUI: true,
-			ui: {
-				setToolsExpanded: (value) => calls.push(value),
-				setStatus: () => {},
-				setWorkingMessage: () => {},
+		start(
+			{},
+			{
+				hasUI: true,
+				ui: {
+					setToolsExpanded: (value) => calls.push(value),
+					setStatus: () => {},
+					setWorkingMessage: () => {},
+				},
 			},
-		});
+		);
 		expect(calls).toEqual([]);
 	});
 
@@ -167,15 +174,15 @@ describe("CLJS host wiring", () => {
 			{
 				name: "read-ufss-state",
 				agent_state: "Converging",
-				code: '(let [x 1](+ x 1))',
+				code: "(let [x 1](+ x 1))",
 			},
 			{ expanded: true },
-			{ fg: (role, text) => role.startsWith("syntax") || role === "accent" ? text : `${role}:${text}` },
+			{ fg: (role, text) => (role.startsWith("syntax") || role === "accent" ? text : `${role}:${text}`) },
 		);
 		expect(call.children).toHaveLength(3);
 		expect(call.children[0].text).toBe("Read Ufss State dim:--- [稳定收敛]");
 		expect(call.children[1].render(10)).toEqual(["dim:" + "─".repeat(10)]);
-		expect(call.children[2].text).toBe('(let [x 1] (+ x 1))');
+		expect(call.children[2].text).toBe("(let [x 1] (+ x 1))");
 	});
 
 	it("renders Chinese labels for every agent state", () => {
@@ -235,8 +242,15 @@ b")`,
 	it("collapses short multiline strings in result previews", () => {
 		const definition = globalThis.__pi.tools.get("clj_devops");
 		const result = definition.renderResult(
-			{ content: [{ type: "text", text: `{:value "a
-b"}` }] },
+			{
+				content: [
+					{
+						type: "text",
+						text: `{:value "a
+b"}`,
+					},
+				],
+			},
 			{ expanded: false },
 			{ fg: (role, text) => `${role}:${text}` },
 		);
@@ -280,7 +294,14 @@ b"}` }] },
 	it("keeps text after $$$ when the collapsed result wraps", () => {
 		const definition = globalThis.__pi.tools.get("clj_devops");
 		const result = definition.renderResult(
-			{ content: [{ type: "text", text: '{:name "secret-value-that-is-longer-than-forty-characters"\n :state :failed\n :ok true}' }] },
+			{
+				content: [
+					{
+						type: "text",
+						text: '{:name "secret-value-that-is-longer-than-forty-characters"\n :state :failed\n :ok true}',
+					},
+				],
+			},
 			{ expanded: false },
 			{ fg: (role, text) => `${role}:${text}` },
 		);
@@ -290,7 +311,7 @@ b"}` }] },
 		expect(result.children[1].text).toContain("\n");
 	});
 
-		it("keeps short single-line strings visible in collapsed previews", () => {
+	it("keeps short single-line strings visible in collapsed previews", () => {
 		const definition = globalThis.__pi.tools.get("clj_devops");
 		const call = definition.renderCall(
 			{
@@ -340,7 +361,7 @@ b"}` }] },
 		expect(call.children[2].text).toContain("short-raw-value");
 		expect(call.children[2].text).not.toContain("$$");
 	});
-it("keeps UFSS strings visible in expanded call previews", () => {
+	it("keeps UFSS strings visible in expanded call previews", () => {
 		const definition = globalThis.__pi.tools.get("clj_devops");
 		const call = definition.renderCall(
 			{
@@ -433,7 +454,7 @@ it("keeps UFSS strings visible in expanded call previews", () => {
 			const result = definition.renderResult(
 				{ content: [{ type: "text", text: ' {:value "import x from \\"y\\"; const z = 1;"}' }] },
 				{ expanded: true },
-				{ fg: (role, text) => text },
+				{ fg: (_role, text) => text },
 			);
 			expect(seen).toContain("javascript");
 			expect(result.children[1].text).toContain("\u001b[36m");
@@ -501,7 +522,7 @@ it("keeps UFSS strings visible in expanded call previews", () => {
 			const result = definition.renderResult(
 				{ content: [{ type: "text", text }] },
 				{ expanded: false },
-				{ fg: (role, value) => value },
+				{ fg: (_role, value) => value },
 			);
 			expect(result.children).toHaveLength(2);
 			expect(calls).toBe(0);
@@ -537,21 +558,13 @@ async function waitForName(name) {
 async function run(code) {
 	counter += 1;
 	const name = `case-${counter}`;
-	const first = await tool.execute(
-		null,
-		{ name, code, agent_state: "Converging" },
-		null,
-	);
+	const first = await tool.execute(null, { name, code, agent_state: "Converging" }, null);
 	if (!first.content[0].text.includes(":state :forked")) return first;
 	return waitForName(name);
 }
 
 function runNamed(name, code) {
-	return tool.execute(
-		null,
-		{ name, code, agent_state: "Converging" },
-		null,
-	);
+	return tool.execute(null, { name, code, agent_state: "Converging" }, null);
 }
 
 async function drain() {
@@ -599,11 +612,7 @@ describe("CLJS nbb sandbox", () => {
 			Settled: "; Do not endure for endurance's sake: Aristotle's telos",
 		};
 		for (const [state, prefix] of Object.entries(expected)) {
-			const result = await tool.execute(
-				null,
-				{ name: `comment-${state}`, code: "(+ 1 2)", agent_state: state },
-				null,
-			);
+			const result = await tool.execute(null, { name: `comment-${state}`, code: "(+ 1 2)", agent_state: state }, null);
 			const text = result.content[0].text;
 			expect(text.startsWith(prefix)).toBe(true);
 			expect(text).not.toContain("; TODO:");
@@ -665,11 +674,7 @@ describe("CLJS nbb sandbox", () => {
 		const first = await tool.execute("call-replay-1", params, null);
 		const second = await tool.execute("call-replay-1", params, null);
 		expect(second.content[0].text).toBe(first.content[0].text);
-		const mismatch = await tool.execute(
-			"call-replay-1",
-			{ ...params, code: "(+ 1 2)" },
-			null,
-		);
+		const mismatch = await tool.execute("call-replay-1", { ...params, code: "(+ 1 2)" }, null);
 		expect(mismatch.content[0].text).toContain("CALL_REPLAY_MISMATCH");
 	});
 
@@ -737,7 +742,10 @@ describe("CLJS nbb sandbox", () => {
 
 	it("rejects a cat above the 2 MiB limit", async () => {
 		await run('(mkdir {:path "tmp/cljs-box"})');
-		await writeFile(fileURLToPath(new URL("../tmp/cljs-box/big.txt", import.meta.url)), "x".repeat(2 * 1024 * 1024 + 1));
+		await writeFile(
+			fileURLToPath(new URL("../tmp/cljs-box/big.txt", import.meta.url)),
+			"x".repeat(2 * 1024 * 1024 + 1),
+		);
 		const before = clock.now();
 		const result = await run('(cat {:path "tmp/cljs-box/big.txt"})');
 		expect(clock.now()).toBe(before);
@@ -811,8 +819,7 @@ describe("CLJS nbb sandbox", () => {
 		expect(resumed.content[0].text).toContain("[3 5]");
 
 		const waited = await waitTool.execute(null, { otherwise_independent_work: "none" }, null);
-		expect(waited.content[0].text).toContain(":name \"unpark-ambig\"");
-		expect(waited.content[0].text).toContain("[3 5]");
+		expect(waited.content[0].text).toContain(":state :idle");
 	});
 
 	it("reports a failed program as an EDN error receipt", async () => {
@@ -829,8 +836,7 @@ describe("CLJS nbb sandbox", () => {
 		expect(resumed.content[0].text).toContain(":value 42");
 
 		const waited = await waitTool.execute(null, { otherwise_independent_work: "none" }, null);
-		expect(waited.content[0].text).toContain(":name \"resume-case\"");
-		expect(waited.content[0].text).toContain(":value 42");
+		expect(waited.content[0].text).toContain(":state :idle");
 	});
 
 	it("parks with incremental call output and unpark feeds stdin", async () => {
@@ -892,5 +898,91 @@ describe("CLJS nbb sandbox", () => {
 		expect(result.content[0].text).toContain(":state :failed");
 		expect(result.content[0].text).toContain(":DANGLING_PROMISE");
 		await drain();
+	});
+
+	it("strips BUN_OPTIONS and host preload env vars from call subprocesses", async () => {
+		await drain();
+		const prev = process.env.BUN_OPTIONS;
+		process.env.BUN_OPTIONS = "--preload /tmp/nonexistent-preload.js";
+		try {
+			const result = await run('(call {:argv ["sh" "-c" "printenv BUN_OPTIONS || printf unset"]})');
+			let text = result.content[0].text;
+			if (text.includes(":forked")) {
+				const waited = await waitTool.execute(null, { otherwise_independent_work: "none" }, null);
+				text = waited.content[0].text;
+			}
+			expect(text).toContain(":exit 0");
+			expect(text).toContain("unset");
+			expect(text).not.toContain("nonexistent-preload");
+		} finally {
+			if (prev === undefined) delete process.env.BUN_OPTIONS;
+			else process.env.BUN_OPTIONS = prev;
+		}
+	});
+
+	it("appends the Brooks worker reminder when more_workers is positive and omits it at zero", async () => {
+		await drain();
+		expect(tool.parameters.properties.more_workers_without_hitting_mythical_man_month.description).toContain("Brooks");
+		expect(waitTool.parameters.properties.more_workers_without_hitting_mythical_man_month.description).toContain(
+			"Brooks",
+		);
+
+		const positive = await tool.execute(
+			null,
+			{
+				name: "workers-pos",
+				code: "(+ 1 1)",
+				agent_state: "Converging",
+				more_workers_without_hitting_mythical_man_month: 2,
+			},
+			null,
+		);
+		expect(positive.content[0].text).toContain("你刚刚在工具参数中说还可以增派 2 个工人，现在请你立刻兑现。");
+
+		const zero = await tool.execute(
+			null,
+			{
+				name: "workers-zero",
+				code: "(+ 1 1)",
+				agent_state: "Converging",
+				more_workers_without_hitting_mythical_man_month: 0,
+			},
+			null,
+		);
+		expect(zero.content[0].text).not.toContain("你刚刚在工具参数中说还可以增派");
+
+		const waited = await waitTool.execute(
+			null,
+			{
+				otherwise_independent_work: "none",
+				more_workers_without_hitting_mythical_man_month: 3,
+			},
+			null,
+		);
+		expect(waited.content[0].text).toContain("你刚刚在工具参数中说还可以增派 3 个工人，现在请你立刻兑现。");
+	});
+
+	it("does not replay previously completed or failed synchronous calls on a later wait", async () => {
+		await drain();
+		const syncOk = await runNamed("sync-ok-first", "(+ 10 20)");
+		expect(syncOk.content[0].text).toContain(":value 30");
+		const syncErr = await runNamed("sync-err-second", "(unclosed");
+		expect(syncErr.content[0].text).toContain(":state :failed");
+
+		const idleBeforeFork = await waitTool.execute(null, { otherwise_independent_work: "none" }, null);
+		expect(idleBeforeFork.content[0].text).toContain(":state :idle");
+
+		const pendingFork = runNamed("slow-forked-call", '(call {:argv ["sh" "-c" "sleep 0.15; printf forked-done"]})');
+		await nbb.loadString('(herd.sandbox/await-call-start "slow-forked-call")');
+		clock.advance(2000);
+		const forked = await pendingFork;
+		expect(forked.content[0].text).toContain(":state :forked");
+
+		const waited = await waitTool.execute(null, { otherwise_independent_work: "none" }, null);
+		const text = waited.content[0].text;
+		expect(text).toContain(':name "slow-forked-call"');
+		expect(text).toContain("forked-done");
+		expect(text).not.toContain("sync-ok-first");
+		expect(text).not.toContain("sync-err-second");
 	});
 });

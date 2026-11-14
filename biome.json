@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!**/node_modules", "!**/.herd-worktrees", "!docs/design.html"]
+    "includes": ["**", "!**/node_modules", "!**/.herd-worktrees", "!docs/旧的设计.html"]
   },
   "formatter": {
     "enabled": true,

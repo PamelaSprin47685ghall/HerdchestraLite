@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,9 +34,7 @@ beforeAll(async () => {
 	await nbb.loadFile(join(SRC, "ufss.cljs"));
 	for (const name of MODULES) {
 		const source = readFileSync(join(SRC, `${name}.cljs`), "utf8");
-		const unwrapped = await nbb.loadString(
-			`(require '[herd.ufss :as u]) (u/unwrap ${JSON.stringify(source)})`,
-		);
+		const unwrapped = await nbb.loadString(`(require '[herd.ufss :as u]) (u/unwrap ${JSON.stringify(source)})`);
 		const target = join(moduleRoot, "herd", `${name}.cljs`);
 		mkdirSync(dirname(target), { recursive: true });
 		writeFileSync(target, unwrapped);
@@ -115,7 +112,7 @@ describe("CLJS S5 single-workspace runner", () => {
                         {}))
         board (await (board-of handle))
         tasks (vals (:tasks board))]
-    ${JSON_OUT `{:status (:status result)
+    ${JSON_OUT`{:status (:status result)
                  :ok (:ok result)
                  :task-count (count (:task-ids result))
                  :new-count (count (:new-task-ids result))
@@ -153,7 +150,7 @@ describe("CLJS S5 single-workspace runner", () => {
                                      {:ok true :result-markdown "reviewed"})})
         result (await (runner/reviewer-findings! deps [] {}))
         board (await (board-of handle))]
-    ${JSON_OUT `{:status (:status result)
+    ${JSON_OUT`{:status (:status result)
                  :ok (:ok result)
                  :barrier (:barrier result)
                  :successor (:successor result)
@@ -185,7 +182,7 @@ describe("CLJS S5 single-workspace runner", () => {
                         {:subagent (fn [request] (reset! reviewer request) {:ok true})})
         result (await (runner/reviewer-findings! deps [] {}))
         board (await (board-of handle))]
-    ${JSON_OUT `{:status (:status result)
+    ${JSON_OUT`{:status (:status result)
                  :ok (:ok result)
                  :reasons (mapv :code (get-in result [:quiescence :reasons]))
                  :reviewer-called (some? @reviewer)
@@ -209,7 +206,7 @@ describe("CLJS S5 single-workspace runner", () => {
                         {:write-lock-held? (fn [] true)
                          :subagent (fn [request] (reset! reviewer request) {:ok true})})
         result (await (runner/reviewer-findings! deps [] {}))]
-    ${JSON_OUT `{:status (:status result)
+    ${JSON_OUT`{:status (:status result)
                  :ok (:ok result)
                  :reasons (mapv :code (get-in result [:quiescence :reasons]))
                  :reviewer-called (some? @reviewer)}`}))`);
@@ -238,7 +235,7 @@ describe("CLJS S5 single-workspace runner", () => {
         first (await (runner/reviewer-findings! deps [] {}))
         board-after-first (await (board-of handle))
         second (await (runner/reviewer-findings! deps [] {}))]
-    ${JSON_OUT `{:first-status (:status first)
+    ${JSON_OUT`{:first-status (:status first)
                  :first-answer (:answer first)
                  :asked @asked
                  :ask-used (get-in board-after-first [:tenure :initial-ask-used])
@@ -273,7 +270,7 @@ describe("CLJS S5 single-workspace runner", () => {
         before (await (board-of handle))
         replacement (await (runner/replace-slot! deps "S1" {:reason "agent died"}))
         after (await (board-of handle))]
-    ${JSON_OUT `{:ok (:ok pool)
+    ${JSON_OUT`{:ok (:ok pool)
                  :slots (mapv :slot-id (:slots pool))
                  :actor-count (count (filter (fn [[_ actor]]
                                                (and (= :alive (:life-state actor))
@@ -311,7 +308,7 @@ describe("CLJS S5 single-workspace runner", () => {
         parked-result (await (runner/park-slot! deps "S1" {}))
         _ (await (add-task handle {:goal "wake work" :remaining-work "work" :done-when "done"} "add-wake"))
         woken-result (await (runner/wake-parked! deps (:parked parked-result)))]
-    ${JSON_OUT `{:park-ok (:ok parked-result)
+    ${JSON_OUT`{:park-ok (:ok parked-result)
                  :parked (:parked parked-result)
                  :wake-ok (:ok woken-result)
                  :woken (:woken woken-result)
@@ -330,7 +327,7 @@ describe("CLJS S5 single-workspace runner", () => {
 		const out = await scenario(`
 (defn ^:async scenario []
   (let [result (runner/register-runner! nil {})]
-    ${JSON_OUT `{:ok (:ok result)
+    ${JSON_OUT`{:ok (:ok result)
                  :tools (:tools result)
                  :has-start (fn? (.-startReviewer js/globalThis.__herdS5))
                  :has-findings (fn? (.-reviewerFindings js/globalThis.__herdS5))
@@ -360,7 +357,7 @@ describe("CLJS S5 single-workspace runner", () => {
         after-second (await (board-of handle))
         third (await (runner/reviewer-findings! deps [{:key "K-1" :value "Fix it better"}] {}))
         after-third (await (board-of handle))]
-    ${JSON_OUT `{:first-new (count (:new-task-ids first))
+    ${JSON_OUT`{:first-new (count (:new-task-ids first))
                  :first-count (count (:tasks after-first))
                  :second-new (count (:new-task-ids second))
                  :second-updated (vec (:updated-task-ids second))
@@ -383,7 +380,7 @@ describe("CLJS S5 single-workspace runner", () => {
 		const out = await scenario(`
 (defn ^:async scenario []
   (let [api (runner/install! {:root "/tmp" :slug "demo" :mission mission})]
-    ${JSON_OUT `{:methods (sort (map name (keys api)))
+    ${JSON_OUT`{:methods (sort (map name (keys api)))
                  :all-fn (every? fn? (vals api))
                  :has-ask (fn? (:askInitial api))}`}))`);
 

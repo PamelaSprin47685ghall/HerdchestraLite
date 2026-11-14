@@ -1,6 +1,6 @@
 # UFSS 标准
 
-> 本文是 UFSS（Universal Fence-Scaled String）的唯一标准。`AGENTS.md` 只引用本文，不重复展开。实现与本文冲突时，以本文为准；宿主 API 的机械差异记录在 `HACK.md`，未实现项记录在 `DEBT.md`。
+> 本文是 UFSS（Universal Fence-Scaled String）的唯一标准。`AGENTS.md` 只引用本文，不重复展开。实现与本文冲突时，以本文为准；宿主 API 的机械差异记录在 `src/AGENTS.md`，未实现项记录在 `DEBT.md`。
 
 ## 1 定义
 

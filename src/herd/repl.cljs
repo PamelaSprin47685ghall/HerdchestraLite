@@ -180,9 +180,12 @@ Reject direct console or stdio access and capabilities outside the current
   (swap! programs assoc name entry))
 
 (defn- mark-completed! [name value]
-  (remember! name (-> (get @programs name)
-                    (assoc :state :completed :value value)
-                    (dissoc :promise))))
+  (let [entry (get @programs name)]
+    (if (:returned-directly entry)
+      (swap! programs dissoc name)
+      (remember! name (-> entry
+                        (assoc :state :completed :value value)
+                        (dissoc :promise))))))
 
 (defn- error-summary [error]
   (let [data (or (ex-data error) {})]
@@ -192,9 +195,21 @@ Reject direct console or stdio access and capabilities outside the current
       (:symbol data) (assoc :symbol (:symbol data)))))
 
 (defn- mark-failed! [name error]
-  (remember! name (-> (get @programs name)
-                    (assoc :state :failed :error (error-summary error))
-                    (dissoc :promise))))
+  (let [entry (get @programs name)]
+    (if (:returned-directly entry)
+      (swap! programs dissoc name)
+      (remember! name (-> entry
+                        (assoc :state :failed :error (error-summary error))
+                        (dissoc :promise))))))
+
+(defn- finish-directly! [name]
+  (swap! programs
+         (fn [m]
+           (let [entry (get m name)]
+             (cond
+               (nil? entry) m
+               (= :running (:state entry)) (assoc m name (assoc entry :returned-directly true))
+               :else (dissoc m name))))))
 
 (defn- mark-parked! [name value]
   (remember! name (merge (get @programs name) value {:state :parked})))
@@ -388,12 +403,19 @@ Reject direct console or stdio access and capabilities outside the current
             (.then (fn [value]
                      (if (identical? value fork-token)
                        {:name name :state :forked}
-                       (receipt name value))))
+                       (let [out (receipt name value)]
+                         (when-not (parked? value)
+                           (finish-directly! name))
+                         out))))
             (.catch (fn [error]
                       (if (or (contains? @abandoned name)
                               (= :ABANDONED (:code (ex-data error))))
-                        {:name name :state :abandoned}
-                        (failed-receipt name error)))))))))
+                        (do
+                          (finish-directly! name)
+                          {:name name :state :abandoned})
+                        (let [out (failed-receipt name error)]
+                          (finish-directly! name)
+                          out)))))))))
 
 (defn run
   ([name code deadline] (run-role name code deadline :devops))

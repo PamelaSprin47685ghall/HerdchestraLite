@@ -382,11 +382,7 @@ function isEventBus(value) {
 /** @param {unknown} value */
 function isLiveSettings(value) {
 	try {
-		return (
-			isObjectLike(value) &&
-			typeof value.getStorage === "function" &&
-			typeof value.getModelRoles === "function"
-		);
+		return isObjectLike(value) && typeof value.getStorage === "function" && typeof value.getModelRoles === "function";
 	} catch {
 		return false;
 	}
@@ -925,8 +921,7 @@ export async function planSpawn(options, ports = {}) {
 					: "sessionFile supplied but no artifactsDir; child is memory-only and no transcript/header is written";
 		meta.parentAgentId = parentAgentId ?? null;
 		meta.parentToolCallId = parentToolCallId ?? null;
-		meta.agentLineage =
-			parentAgentId !== undefined ? "registry" : parentToolCallId !== undefined ? "hub" : "none";
+		meta.agentLineage = parentAgentId !== undefined ? "registry" : parentToolCallId !== undefined ? "hub" : "none";
 		meta.eventBus = eventBus !== undefined;
 		meta.toolNarrowingRequired = true;
 		meta.hubAutoAdded = true;

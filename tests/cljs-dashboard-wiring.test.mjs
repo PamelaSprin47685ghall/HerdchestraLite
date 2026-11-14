@@ -47,9 +47,7 @@ beforeAll(async () => {
 	await nbb.loadFile(join(SRC, "ufss.cljs"));
 	for (const name of MODULES) {
 		const source = await readFile(join(SRC, name + ".cljs"), "utf8");
-		const unwrapped = await nbb.loadString(
-			"(require '[herd.ufss :as u]) (u/unwrap " + JSON.stringify(source) + ")",
-		);
+		const unwrapped = await nbb.loadString("(require '[herd.ufss :as u]) (u/unwrap " + JSON.stringify(source) + ")");
 		const target = join(moduleRoot, "herd", name + ".cljs");
 		await mkdir(dirname(target), { recursive: true });
 		await writeFile(target, unwrapped);
@@ -107,9 +105,7 @@ const PRELUDE = String.raw`
 const literal = (value) => JSON.stringify(value);
 
 async function scenario(root, body) {
-	const text = await nbb.loadString(
-		PRELUDE + body.replaceAll("__ROOT__", literal(root)) + " (scenario)",
-	);
+	const text = await nbb.loadString(PRELUDE + body.replaceAll("__ROOT__", literal(root)) + " (scenario)");
 	return JSON.parse(text);
 }
 

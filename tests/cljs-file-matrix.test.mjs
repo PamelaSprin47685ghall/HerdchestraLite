@@ -147,4 +147,38 @@ describe("file matrix: stat/stamp contract", () => {
 		expect(blocked).toMatch(/ENOENT|EISDIR|ENOTDIR/);
 		expect(await readFile(join(removedDir, "keep.txt"), "utf8").catch(() => "gone")).toBe("gone");
 	});
+
+	it("F07: allows cat and stat reads without waiting while call holds the write lock W", async () => {
+		const target = join(root, "f07.txt");
+		await writeFile(target, "before-call");
+		const out = JSON.parse(
+			await evalClj(
+				`(-> (let [p (herd.sandbox/call {:argv ["sh" "-c" "sleep 0.25; printf done"] :name "f07-call"} 5000)]
+				       (-> (herd.sandbox/await-call-start "f07-call")
+				           (.then (fn [_]
+				                    (js/Promise.all
+				                      #js [(herd.sandbox/cat {:path ${JSON.stringify(target)}})
+				                           (herd.sandbox/stat {:path ${JSON.stringify(target)}})
+				                           (js/Promise.resolve (some? (@herd.sandbox/active-calls "f07-call")))])))
+				           (.then (fn [arr]
+				                    (let [during-cat (aget arr 0)
+				                          during-stat (aget arr 1)
+				                          call-still-active (aget arr 2)]
+				                      (-> p
+				                          (.then (fn [res]
+				                                   (js/JSON.stringify
+				                                     (clj->js {:cat during-cat
+				                                               :exists (:exists during-stat)
+				                                               :size (:size during-stat)
+				                                               :call-active call-still-active
+				                                               :exit (:exit res)}))))))))))
+				 )`,
+			),
+		);
+		expect(out.cat).toBe("before-call");
+		expect(out.exists).toBe(true);
+		expect(out.size).toBe(11);
+		expect(out["call-active"]).toBe(true);
+		expect(out.exit).toBe(0);
+	});
 });

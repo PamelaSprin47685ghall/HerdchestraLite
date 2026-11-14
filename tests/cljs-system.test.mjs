@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,9 +46,7 @@ beforeAll(async () => {
 	await nbb.loadFile(join(SRC, "ufss.cljs"));
 	for (const name of MODULES) {
 		const source = await readFile(join(SRC, `${name}.cljs`), "utf8");
-		const unwrapped = await nbb.loadString(
-			`(require '[herd.ufss :as u]) (u/unwrap ${JSON.stringify(source)})`,
-		);
+		const unwrapped = await nbb.loadString(`(require '[herd.ufss :as u]) (u/unwrap ${JSON.stringify(source)})`);
 		const target = join(moduleRoot, "herd", `${name}.cljs`);
 		await mkdir(dirname(target), { recursive: true });
 		await writeFile(target, unwrapped);
@@ -847,6 +845,39 @@ describe("CLJS full assembly wiring", () => {
 		expect(out.delays).toEqual([5000, 10000, 20000, 5000]);
 		expect(out.attempts).toBe(1);
 		expect(out.retries).toBe(0);
+	});
+
+	it("ignores 402/429/insufficient_quota text inside normal message bodies and successful tool outputs", async () => {
+		const root = await freshRoot();
+		const out = await scenario(`
+(defn ^:async scenario []
+  (let [root ${literal(root)}
+        scheduled (atom [])
+        pi (make-pi)
+        _ (system/reset-state!)
+        _ (system/install! pi {:root root
+                               :set-timeout (fn [_f ms] (swap! scheduled conj ms) 1)
+                               :clear-timeout (fn [_] nil)
+                               :deliver-retry (fn [_] nil)})
+        ctx (main-ctx root "session-1")
+        _ (await (system/before-agent-start! #js {:prompt ""} ctx))
+        tool-end (get @(.-__hooks pi) "tool_execution_end")
+        agent-end (get @(.-__hooks pi) "agent_end")]
+    (await (tool-end #js {:toolName "clj_devops"
+                          :isError false
+                          :result "HTTP 429 502 insufficient_quota network_error 402"} ctx))
+    (await (agent-end #js {:messages #js [#js {:role "user"
+                                               :content "docs mention 402 billing 429"}
+                                          #js {:role "assistant"
+                                               :stopReason "stop"
+                                               :content "checked 402 and 503"}]} ctx))
+    (js/JSON.stringify
+      (clj->js {:scheduled (vec @scheduled)
+                :stalled (get-in @system/state [:upstream :stalled])
+                :events (count (get-in @system/state [:upstream :events]))}))))`);
+		expect(out.scheduled).toEqual([]);
+		expect(out.stalled).toBe(false);
+		expect(out.events).toBe(0);
 	});
 
 	it("runs the real audit batch to PASS, writes s5-report.md, and reuses the completed state", async () => {

@@ -18,14 +18,14 @@
 
 JS 边界层（`src/` 下仅保留以下活跃 `.mjs` 文件，旧 `main.mjs`、`bootstrap-main.mjs`、`tui/`、`prompts/`、`stages/`、`swarm/`、`clj-sandbox/`、`sandbox/` 及旧 `util/{atomic-write,file-lock,broker}.mjs`、`host/{health,model-seed,hack-system-prompt,session-key}.mjs` 均已删除）：
 
-- `src/host/*.mjs` 是宿主适配层：`hack-context`、`imports`、`native-runner`、`subprocess`、`language-detect` 由 `src/clj-main.mjs` 直接使用。
+- `src/host/*.mjs` 是宿主适配层：`hack-context`、`imports`、`lock-daemon`、`native-runner`、`subprocess`、`language-detect` 由 `src/clj-main.mjs` 直接使用。
 - `src/util/errors.mjs` 为宿主子代理边界提供错误码与 EDN 错误渲染（由 `src/host/subprocess.mjs` 使用）。
 
-`src/herd/main.cljs` 的 `before-agent-start` 负责系统提示词注入：`herd.prompts/common-rules-text` 包含 `# Repo-aware Rules`、11 段 `COMMON_CORE_RULES` 与 `UFSS_PROMPT_NOTE`；用 `<!-- herdchestra:system-prompt v1 -->` 受管区替换旧块，支持 string 与 string[] prompt，检测到标题已存在则替换（幂等），异常时 fail-open 返回宿主原提示词。`herd.system/briefing-for` 在使命会话中追加当前阶段的 S1–S5 简报；子代理不注入。语言纪律仍由出站 `context` 尾注注入。
+`src/herd/main.cljs` 的 `before-agent-start` 负责系统提示词注入：`herd.prompts/common-rules-text` 包含 `# Repo-aware Rules`、11 段 `COMMON_CORE_RULES`、`SANDBOX_PROMISE_NOTE` 与 `UFSS_PROMPT_NOTE`；用 `<!-- herdchestra:system-prompt v1 -->` 受管区替换旧块，支持 string 与 string[] prompt，检测到标题已存在则替换（幂等），异常时 fail-open 返回宿主原提示词。`herd.system/briefing-for` 在使命会话中追加当前阶段的 S1–S5 简报；子代理不注入。语言纪律仍由出站 `context` 尾注注入。
 
 omp 在进程内缓存已加载的 ESM 模块，系统提示词在会话启动时组装；修改 `src/herd/prompts.cljs` 后必须重启 omp 或新开进程，当前进程不会热更新。
 
-`src/clj-main.mjs` 不再维护宿主工具黑名单。`herd.main/apply-tool-surface!` 调 `system/apply-mission-surface!`：只有使命内主会话（S1–S5）或显式 herd 角色才收窄；没有使命的主会话与无收窄角色的普通子代理保留全部宿主工具，并追加 `clj_devops`、`wait`、`handoff`（devops 面）。`/vibe` 主代理除外：不追加、不调用 `setActiveTools`。收窄失败记 health degraded 并保留当前面，不静默删工具。启动侧有单例：并发激活共享 `globalThis.__herdBootPromise`，失败清空以便重试；`contextPis`、`activated-pis` 与 `system/installed-pis` 是 per-pi `WeakSet`，同一进程多 pi 各自安装一次。
+`src/clj-main.mjs` 不再维护宿主工具黑名单。`herd.main/apply-tool-surface!` 调 `system/apply-mission-surface!`：只有使命内主会话（S1–S5）或显式 herd 角色才收窄；没有使命或无收窄角色的会话由 `herd.main` 以黑名单移除宿主编辑/shell 工具（`read`/`write`/`edit`/`apply_patch`/`ast_edit`/`ast_grep`/`bash`/`exec`/`eval`/`glob`/`grep`/`find`），保留其余宿主工具并追加 `clj_devops`、`wait`、`handoff`（devops 面，与根规格 §0.4 一致）。收窄失败记 health degraded 并保留当前面，不静默删工具。启动侧有单例：并发激活共享 `globalThis.__herdBootPromise`，失败清空以便重试；`contextPis`、`activated-pis` 与 `system/installed-pis` 是 per-pi `WeakSet`，同一进程多 pi 各自安装一次。
 
 默认运行时是 `nbb`：`src/clj-main.mjs` 通过 `createRequire` 加载插件自带的 nbb，并注册 formatter；CLJS 侧通过 `src/herd/bootstrap.cljs` 加载。
 
@@ -35,7 +35,7 @@ omp 在进程内缓存已加载的 ESM 模块，系统提示词在会话启动�
 
 ```text
 clj-main
-  ├── host/{hack-context,imports,native-runner,subprocess,language-detect}
+  ├── host/{hack-context,imports,lock-daemon,native-runner,subprocess,language-detect}
   └── herd/bootstrap ── herd/main
                           ├── herd/{handoff,prompts,repl,system,ufss,ui}
                           └── herd/system
@@ -84,46 +84,55 @@ herd/swarm/store ── herd/swarm/{edn,model}
 | `src/herd/stages/*.cljs` | 门禁解析、tenure、mission/store、review/attach、报告、审计提交 | `herd/ufss`、`herd/ui`、`herd/util/atomic-write` |
 | `src/herd/swarm/*.cljs` | 看板内核/存储/工具、单工作区 runner、K 路审计 | `herd/stages/*`、`herd/ufss`、`herd/ui` |
 | `src/herd/util/atomic_write.cljs` | 同目录临时文件 + fsync + rename | — |
-| `src/host/*.mjs` | 宿主 imports、native runner、subprocess、hack context、language-detect | 宿主包、`util/errors` |
+| `src/host/*.mjs` | 宿主 imports、IPC 锁守护进程、native runner、subprocess、hack context、language-detect | 宿主包、`util/errors` |
 | `src/util/errors.mjs` | 宿主边界错误码与 EDN 错误渲染 | — |
 
-## 4 当前装配状态
+## 4 当前装配与运行契约
 
-- **完整装配已默认启用**（见 §1）：`src/clj-main.mjs` → `herd/bootstrap.cljs` → `herd/main.cljs` + `herd/system.cljs`。`/herd`、八门禁、11 个 `board_*`、`attach_case_audit`、S5 单工作区 runner 与 K 路审计都已接线；TUI 看板已整体移除，`src/tui/*` 与旧 `src/*.mjs` 已删除；全部工具均已接入统一 `herd/ui` 渲染。
-- **park/unpark（2026-11-14）**：`park` 只挂起工具等待，不取消、不重启已启动的 `call`；后台 Promise 继续运行。`park` 回执自动带自上次展示以来的增量 `:stdout`/`:stderr` 与 `:call-active true`（有活跃 call 时）。`unpark` 先对活跃 call 灌入字符串或 `{:stdin ... :eof ...}`，同时 resolve 挂起表达式，然后等待原程序 Promise 完成并返回最终结果；再次 park 返回新的 parked 回执。`abandon` 仍是唯一强制清理入口。`tests/cljs-sandbox.test.mjs` 覆盖增量输出与 stdin 灌入。
-- `clj_devops` 已删除必填 `scope`（`turnsRemaining`/`todosRemaining`），改为必填 `agent_state` 枚举（`Orienting`/`Converging`/`Consolidating`/`Stagnant`/`Drifting`/`Densifying`/`Reorienting`/`Settled`）；`clj_devops` 的渲染标题把英文枚举映射为中文标签（如 `--- [探索定向]`），仍用 dim 样式。该字段只用于 LLM 自报控制流状态，不改变能力、令牌或验收；工具结果 EDN 前只在状态切换时加一行 `;` 状态注释（连续同态不重复）。
-- 默认不再调用 `ctx.ui.setToolsExpanded(true)`；展开态由宿主默认与用户切换决定。`clj_devops` 的 `renderCall`/`renderResult` 同时支持展开与非展开：非展开保留标题、横线与完整多行正文；多行字符串或长度超过 40 字符的字符串替换为 dim 色的 `$$$`，仅单行且不超过 40 字符的字符串正常渲染；展开显示完整字符串。
-- **handoff**：`src/herd/handoff.cljs` 是双锚点解码器（首 AAA 到末 BBB、覆盖去重、解不了即字面）；`handoff` 工具排队并返回占位符（build `handoff-boundary-v9`）；`src/herd/main.cljs` 的 `consume-handoff!` 对首次替换返回 `handoffReplacement`；`src/host/hack-context.mjs` 检测 `compaction`/`reset_boundary`，边界存在时禁止 `rewriteSession`，只把替换追加到边界之后。`hackContext` 本身无状态：每次 `context` 请求从宿主 `sessionManager.getLeafEntry()` / `getEntry()` / `getLeafId()` 读最后一条持久化消息，找到追加点就只 `branch(leafId)` + `appendMessage`（O(delta)），找不到才全量重写一次。`last-handoffs` 保留 tool-call-id、timestamp，并缓存 `:text` 与 `:result-index` 各一次；重启后记录为空时 `last-doc-index` 从最后一份持久化文档裁剪。扫描窗口是最近 512 条消息，文档窗口 32 条。证人：`tests/cljs-handoff.test.mjs`、`tests/hack-context.test.mjs`。
-- **S1 手工批准**：`herd/stages/gates.cljs` 写盘后通过 `system.cljs` 的确认端口阻塞打开面板；面板从磁盘 `plans/<slug>/s1-brainstorm.md` 读取完整字节并支持滚动；默认选中拒绝，左右/Tab 显式选择批准/修改/拒绝，Enter 确认，Esc 取消。approve / revise / deny / pending 四态都有回执；`deny` 转 `ask_user` 语义；文件不可读或无自定义 UI 时 pending/拒绝批准。真实宿主/tmux 验证仍属 D4。
-- **角色收窄**：依赖宿主报告的 `ctx.agent` 与首行 `[HERD_ROLE: ...]` token；`ctx.agent` 缺失时 fail-closed 并 health degraded，不退回主会话工具面。`surface-for` 给出 `Plan DevOps`、`Reviewer`、`Swarm Worker`、`Swarm Holder`、`Manual Auditor` 的工具面。真实 17.x/16.x 未验证（D5）。
-- Esc 层级取消已接到 `onTerminalInput`；真实按键与宿主 API 缺失时的降级仍需 tmux 验证。
-- `clj_*` 的顶层程序回执若为 `:state :failed`，工具结果显式带 `isError: true` 与错误码；覆盖测试在 `tests/cljs-sandbox.test.mjs`。
-- 同一 agent 在同一回合并发提交多个 `clj_*` 调用时，按 tool bundle 串行排队执行；每个程序仍有独立上下文，未建立同身并行写通道。
-- `submit_devops_report` 以 `getSessionFile()` 的父目录（`<parent-artifacts>`）为回执根；没有子会话文件路径时显式 `:HOST_API_MISMATCH`，不回退到 per-agent 目录。同一 call-id 重复提交返回 `:INVALID_ARGUMENT`。
-- `devops` 工具执行参数里的 `AbortSignal` 已传到 `Plan DevOps` 的首次 spawn 和后续 `continueAgent`；devops 端口有窄测；真实 Esc 仍需 tmux 验证。
-- `board_finish` 校验工作区相对 `dependency_paths`；`wait_for` 支持任务 ID 与 `condition:` 键。启动恢复扫描把 `repair` 放在顶层传给 `recover`，并先把 `Error` 渲染成可序列化错误再输出。审计批次状态在 `.herd/missions/<slug>/audit/batch.edn` 幂等；FAIL 写 repair 根任务。
-- Auditor 只做防呆：`herd/swarm/auditors.cljs` 使用 `/tmp/herd-audit-<slug>-<case>-<batch>`，角色面不暴露 `write`/`mkdir`/`rm`/`mv`；`call` 可自由使用，可能修改主工作区，这是明确信任边界，不是安全隔离；不再要求 bwrap。
-- **性能边界（有意限制）**：写锁默认等待 500ms（`HERD_LOCK_WAIT_MS` 可调 50–5000ms；10ms 起指数退避、封顶 160ms），超时 `:LOCK_BUSY`（`:retryable true`）；`glob` 跳过 `node_modules`/`.git`/`.herd`，默认 20 000 条目 / 2 000ms（`:LIMIT_EXCEEDED`）；`where` 最近行 DP 1 000 000 cells + 150ms；`cat`/`write` 单文件 2 MiB；handoff 扫描 512/32；usage/status 只由真实 hook 事件写入（相同文本不重发，无轮询/定时器）。触发时明确拒绝，不静默截断。
-- **vibe 工具面**：没有使命的主会话与无收窄角色的普通子代理保留全部宿主工具并追加 `clj_devops`、`wait`、`handoff`（devops 面）；`/vibe` 主代理不追加、不调用 `setActiveTools`；只有使命内主会话按阶段、显式 herd 角色按角色收窄。`tests/cljs-surface-vibe.test.mjs` 与 `tests/cljs-surface.test.mjs` 是证人。
-- **启动与安装单例**：并发激活共享 `globalThis.__herdBootPromise`，失败清空以便重试；`contextPis`、`activated-pis`、`installed-pis` 三组 per-pi `WeakSet` 保证同一进程多 pi 各自只安装一次。`tests/cljs-system-install.test.mjs`、`tests/clj-main-trace.test.mjs` 覆盖。
-- **context 自动重写**：每会话分支最多自动全量重写一次（host leaf 变化后重置预算）；之后 prefix miss 只记录 `prefix-miss-suppressed`，compaction/reset boundary 存在时一律不重写。`tests/hack-context-rewrite.test.mjs` 覆盖。
-- **诊断开关**：`HERD_TRACE=1` 写 `.herd/perf-trace.jsonl`（1 MiB 上限，`HERD_TRACE_PATH` 可改）；`HERD_CACHE_PROBE=1` 才启用 `before_provider_request` probe，写 `.herd/cache-probe.jsonl`（`HERD_CACHE_PROBE_PATH` 可改）。两者默认关闭。
-- **沙盒 console/stdio 防呆**：`herd/repl.cljs` 的 `guard-source!` 在用户代码执行前拒绝 `console`、`js/console`、`globalThis.console`、`js/process.stdout`/`stderr`、`process.stdout`/`stderr` 与 `(.-stdout js/process)` 等直接访问，返回 `:CAPABILITY_DENIED`（`:reason :console-or-stdio-forbidden`）。字符串、字符字面量、注释与 UFSS fence 中的同名词不误杀；`call` 仍用 pipe 捕获 stdout/stderr，但不落盘日志。这是基本防呆，不是安全边界。
-- **usage**：delta 显示最近活动子代理的最后一次请求，sum 合并所有 agent key；主会话后续请求不会把 delta 抢回主会话。
-  工作条由真实 hook 事件驱动：`session_start`、`before_agent_start`、`before_provider_request`、`message_start`、`message_end`、`message_update`、`tool_execution_start`、`tool_execution_update`、`tool_execution_end`。`message_update` 与 `tool_execution_update` 只用于检测官方覆盖：宿主提供 `getWorkingMessage` 时优先读取；否则包装 `setWorkingMessage` 记录官方最后写入的文本。只有当前文本不是目标文本时才写回，文本相同不重发；没有 `setInterval`，也没有周期性 `setTimeout`。`ui-render` 的 `:last-working` 按 session 记录最后一次写出的文本；`apply-working-message!` 是唯一写入点，并在 `subagent-ctx?` 为真时跳过，子代理绝不写主 UI。证人：`tests/cljs-working-message.test.mjs`、`tests/cljs-usage.test.mjs`。
-- 旧 `src/*.mjs` 实现已全部删除，不得恢复或为旧工具名添加别名或兼容 shim。
-- 真实宿主 S1→S5 端到端、tmux 交互、重启恢复与全量交错矩阵尚未验收；不得把组件窄测或 `omp -p` 冒烟当成验收（D3、D4、D5、D7）。
+- **默认启用全装配**：`src/clj-main.mjs` → `herd/bootstrap.cljs` → `herd/main.cljs` + `herd/system.cljs`，`/herd`、8 门禁、11 个 `board_*`、`attach_case_audit`、S5 单工作区 runner 与 K 路审计均已接线，全工具接入 `herd/ui` 渲染；TUI 看板及旧 `src/*.mjs` 实现已删除，禁止恢复别名或 shim。
+- **默认/使命工具面**：无使命且无收窄角色时，`herd.main/apply-tool-surface!` 用黑名单移除宿主编辑/shell 工具并追加 `clj_devops`/`wait`/`handoff`；只有使命内主会话按阶段、显式 herd 角色（经宿主 `ctx.agent` + 首行 `[HERD_ROLE: ...]` token 判定，缺失 fail-closed）按角色收窄。
+- **沙盒调用与自检**：`clj_devops` 强制提供唯一 `name` 与 `agent_state` 枚举（状态切换时在 EDN 前置 `;` 注释）；`more_workers_without_hitting_mythical_man_month` 为正时在回执末尾追加 `<system-reminder>`，`ui.cljs` 剥离尾注保留正文高亮。同回合多 `clj_*` 按 tool bundle 串行排队。
+- **同步回执不入 `wait` 队列**：`repl/run-role` 通过 `:returned-directly` 守卫与 `finish-directly!` 保证 2000ms 内同步完成/失败的调用立刻从 `@programs` 清除，仅 `:forked` 与 `:parked` 程序保留供 `wait`/`unpark` 收集。
+- **park / unpark / abandon**：`park` 不中止后台 `call` 并带增量 `:stdout`/`:stderr` 与 `:call-active true`；`unpark` 先向活跃 `call` 灌入 `:stdin`/`:eof` 并 resolve 续体、通过 `await-resumed` 等待结果；`abandon` 负责强制击杀进程组并清理状态。
+- **handoff 与工作条**：`handoff` 双锚点解码（`src/herd/handoff.cljs`）+ `hackContext` 每会话分支至多全量重写一次，其后 append-only（含 `compaction`/`reset_boundary` 时仅边界后追加；扫描窗口 512/32）。`usage` 由真实 hook 事件驱动恢复被宿主覆盖的工作条（100ms 合并、无轮询定时器，子代理不写主 UI）。
+- **门禁、看板与审计隔离**：`submit_devops_report` 以 `getSessionFile()` 父目录为回执根；`devops` 透传 `AbortSignal`；`board_finish` 校验相对 `dependency_paths`，`wait_for` 支持任务 ID 与 `condition:` 键；Auditor 仅作防呆（独立 `/tmp/herd-audit-<slug>-<case>-<batch>`，无写工具，`call` 属信任边界，无 bwrap）。
+- **跨进程事件驱动锁**：写门 `$W$` 与 S5 看板事务统一走 `src/host/lock-daemon.mjs`（`node:net` 按需单例守护进程，连接即持锁、`SIGKILL` 秒级释锁、零轮询、无陈旧锁），同进程写操作先经 FIFO 队列接力防自踩。写门等待默认 500ms（`HERD_LOCK_WAIT_MS` 50–5000ms，`:LOCK_BUSY`）；`glob` 跳过 `node_modules`/`.git`/`.herd`（20k/2s）；`where` 最近行 1M cells/150ms；`cat`/`write` 单文件 2 MiB；`guard-source!` 拒绝 `console`/stdio 直接访问（`:CAPABILITY_DENIED`）；`HERD_TRACE=1` / `HERD_CACHE_PROBE=1` 默认关闭（1 MiB 上限）。
+- **当前验证与未验收边界**：开发者测试为 275 pass / 0 fail / 25 files（`tests/fast.test.mjs` 45 pass，`tools/dev-acceptance/test` 23 pass），`biome check .` 为 0 errors / 0 warnings；真实 `omp` + `tmux` S1→S5、S1 面板与 16.x/17.x 兼容仍属 `DEBT.md`（D3–D5、D7、D20），测试不等于验收。
 
-## 5 迁移完成状态
+## 5 宿主边界、平台实测与受控绕行（原 HACK.md）
 
-旧运行时路径（`src/pi-goal/`、`src/pi-context/`、`src/editor-theme/`、`src/context/`、`src/manual-acceptance/`、`src/main.mjs`、`src/bootstrap-main.mjs`、`src/clj-sandbox/`、`src/stages/`、`src/swarm/`、`src/tui/`、`src/prompts/`、`src/sandbox/`、`src/host/{health,model-seed,hack-system-prompt,session-key}.mjs`、`src/util/{atomic-write,file-lock,broker}.mjs`）及对应旧 `.mjs` 测试均已删除。当前业务实现位于 `src/herd/*.cljs`，`src/` 下仅保留 `clj-main.mjs`、`host/*` 与 `util/errors.mjs`。启动单例、per-pi 安装、vibe 工具面、500ms 锁等待、每程序独立命名空间隔离与全工具 `herd/ui` 渲染均已收口。当前测试面为 267 pass / 0 fail / 25 files（`tests/fast.test.mjs` 45 pass / 0 fail），但它只保护组件与接线。真实端到端验收仍由 `DEBT.md` D3 记录，不能用迁移完成代替验收。独立开发验收包只位于 `tools/dev-acceptance/`。
+### 5.1 环境快照与 `BUN_OPTIONS`
 
-不要恢复这些旧路径，也不要为旧工具名添加别名或兼容 shim。若发现新的 legacy 引用，按根规格 §9.6 先确认无消费者再删除，并同步本文件与 `DEBT.md`。
+- 宿主实测基线：`omp/18.20.0`（编译 ELF `/home/kunweiz/.local/bin/omp`），仓库源码副本 `@oh-my-pi/pi-coding-agent@18.15.0`（`17.3.5` 仅历史参照）；`bun 1.4.4`、`git 2.56.0`、`tmux 3.7c`。
+- 宿主在 shell 注入 `BUN_OPTIONS=--preload /home/kunweiz/.config/omp/zstd-preload.js`，导致 Bun 1.4.4 把 `bun test` 误解析为脚本名。开发者测试须带 `env -u BUN_OPTIONS`；沙箱 `call`（`src/herd/sandbox.cljs`）已自动剥离 `BUN_OPTIONS`/`NODE_OPTIONS`/`BASH_ENV`/`ENV`/`PROMPT_COMMAND`。
+- 不指定 `--model` 时本机默认模型可能触发 `model_not_available_for_integrator`，真实验收须显式指定可用主模型与 `@task` 模型。
+
+### 5.2 唯一受控宿主补丁：`src/host/native-runner.mjs`
+
+- **目的与实现**：宿主公开 `ExtensionAPI`/`ExtensionContext` 不暴露 Runner，唯独 `ExtensionRunner.prototype.invokeNativeTool` 可执行官方 `read`/`write`。`native-runner.mjs`（由 `host/imports.mjs` 重导出）懒加载 `@oh-my-pi/pi-coding-agent/extensibility/extensions/runner` 并包装 `ExtensionRunner.prototype.createContext`，记入 `WeakMap<ctx, runner>` 与最近 runner；编译宿主将扩展内字面量动态 import 重写为 `omp-legacy-pi-bundled:` 单例注册表，因此补丁准确命中宿主自身 `ExtensionRunner`。
+- **失败与限制**：捕获失败或 `--no-tools` 禁用内置工具时返回 `:HOST_API_MISMATCH`（禁止回退 `node:fs`）；`callerContext` 不可得导致 `write` 的 LSP 批量刷新元数据不完整；worker 桥未把 `AbortSignal` 传入 `invokeNativeTool`。
+- **回滚**：移除 `src/clj-main.mjs` 的 `installRunnerCapture()` 调用与 `src/host/native-runner.mjs`，沙箱将自然 fail-closed。
+
+### 5.3 `omp` Hooks、`sessionManager` 与 `runSubprocess`
+
+- `before_agent_start`：`event.systemPrompt` 在真实宿主为 `string[]`（须同时兼容 `string`）；`ctx.signal` 为 `undefined`（取消信号取 `execute` 第 3 参数、`runSubprocess` signal 与 `AbortController` 树）；`ctx.agent` 在 18.x 存在（`{kind, id, name, depth}`），17.x/16.x 未保证。
+- `context` 钩子与深拷贝：`context` 事件的 `ctx.sessionManager` 可能缺失，持久化状态在 `session_start` 捕获。真实宿主在调 `context` 前会深拷贝消息对象（`!==`），因此 `src/host/hack-context.mjs` 先按引用再按末尾 `deepEqual` 定位持久化前缀；`appendCompaction` / `appendResetBoundary` 写下的边界后只能追加、不可 `rewriteSession`。
+- `runSubprocess`：`agent` 须传完整 `AgentDefinition`；`artifactsDir` 是子会话 transcript 落盘唯一开关；`sessionFile` 在 18.16+ 写入 `SessionHeader.parentSession`（17.3.5 忽略）；`parentAgentId` 与 `parentToolCallId` 随选项透传。
+
+### 5.4 `nbb`、`pi-tui` 与 `highlight.js`
+
+- `nbb@1.6.215`：宿主 bare/bundled `nbb` 不含 `cljs.pprint`，`src/clj-main.mjs` 须从插件真实路径 `createRequire` 解析自带 `nbb`，并按 `(module, name)` 顺序调用 `nbb.registerModule(formatter, "@chrisoakman/standard-clojure-style")`；`bootstrap.cljs` 从 `nbb.classpath` 与 `globalThis.__herdPluginSrc` 解析源码根，不依赖 `process.cwd()`。
+- SCI 版 `cljs.pprint` 默认宽度约 72 列，且不导出 `*print-right-margin*`/`*print-miser-width*`/`write`，测试不得逐字固化 EDN 换行位置。
+- `@oh-my-pi/pi-tui` 提供 `highlightCode(code, lang, theme)`；内容语言识别由 `highlight.js@11.12.0`（`src/host/language-detect.mjs`）委托完成，`xml` 映射到 `html`。
+
+### 5.5 常用复检命令
+
+- 全量测试：`env -u BUN_OPTIONS bun test tests --parallel`
+- 规范检查：`env -u BUN_OPTIONS ./node_modules/.bin/biome check .`
+- UFSS data layout 复检：`./node_modules/.bin/nbb --classpath src -e "(require '[herd.ufss :as u]) (u/canonical (vec (range 40)))"`
 
 ## 6 文档与变更纪律
 
-- 根 `AGENTS.md` 须经人类操作员明确批准后，AI 方可修改；未经批准不得修改。S1 手工批准及其隔离测试例外不适用于修改根文件。批准后 AI 有义务直接更新根文件，并直接更新局部 `AGENTS.md`、源码与 `DEBT.md` 追上根规格。不修改已批准的人工验收文档。
-- 修改提示词、阶段披露或工具名时，先由人类操作员批准并更新根规格，再更新实现、README/CHANGELOG、`DEBT.md`/`HISTORY.md` 与相应测试。
-- 文档不得把“源码存在”“测试存在”写成“实现完成”或“验收通过”；真实宿主、tmux、手工 CASE 的结果以证据文件为准。
-- 测试纪律：不保留只比较提示词字面拷贝、导出存在或结构接线的测试；真实出站零剧透与阶段转换测试应在捕获的真实 payload 上执行。当前没有该投影夹具时，不添加模拟代用品。
-- 共享路径删除必须单次、具名、可核对；不删除用户既有历史资料（`docs/旧的方法论.md`、`docs/旧的架构.md`、`docs/旧的设计.html`、`docs/讨论纪要.md`、`docs/兄弟项目参考.md` 等）。
+- 根 `AGENTS.md` 须经人类操作员明确批准后方可修改；局部文档、源码与 `DEBT.md` 由 AI 直接同步追齐根规格；已批准的人工验收文档不得擅改。
+- 宿主实测边界、限制与回滚统一维护在本文件 §5，不再单设 `HACK.md`；历史取舍与被拒方案维护在 `HISTORY.md`。
+- 不得把“源码存在”或“窄测通过”写成“已交付/已验收”；不删除用户既有历史资料（`docs/旧的方法论.md`、`docs/旧的架构.md`、`docs/旧的设计.html`、`docs/讨论纪要.md`、`docs/兄弟项目参考.md`）。

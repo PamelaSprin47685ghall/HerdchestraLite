@@ -3,7 +3,8 @@
    ["node:child_process" :as cp]
    ["node:path" :as path]
    [clojure.string :as string]
-   [herd.clock :as clock]))
+   [herd.clock :as clock]
+   [nbb.classpath :as cp-path]))
 
 (def ^:private fs-promises (js/require "node:fs/promises"))
 
@@ -13,10 +14,10 @@
                     {:code :INVALID_ARGUMENT :field :path})))
   (path/resolve (or p ".")))
 
-(def ^:private lock-file-name "clj-core.cross-process.lock")
 (def ^:private default-lock-wait-ms 500)
 (def ^:private min-lock-wait-ms 50)
 (def ^:private max-lock-wait-ms 5000)
+
 (defn- lock-wait-ms []
   (let [raw (aget (.-env js/process) "HERD_LOCK_WAIT_MS")
         value (js/Number raw)]
@@ -28,8 +29,25 @@
   (let [root (.-__herdLockRoot js/globalThis)]
     (path/resolve (if (string? root) root (js/process.cwd)))))
 
-(defn- lock-path []
-  (path/join (lock-root) ".herd" "locks" lock-file-name))
+(def ^:private os (js/require "node:os"))
+(def ^:private crypto (js/require "node:crypto"))
+
+(defn- endpoint-for [root]
+  (let [resolved (path/resolve (or root (js/process.cwd)))
+        hash (subs (.digest (.update (.createHash crypto "sha256") resolved) "hex") 0 16)
+        platform (.-platform js/process)]
+    (cond
+      (= platform "win32") (str #"\\.\pipe\herd-lock-"# hash)
+      (= platform "linux") (str (char 0) "herd-lock-" hash)
+      :else (path/join (.tmpdir os) (str "herd-lock-" hash ".sock")))))
+
+(defn lock-path []
+  (or (let [override (.-__herdLockEndpoint js/globalThis)]
+        (when (string? override) override))
+      (endpoint-for (lock-root))))
+
+(defn lock-key []
+  (str "write:" (lock-root)))
 
 (def ^:private trace-file-limit (* 1024 1024))
 (defonce trace-tail (atom (js/Promise.resolve nil)))
@@ -78,173 +96,109 @@
                                            (.catch (fn [_] nil))))))))))))
                    (.catch (fn [_] nil))))))))
 
-(def ^:private os (js/require "node:os"))
-(def ^:private crypto (js/require "node:crypto"))
+(defn- daemon-candidates []
+  (let [delim (.-delimiter path)
+        cp-entries (->> (.split (or (cp-path/get-classpath) "") delim)
+                        (remove (fn [entry] (or (string/blank? entry) (.includes entry ".herd")))))
+        roots (distinct (remove nil?
+                                (concat [(.-__herdPluginSrc js/globalThis)]
+                                        cp-entries
+                                        [(path/join (js/process.cwd) "src")])))]
+    (mapv (fn [root] (path/join root "host" "lock-daemon.mjs")) roots)))
 
-(defn- new-lock-record []
-  {:pid (.-pid js/process)
-   :startedAt (.toISOString (js/Date.))
-   :host (.hostname os)
-   :cwd (js/process.cwd)
-   :root (lock-root)
-   :token (.randomUUID crypto)})
+(defn- load-lock-daemon []
+  (if-let [cached (.-__herdLockDaemon js/globalThis)]
+    (js/Promise.resolve cached)
+    (let [candidates (daemon-candidates)]
+      (letfn [(probe [index]
+                (if (>= index (count candidates))
+                  (js/Promise.reject
+                    (ex-info "lock daemon module not found" {:code :HOST_API_MISMATCH}))
+                  (let [candidate (nth candidates index)]
+                    (-> (.access fs-promises candidate)
+                        (.then
+                          (fn [_]
+                            (let [loaded (js/require candidate)]
+                              (aset js/globalThis "__herdLockDaemon" loaded)
+                              loaded)))
+                        (.catch (fn [_] (probe (inc index))))))))]
+        (probe 0)))))
 
-(defn- parse-lock [text]
-  (try
-    (let [value (js/JSON.parse text)]
-      (if (and (some? value) (object? value) (not (array? value)))
-        (js->clj value :keywordize-keys true)
-        {:corrupt true}))
-    (catch :default _
-      (let [pid (js/parseInt text 10)]
-        (if (js/Number.isNaN pid)
-          {:corrupt true}
-          {:pid pid :legacy true})))))
-
-(defn- read-lock []
-  (-> (.readFile fs-promises (lock-path) "utf8")
-      (.then (fn [text] (parse-lock text)))
-      (.catch (fn [_] nil))))
-
-(defn- pid-alive? [pid]
-  (if (and (number? pid) (pos? pid))
-    (try
-      (js/process.kill pid 0)
-      true
-      (catch :default error
-        (= "EPERM" (.-code error))))
-    false))
-
-(defn- record-root [record]
-  (let [root (or (:root record) (:cwd record))]
-    (when (string? root) (path/resolve root))))
-
-(defn- same-workspace? [record]
-  (let [root (record-root record)]
-    (or (:legacy record)
-        (and root (= root (lock-root))))))
-
-(defn- stale-lock? [record]
-  (and (map? record)
-       (not (:corrupt record))
-       (same-workspace? record)
-       (not (pid-alive? (:pid record)))))
-
-(defn- remove-file [target]
-  (-> (.unlink fs-promises target)
-      (.catch (fn [_] nil))))
-
-(defn- try-acquire []
-  (let [record (new-lock-record)
-        target (lock-path)]
-    (-> (.mkdir fs-promises (path/dirname target) #js {:recursive true})
-        (.then
-          (fn []
-            (.writeFile fs-promises target
-                        (js/JSON.stringify (clj->js record))
-                        #js {:flag "wx"})))
-        (.then (fn [] {:ok record}))
-        (.catch
-          (fn [error]
-            (if (= "EEXIST" (.-code error))
-              (-> (read-lock)
-                  (.then
-                    (fn [holder]
-                      (if (stale-lock? holder)
-                        (-> (read-lock)
-                            (.then
-                              (fn [again]
-                                (if (and (stale-lock? again)
-                                         (= (:token again) (:token holder)))
-                                  (-> (remove-file target)
-                                      (.then (fn [_] (try-acquire))))
-                                  {:busy again}))))
-                        {:busy holder}))))
-              (js/Promise.reject error)))))))
-
-(defn- lock-delay-ms [attempt]
-  (min 160 (* 10 (bit-shift-left 1 (min attempt 4)))))
-
-(defn- busy-error [holder waited]
-  (ex-info
-    (str "write lock is busy"
-         (when-let [pid (:pid holder)] (str " (pid " pid ")"))
-         "; it may be held by a running call; retry this operation shortly")
-    {:code :LOCK_BUSY
-     :retryable true
-     :waited-ms waited
-     :path (lock-path)
-     :holder holder
-     :hint "the write lock is held by a running call or another writer; retry shortly"}))
-
-(defn- acquire-lock
-  ([attempt] (acquire-lock attempt (clock/now) nil))
-  ([attempt started last-holder]
-   (-> (try-acquire)
-       (.then
-         (fn [outcome]
-           (if-let [record (:ok outcome)]
-             (do
-               (let [waited (- (clock/now) started)]
-                 (when (pos? waited)
-                   (append-trace! {:event "lock-wait"
-                                   :ms waited
-                                   :path (lock-path)
-                                   :holder last-holder :result "acquired"})))
-               record)
-             (let [holder (or (:busy outcome) last-holder)
-                   waited (- (clock/now) started)
-                   same-process? (= (:pid holder) (.-pid js/process))
-                   delay (min (if (and same-process? (< attempt 2))
-                                0
-                                (lock-delay-ms attempt))
-                              (max 0 (- (lock-wait-ms) waited 1)))]
-               (if (>= waited (lock-wait-ms))
-                 (-> (read-lock)
-                     (.then
-                       (fn [current]
-                         (let [holder (or current holder)]
-                           (append-trace! {:event "lock-wait"
-                                           :ms waited
-                                           :path (lock-path)
-                                           :holder holder :result "timeout"})
-                           (js/Promise.reject (busy-error holder waited))))))
-                 (js/Promise.
-                   (fn [resolve reject]
-                     (clock/set-timeout
-                       #(-> (acquire-lock (inc attempt) started holder)
-                            (.then resolve)
-                            (.catch reject))
-                       delay)))))))))))
-
-(defn- release-lock [record]
-  (-> (read-lock)
-      (.then
-        (fn [current]
-          (when (and (map? current)
-                     (= (:token current) (:token record)))
-            (remove-file (lock-path)))))
-      (.catch (fn [_] nil))))
+(defn- busy-error [waited endpoint key]
+  (let [error (ex-info
+                "write lock is busy; it may be held by a running call; retry this operation shortly"
+                {:code :LOCK_BUSY
+                 :retryable true
+                 :waited-ms waited
+                 :path endpoint
+                 :key key
+                 :hint "the write lock is held by a running call or another writer; retry shortly"})]
+    (set! (.-code error) "LOCK_BUSY")
+    error))
 
 (defn- chain [value on-value on-error]
   (if (and value (fn? (.-then value)))
     (.then value on-value on-error)
     (try (on-value value) (catch :default error (on-error error)))))
 
+(defonce ^:private lock-queues (atom {}))
+
+(defn- run-cross-process-lock [f]
+  (let [endpoint (lock-path)
+        key (lock-key)]
+    (-> (load-lock-daemon)
+        (.then
+          (fn [daemon]
+            (.acquireIpcLock daemon
+                             #js {:endpoint endpoint
+                                  :key key
+                                  :waitMs (lock-wait-ms)
+                                  :clock #js {:now clock/now
+                                              :setTimeout clock/set-timeout
+                                              :clearTimeout clock/clear-timeout}})))
+        (.then
+          (fn [lease]
+            (let [waited (or (.-waitedMs lease) 0)]
+              (when (pos? waited)
+                (append-trace! {:event "lock-wait"
+                                :ms waited
+                                :path endpoint
+                                :key key
+                                :result "acquired"}))
+              (let [done (fn [value]
+                           (-> (.release lease)
+                               (.then (fn [_] value))))
+                    fail (fn [error]
+                           (-> (.release lease)
+                               (.then (fn [_] (js/Promise.reject error)))))]
+                (try
+                  (chain (f) done fail)
+                  (catch :default error
+                    (fail error))))))
+          (fn [error]
+            (if (= "LOCK_BUSY" (.-code error))
+              (let [waited (or (.-waitedMs error) 0)]
+                (append-trace! {:event "lock-wait"
+                                :ms waited
+                                :path endpoint
+                                :key key
+                                :result "timeout"})
+                (js/Promise.reject (busy-error waited endpoint key)))
+              (js/Promise.reject error)))))))
+
 (defn- with-lock [f]
-  (-> (acquire-lock 0)
-      (.then
-        (fn [record]
-          (let [done (fn [value]
-                       (-> (release-lock record)
-                           (.then (fn [] value))))
-                fail (fn [error]
-                       (-> (release-lock record)
-                           (.then (fn [] (js/Promise.reject error)))))]
-            (try
-              (chain (f) done fail)
-              (catch :default error
-                (fail error))))))))
+  (let [key (lock-path)
+        queued (atom nil)]
+    (swap! lock-queues
+           (fn [queues]
+             (let [previous (get queues key (js/Promise.resolve nil))
+                   next-run (-> previous
+                                (.catch (fn [_] nil))
+                                (.then (fn [_] (run-cross-process-lock f))))]
+               (reset! queued next-run)
+               (assoc queues key (.catch next-run (fn [_] nil))))))
+    @queued))
+
 (defonce token-state
   (atom {:paths #{} :path-waiters {} :global false :global-waiters []}))
 
@@ -1099,6 +1053,15 @@ Breadth-first walk bounded by an entry cap and a wall-clock budget. Both
     (when (> (count chunk) remaining)
       (swap! state assoc :truncated true))))
 
+(def ^:private stripped-call-env-keys
+  ["BUN_OPTIONS" "NODE_OPTIONS" "BASH_ENV" "ENV" "PROMPT_COMMAND"])
+
+(defn- cleaned-env []
+  (let [env (js/Object.assign #js {} (.-env js/process))]
+    (doseq [k stripped-call-env-keys]
+      (js-delete env k))
+    env))
+
 (defn call
   [{:keys [argv cwd name max-inline-bytes] :or {cwd "."}} timeout-ms]
   (let [program-name (or name (active-name))]
@@ -1115,7 +1078,10 @@ Breadth-first walk bounded by an entry cap and a wall-clock budget. Both
                 (let [argv (vec argv)
                       inline-limit (or max-inline-bytes default-max-inline-bytes)
                       child (cp/spawn (first argv) (clj->js (rest argv))
-                                      #js {:cwd cwd :stdio #js ["pipe" "pipe" "pipe"] :detached true})
+                                      #js {:cwd cwd
+                                           :env (cleaned-env)
+                                           :stdio #js ["pipe" "pipe" "pipe"]
+                                           :detached true})
                       state (atom {:out "" :err "" :truncated false})
                       shown-out (atom 0)
                       shown-err (atom 0)

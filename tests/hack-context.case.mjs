@@ -305,7 +305,10 @@ describe("context rewrite suppression and trace", () => {
 			await context({ messages: [{ role: "user", content: "old" }] }, { sessionManager: manager });
 			await flushTrace();
 			expect((await readFile(tracePath, "utf8").catch(() => "")).length).toBeGreaterThan(0);
-			const lines = (await readFile(tracePath, "utf8")).trimEnd().split("\n").map((line) => JSON.parse(line));
+			const lines = (await readFile(tracePath, "utf8"))
+				.trimEnd()
+				.split("\n")
+				.map((line) => JSON.parse(line));
 			const entry = lines.find((item) => item.event === "context-rewrite");
 			expect(entry).toBeTruthy();
 			expect(entry.reason).toBe("handoff-replacement");
@@ -330,7 +333,10 @@ describe("context rewrite suppression and trace", () => {
 			await context({ messages: [seed] }, { sessionManager: manager });
 			await flushTrace();
 			expect((await readFile(tracePath, "utf8").catch(() => "")).length).toBeGreaterThan(0);
-			const lines = (await readFile(tracePath, "utf8")).trimEnd().split("\n").map((line) => JSON.parse(line));
+			const lines = (await readFile(tracePath, "utf8"))
+				.trimEnd()
+				.split("\n")
+				.map((line) => JSON.parse(line));
 			const entry = lines.find((item) => item.event === "context-append");
 			expect(entry).toBeTruthy();
 			expect(entry.appended).toBe(1);

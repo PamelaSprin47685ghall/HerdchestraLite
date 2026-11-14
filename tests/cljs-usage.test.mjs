@@ -1,6 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it } from "bun:test";
-import { createRequire } from "node:module";
 import { readFile, rm } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import * as nbb from "nbb";
 import { loadLanguageDetector } from "../src/host/language-detect.mjs";
@@ -211,9 +211,7 @@ describe("working usage across subagents", () => {
 	it("replays branch usage into the starting session's totals", async () => {
 		const { ui, lines } = makeUi();
 		const sessionManager = {
-			getBranchView: () => [
-				{ type: "model_usage", usage: { input: 70, output: 7, cacheRead: 3, cacheWrite: 0 } },
-			],
+			getBranchView: () => [{ type: "model_usage", usage: { input: 70, output: 7, cacheRead: 3, cacheWrite: 0 } }],
 		};
 		await sessionStart({}, mainCtx({ ui, sessionManager }));
 		expect(lastLine(lines)).toContain("Δ: 0.0k");

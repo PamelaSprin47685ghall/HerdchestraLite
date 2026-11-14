@@ -191,13 +191,24 @@
     (when (or raw-error? (and (map? data) (false? (:ok data))) (map? err) (= :failed (:state data)))
       ["error" "✗" (if code (str code) "执行失败") (one-line msg 72)])))
 
+(defn- split-trailing-reminder [raw]
+  (if (string? raw)
+    (let [idx (.lastIndexOf raw (str (char 10) "<system-reminder>"))]
+      (if (and (pos? idx) (.endsWith raw "</system-reminder>"))
+        [(subs raw 0 idx) (subs raw (inc idx))]
+        [raw nil]))
+    [raw nil]))
+
 (defn- build-result-card [theme raw expanded? summary]
-  (let [c (make-container)]
+  (let [[body reminder] (split-trailing-reminder raw)
+        c (make-container)]
     (.addChild c (hrule theme))
     (when-let [[tone icon label detail] summary]
       (.addChild c (raw-text (status-summary-line theme tone icon label detail))))
-    (when (and (string? raw) (pos? (count raw)))
-      (.addChild c (raw-text (canonical-view raw theme expanded?))))
+    (when (and (string? body) (pos? (count body)))
+      (.addChild c (raw-text (canonical-view body theme expanded?))))
+    (when (and (string? reminder) (pos? (count reminder)))
+      (.addChild c (raw-text (dim-text theme reminder))))
     c))
 
 (defn clj-render-call [args options theme]
@@ -222,10 +233,13 @@
 
 (defn clj-render-result [result options theme]
   (let [raw (result-text result)
-        text (canonical-view raw theme (boolean (some-> options .-expanded)))
+        [body reminder] (split-trailing-reminder raw)
+        text (canonical-view body theme (boolean (some-> options .-expanded)))
         c (make-container)]
     (.addChild c (hrule theme))
     (.addChild c (raw-text text))
+    (when (and (string? reminder) (pos? (count reminder)))
+      (.addChild c (raw-text (dim-text theme reminder))))
     c))
 
 (defn wait-render-call [args options theme]
@@ -238,7 +252,8 @@
 
 (defn wait-render-result [result options theme]
   (let [raw (result-text result)
-        data (safe-read-edn raw)
+        [body _] (split-trailing-reminder raw)
+        data (safe-read-edn body)
         err? (boolean (some-> result .-isError))
         summary (or (error-summary data err?)
                     (when (map? data)

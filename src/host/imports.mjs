@@ -14,7 +14,7 @@
  * The implementation lives in its own narrow module so sandbox-only tests do
  * not pull the host package root; this file re-exports it. Everything else
  * here reads only public fields and never invents a capability. The exception,
- * its observed host version, and its rollback live in HACK.md.
+ * its observed host version, and its rollback live in src/AGENTS.md.
  *
  * The omp extension loader rewrites host specifiers. Loading this module with
  * plain Node or Bun outside omp resolves the installed host package if one is

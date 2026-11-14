@@ -66,14 +66,6 @@ function register(handler) {
 	return handlers.get("context");
 }
 
-function messagesOf(count) {
-	return Array.from({ length: count }, (_, index) => ({
-		role: index % 2 === 0 ? "user" : "assistant",
-		content: `m${index}`,
-		timestamp: 1000 + index,
-	}));
-}
-
 function entriesOf(messages) {
 	return messages.map((message, index) => ({
 		type: "message",
@@ -81,10 +73,6 @@ function entriesOf(messages) {
 		parentId: index === 0 ? null : `s${index - 1}`,
 		message,
 	}));
-}
-
-function protocolClone(message) {
-	return { role: message.role, content: message.content };
 }
 
 describe("context trace", () => {

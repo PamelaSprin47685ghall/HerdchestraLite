@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,9 +16,7 @@ beforeAll(async () => {
 	moduleRoot = mkdtempSync(join(tmpdir(), "cljs-abandon-src-"));
 	for (const name of MODULES) {
 		const source = readFileSync(join(SRC, `${name}.cljs`), "utf8");
-		const unwrapped = await nbb.loadString(
-			`(require '[herd.ufss :as u]) (u/unwrap ${JSON.stringify(source)})`,
-		);
+		const unwrapped = await nbb.loadString(`(require '[herd.ufss :as u]) (u/unwrap ${JSON.stringify(source)})`);
 		const target = join(moduleRoot, "herd", `${name}.cljs`);
 		mkdirSync(dirname(target), { recursive: true });
 		writeFileSync(target, unwrapped);

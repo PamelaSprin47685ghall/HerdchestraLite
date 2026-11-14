@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import * as nbb from "nbb";
 import { loadLanguageDetector } from "../src/host/language-detect.mjs";
 
@@ -135,16 +135,16 @@ describe("CLJS console and stdio guard", () => {
 				['(js/process.stderr.write "x")', "js/process.stderr"],
 				['(process.stdout.write "x")', "process.stdout"],
 				['(process.stderr.write "x")', "process.stderr"],
-				['(.-stdout js/process)', "(.-stdout js/process)"],
-				['(.-stderr js/process)', "(.-stderr js/process)"],
+				["(.-stdout js/process)", "(.-stdout js/process)"],
+				["(.-stderr js/process)", "(.-stderr js/process)"],
 				['(println "x")', "println"],
 				['(prn "x")', "prn"],
 				['(print "x")', "print"],
 				['(printf "x")', "printf"],
-				['(binding [*print-fn* (fn [_])] nil)', "*print-fn*"],
-				['(binding [*print-err-fn* (fn [_])] nil)', "*print-err-fn*"],
-				['(binding [*out* *out*] *out*)', "*out*"],
-				['(binding [*err* *err*] *err*)', "*err*"],
+				["(binding [*print-fn* (fn [_])] nil)", "*print-fn*"],
+				["(binding [*print-err-fn* (fn [_])] nil)", "*print-err-fn*"],
+				["(binding [*out* *out*] *out*)", "*out*"],
+				["(binding [*err* *err*] *err*)", "*err*"],
 			]) {
 				receipts.push([symbol, await run(code)]);
 			}
@@ -169,9 +169,7 @@ describe("CLJS console and stdio guard", () => {
 		expect(literal.content[0].text).toContain(":state :completed");
 		expect(literal.content[0].text).toContain("println console-safe");
 
-		const comment = await run(
-			'; console.log("x")\n; (println "x") prn print printf *print-fn* *out* *err*\n(+ 1 2)',
-		);
+		const comment = await run('; console.log("x")\n; (println "x") prn print printf *print-fn* *out* *err*\n(+ 1 2)');
 		expect(comment.content[0].text).toContain(":state :completed");
 		expect(comment.content[0].text).toContain(":value 3");
 
@@ -191,8 +189,8 @@ describe("CLJS console and stdio guard", () => {
 		}
 		const text = result.content[0].text;
 		expect(text).toContain(":exit 0");
-		expect(text).toContain(":stdout \"out\"");
-		expect(text).toContain(":stderr \"err\"");
+		expect(text).toContain(':stdout "out"');
+		expect(text).toContain(':stderr "err"');
 		expect(text).toContain(":output-truncated false");
 		expect(text).not.toContain(":log");
 		expect(capture.writes).toEqual([]);

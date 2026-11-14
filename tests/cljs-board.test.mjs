@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,9 +27,7 @@ beforeAll(async () => {
 	await nbb.loadFile(join(SRC, "ufss.cljs"));
 	for (const name of MODULES) {
 		const source = readFileSync(join(SRC, `${name}.cljs`), "utf8");
-		const unwrapped = await nbb.loadString(
-			`(require '[herd.ufss :as u]) (u/unwrap ${JSON.stringify(source)})`,
-		);
+		const unwrapped = await nbb.loadString(`(require '[herd.ufss :as u]) (u/unwrap ${JSON.stringify(source)})`);
 		const target = join(moduleRoot, "herd", `${name}.cljs`);
 		mkdirSync(dirname(target), { recursive: true });
 		writeFileSync(target, unwrapped);
@@ -107,7 +105,7 @@ describe("CLJS board kernel", () => {
         f2 (finish (:board a2) "B" "r8" c2 (get-in a2 [:receipt :claim-id]))
         parent-state (get-in f2 [:board :tasks parent :state])
         bad (finish (:board f2) "A" "r9" parent (get-in f2 [:board :tasks parent :claim-id]) ["src/a.cljs"])]
-    ${JSON_OUT `{:split-ok (:ok r4)
+    ${JSON_OUT`{:split-ok (:ok r4)
                  :parent-state-mid (get-in r4 [:board :tasks parent :state])
                  :revived-parent-ids (get-in f2 [:receipt :revived-parent-ids])
                  :parent-id parent
@@ -143,7 +141,7 @@ describe("CLJS board kernel", () => {
                    {:type "release" :taskId task-id
                     :claimId (get-in claim-b [:receipt :claim-id])}
                    "r9" "B" "rel2")]
-    ${JSON_OUT `{:wrong-code (get-in wrong [:error :code])
+    ${JSON_OUT`{:wrong-code (get-in wrong [:error :code])
                  :release-ok (:ok rel)
                  :owner (get-in rel [:board :tasks task-id :owner-id])
                  :claim-ok (:ok claim-b)
@@ -180,7 +178,7 @@ describe("CLJS board kernel", () => {
         a-claim (claim (:board take-b) "A" "r6" token-task "atomic")
         a-finish (finish (:board a-claim) "A" "r7" token-task (get-in a-claim [:receipt :claim-id]))
         retired (m/responsibility-set (:board a-finish) "A")]
-    ${JSON_OUT `{:a-code (get-in take-a [:receipt :outcome])
+    ${JSON_OUT`{:a-code (get-in take-a [:receipt :outcome])
                  :b-code (get-in take-b [:receipt :outcome])
                  :holder holder
                  :b-dead b-dead
@@ -221,7 +219,7 @@ describe("CLJS board kernel", () => {
                      "r6" "A" "park2")
         input (step (:board parked) {:type "record_input" :text "new requirement"} "r7" nil "user")
         sleepers-after (keys (get-in input [:board :sleepers]))]
-    ${JSON_OUT `{:reject-code (get-in rejected [:error :code])
+    ${JSON_OUT`{:reject-code (get-in rejected [:error :code])
                  :progressable (count (get-in rejected [:error :summary :progressable]))
                  :park-outcome (get-in parked [:receipt :outcome])
                  :sleepers (count (get-in parked [:board :sleepers]))
@@ -257,7 +255,7 @@ describe("CLJS board kernel", () => {
         resolved (step (:board r3) {:type "resolve_condition" :key "api-ready" :value true}
                        "r4" "A" "cond")
         revived (get-in resolved [:board :tasks parent :state])]
-    ${JSON_OUT `{:waiting waiting :revived revived :parent-id parent
+    ${JSON_OUT`{:waiting waiting :revived revived :parent-id parent
                  :revived-ids (get-in resolved [:receipt :revived-task-ids])
                  :wait-for (get-in resolved [:board :tasks parent :wait-for])}`}))`);
 
@@ -280,7 +278,7 @@ describe("CLJS board kernel", () => {
         changed (step (:board a1) {:type "claim" :taskId task-id
                                     :atomicityReason "different reason"}
                       "same" "A" "claim")]
-    ${JSON_OUT `{:first (:ok a1) :second-replayed (:replayed a2)
+    ${JSON_OUT`{:first (:ok a1) :second-replayed (:replayed a2)
                  :same-claim (= (get-in a1 [:receipt :claim-id])
                                 (get-in a2 [:receipt :claim-id]))
                  :changed-code (get-in changed [:error :code])}`}))`);
@@ -289,5 +287,75 @@ describe("CLJS board kernel", () => {
 		expect(out["second-replayed"]).toBe(true);
 		expect(out["same-claim"]).toBe(true);
 		expect(out["changed-code"]).toBe("CALL_REPLAY_MISMATCH");
+	});
+
+	it("T05/T06: dynamically assigns new token tasks before retirement and keeps them free after retirement", async () => {
+		const out = await scenario(`
+(defn ^:async scenario []
+  ${PRELUDE}
+  (let [s0 (m/initial-board {:mode :swarm})
+        r1 (reg s0 "A" "S1" "r1")
+        r2 (reg (:board r1) "B" "S2" "r2")
+        r3 (add-task (:board r2) "A" "r3" {:goal "x" :remaining_work "work-x" :done_when "done-x" :needs_token true})
+        tx (first (get-in r3 [:receipt :task-ids]))
+        take-a (step (:board r3)
+                     {:type "take_or_die"
+                      :confirm token/take-or-die-confirmation
+                      :handoff_markdown "A holds"}
+                     "r4" "A" "take")
+        r4 (add-task (:board take-a) "B" "r5" {:goal "y" :remaining_work "work-y" :done_when "done-y" :needs_token true})
+        ty (first (get-in r4 [:receipt :task-ids]))
+        cx (claim (:board r4) "A" "r6" tx "atomic-x")
+        fx (finish (:board cx) "A" "r7" tx (get-in cx [:receipt :claim-id]))
+        a-life-mid (get-in fx [:board :actors "A" :life-state])
+        holder-mid (get-in fx [:board :token-slot :holder-id])
+        cy (claim (:board fx) "A" "r8" ty "atomic-y")
+        fy (finish (:board cy) "A" "r9" ty (get-in cy [:receipt :claim-id]))
+        a-life-end (get-in fy [:board :actors "A" :life-state])
+        token-end (get-in fy [:board :token-slot :state])
+        r5 (add-task (:board fy) "B" "r10" {:goal "z" :remaining_work "work-z" :done_when "done-z" :needs_token true})
+        a-life-after (get-in r5 [:board :actors "A" :life-state])
+        holder-after (get-in r5 [:board :token-slot :holder-id])]
+    ${JSON_OUT`{:a-life-mid a-life-mid
+                 :holder-mid holder-mid
+                 :a-life-end a-life-end
+                 :token-end token-end
+                 :a-life-after a-life-after
+                 :holder-after holder-after}`}))`);
+
+		expect(out["a-life-mid"]).toBe("alive");
+		expect(out["holder-mid"]).toBe("A");
+		expect(out["a-life-end"]).toBe("dead");
+		expect(out["token-end"]).toBe("free");
+		expect(out["a-life-after"]).toBe("dead");
+		expect(out["holder-after"]).toBeNull();
+	});
+
+	it("T11/V02: rejects late normal submissions from a dead actor without mutating the task", async () => {
+		const out = await scenario(`
+(defn ^:async scenario []
+  ${PRELUDE}
+  (let [s0 (m/initial-board {:mode :swarm})
+        r1 (reg s0 "A" "S1" "r1")
+        r2 (reg (:board r1) "B" "S2" "r2")
+        r3 (add-task (:board r2) "B" "r3" {:goal "p" :remaining_work "work-p" :done_when "done-p"})
+        tp (first (get-in r3 [:receipt :task-ids]))
+        cb (claim (:board r3) "B" "r4" tp "atomic-p")
+        claim-b (get-in cb [:receipt :claim-id])
+        r4 (add-task (:board cb) "A" "r5" {:goal "tok" :remaining_work "tok" :done_when "tok" :needs_token true})
+        ta (step (:board r4) {:type "take_or_die" :confirm token/take-or-die-confirmation :handoff_markdown "A"} "r6" "A" "ta")
+        tb (step (:board ta) {:type "take_or_die" :confirm token/take-or-die-confirmation :handoff_markdown "B"} "r7" "B" "tb")
+        late-finish (finish (:board tb) "B" "r8" tp claim-b)
+        p-state (get-in tb [:board :tasks tp :state])
+        p-owner (get-in tb [:board :tasks tp :owner-id])]
+    ${JSON_OUT`{:late-ok (:ok late-finish)
+                 :late-code (get-in late-finish [:error :code])
+                 :p-state p-state
+                 :p-owner p-owner}`}))`);
+
+		expect(out["late-ok"]).toBe(false);
+		expect(out["late-code"]).toBe("ACTOR_DEAD");
+		expect(out["p-state"]).toBe("ready");
+		expect(out["p-owner"]).toBeNull();
 	});
 });
