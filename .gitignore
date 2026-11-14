@@ -1,1 +1,8 @@
-[object Promise]tmp/
+node_modules
+node_modules.*bak
+*.tgz
+.DS_Store
+*.tmp
+.herd/
+.herd-worktrees/
+tmp/
