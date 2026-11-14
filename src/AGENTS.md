@@ -16,12 +16,10 @@
 4. `src/herd/system.cljs`：完整装配接线。注册八个门禁工具（`review`、`attach_brainstorm`、`attach_manual_tests`、`attach_dev_guide`、`attach_coordination`、`ask_user`、`devops`、`submit_devops_report`）、11 个 `board_*` 与 `attach_case_audit`；提供 `/herd <seed>` 命令、mission 与 `.herd/focus.edn`、阶段/角色工具面、Nudge、S1 面板端口、S5 runner/审计端口与 health 记录。
 5. `src/herd/swarm/runner.cljs`、`src/herd/swarm/auditors.cljs`：单工作区 S5 Reviewer ⇄ Swarm 接力与 K 路审计，已由 `system.cljs` 接线。
 
-保留但不由清单加载：
+JS 边界层（`src/` 下仅保留以下活跃 `.mjs` 文件，旧 `main.mjs`、`bootstrap-main.mjs`、`tui/`、`prompts/`、`stages/`、`swarm/`、`clj-sandbox/`、`sandbox/` 及旧 `util/{atomic-write,file-lock,broker}.mjs`、`host/{health,model-seed,hack-system-prompt,session-key}.mjs` 均已删除）：
 
-- `src/main.mjs`、`src/bootstrap-main.mjs`：旧完整装配入口，仍引用旧模块与 `src/tui/*`。
-- `src/tui/*`：看板已按用户 2026-11-14 指令整体移除；源码保留，但没有任何被清单加载的入口 import 或挂载。`tests/cljs-dashboard-wiring.test.mjs` 只断言从不挂载。
-- `src/clj-sandbox/*`、`src/stages/*`、`src/swarm/*`：旧 mjs 实现，保留未加载，待删除。
-- `src/host/*.mjs` 是宿主适配层：`hack-context`、`imports`、`native-runner`、`subprocess`、`language-detect` 由 `src/clj-main.mjs` 直接 import；`health` 被旧 `main.mjs`、`bootstrap-main.mjs` 与 `tui/dashboard-widget.mjs` 使用；清单入口不加载这些模块。
+- `src/host/*.mjs` 是宿主适配层：`hack-context`、`imports`、`native-runner`、`subprocess`、`language-detect` 由 `src/clj-main.mjs` 直接使用。
+- `src/util/errors.mjs` 为宿主子代理边界提供错误码与 EDN 错误渲染（由 `src/host/subprocess.mjs` 使用）。
 
 `src/herd/main.cljs` 的 `before-agent-start` 负责系统提示词注入：`herd.prompts/common-rules-text` 包含 `# Repo-aware Rules`、11 段 `COMMON_CORE_RULES` 与 `UFSS_PROMPT_NOTE`；用 `<!-- herdchestra:system-prompt v1 -->` 受管区替换旧块，支持 string 与 string[] prompt，检测到标题已存在则替换（幂等），异常时 fail-open 返回宿主原提示词。`herd.system/briefing-for` 在使命会话中追加当前阶段的 S1–S5 简报；子代理不注入。语言纪律仍由出站 `context` 尾注注入。
 
@@ -29,7 +27,7 @@ omp 在进程内缓存已加载的 ESM 模块，系统提示词在会话启动�
 
 `src/clj-main.mjs` 不再维护宿主工具黑名单。`herd.main/apply-tool-surface!` 调 `system/apply-mission-surface!`：只有使命内主会话（S1–S5）或显式 herd 角色才收窄；没有使命的主会话与无收窄角色的普通子代理保留全部宿主工具，并追加 `clj_devops`、`wait`、`handoff`（devops 面）。`/vibe` 主代理除外：不追加、不调用 `setActiveTools`。收窄失败记 health degraded 并保留当前面，不静默删工具。启动侧有单例：并发激活共享 `globalThis.__herdBootPromise`，失败清空以便重试；`contextPis`、`activated-pis` 与 `system/installed-pis` 是 per-pi `WeakSet`，同一进程多 pi 各自安装一次。
 
-默认运行时是 `nbb`：`src/clj-main.mjs` 通过 `createRequire` 加载插件自带的 nbb，并注册 formatter；CLJS 侧通过 `src/herd/bootstrap.cljs` 加载。旧 `src/clj-sandbox/*`（Cherry/CEK/VFS）不在当前加载链上。
+默认运行时是 `nbb`：`src/clj-main.mjs` 通过 `createRequire` 加载插件自带的 nbb，并注册 formatter；CLJS 侧通过 `src/herd/bootstrap.cljs` 加载。
 
 ## 2 当前单向依赖图
 
@@ -39,15 +37,18 @@ omp 在进程内缓存已加载的 ESM 模块，系统提示词在会话启动�
 clj-main
   ├── host/{hack-context,imports,native-runner,subprocess,language-detect}
   └── herd/bootstrap ── herd/main
-                          ├── herd/{handoff,highlight,prompts,repl,system,ufss}
+                          ├── herd/{handoff,prompts,repl,system,ufss,ui}
                           └── herd/system
-                                ├── herd/{repl,ufss,util/atomic-write}
+                                ├── herd/{repl,ufss,ui,util/atomic-write}
                                 ├── herd/stages/{audit,disclosures,gates,paths,store,tenure}
                                 └── herd/swarm/{auditors,model,runner,store,tools}
 
-herd/repl ── herd/{sandbox,ufss}
-herd/system ── herd/{repl,ufss,util/atomic-write}
-herd/stages/gates ── herd/stages/{attach,disclosures,parsers,store,tenure}、herd/ufss、herd/util/atomic-write
+herd/ui ── herd/{highlight,ufss}
+herd/sandbox ── herd/clock
+herd/repl ── herd/{clock,sandbox,ufss}
+herd/system ── herd/{repl,ufss,ui,util/atomic-write}
+herd/stages/gates ── herd/stages/{attach,disclosures,parsers,store,tenure}、herd/ufss、herd/ui、herd/util/atomic-write
+herd/gates_host ── herd/stages/gates、herd/ufss
 herd/stages/attach ── herd/stages/{parsers,paths,store,tenure}、herd/util/atomic-write
 herd/stages/store ── herd/stages/{mission,paths}、herd/ufss、herd/util/atomic-write
 herd/stages/report ── herd/util/atomic-write
@@ -72,23 +73,23 @@ herd/swarm/store ── herd/swarm/{edn,model}
 |---|---|---|
 | `src/clj-main.mjs` | 唯一清单入口、nbb 引导、宿主 subagent port、Runner 捕获 | `host/*`、`herd/bootstrap` |
 | `src/herd/bootstrap.cljs` | CLJS 源码定位与加载顺序 | `herd/ufss` |
-| `src/herd/main.cljs` | CLJ 工具面、系统提示词受管区、handoff 消费、usage/status、trace | `herd/{handoff,highlight,prompts,repl,system,ufss}` |
+| `src/herd/main.cljs` | CLJ 工具面、系统提示词受管区、handoff 消费、usage/status、trace | `herd/{handoff,prompts,repl,system,ufss,ui}` |
+| `src/herd/ui.cljs` | 所有 CLJ/门禁/看板/审计工具的统一视觉渲染（Title --- [Tag] + hrule + EDN+UFSS） | `herd/{highlight,ufss}` |
 | `src/herd/system.cljs` | 完整装配、`/herd`、mission/focus、阶段/角色面、Nudge、S1 面板、S5 端口 | `herd/stages/*`、`herd/swarm/*` |
 | `src/herd/repl.cljs` | nbb 程序生命周期、park/unpark/abandon、`guard-source!` | `herd/{sandbox,ufss}` |
 | `src/herd/sandbox.cljs` | 异步 fs、跨进程写锁、`glob`/`where`/`call` 边界 | — |
 | `src/herd/handoff.cljs` | 双锚点解码、覆盖去重、解不了即字面 | — |
 | `src/herd/ufss.cljs` | EDN reader/writer、UFSS fence、canonical | — |
 | `src/herd/prompts.cljs` | COMMON 规范、角色提示词、UFSS 注记 | — |
-| `src/herd/stages/*.cljs` | 门禁解析、tenure、mission/store、review/attach、报告、审计提交 | `herd/ufss`、`herd/util/atomic-write` |
-| `src/herd/swarm/*.cljs` | 看板内核/存储/工具、单工作区 runner、K 路审计 | `herd/stages/*`、`herd/ufss` |
+| `src/herd/stages/*.cljs` | 门禁解析、tenure、mission/store、review/attach、报告、审计提交 | `herd/ufss`、`herd/ui`、`herd/util/atomic-write` |
+| `src/herd/swarm/*.cljs` | 看板内核/存储/工具、单工作区 runner、K 路审计 | `herd/stages/*`、`herd/ufss`、`herd/ui` |
 | `src/herd/util/atomic_write.cljs` | 同目录临时文件 + fsync + rename | — |
-| `src/host/*.mjs` | 宿主 imports、native runner、subprocess、hack context、health | 宿主包 |
-| `src/tui/*.mjs` | 旧看板组件；保留未加载 | — |
-| `src/clj-sandbox/*`、`src/stages/*`、`src/swarm/*` | 旧 mjs 实现；保留未加载，待删除 | — |
+| `src/host/*.mjs` | 宿主 imports、native runner、subprocess、hack context、language-detect | 宿主包、`util/errors` |
+| `src/util/errors.mjs` | 宿主边界错误码与 EDN 错误渲染 | — |
 
 ## 4 当前装配状态
 
-- **完整装配已默认启用**（见 §1）：`src/clj-main.mjs` → `herd/bootstrap.cljs` → `herd/main.cljs` + `herd/system.cljs`。`/herd`、八门禁、11 个 `board_*`、`attach_case_audit`、S5 单工作区 runner 与 K 路审计都已接线。TUI 看板已按用户 2026-11-14 指令整体移除，不再挂载；`src/tui/*` 与旧 `src/main.mjs` 保留但不由清单加载。
+- **完整装配已默认启用**（见 §1）：`src/clj-main.mjs` → `herd/bootstrap.cljs` → `herd/main.cljs` + `herd/system.cljs`。`/herd`、八门禁、11 个 `board_*`、`attach_case_audit`、S5 单工作区 runner 与 K 路审计都已接线；TUI 看板已整体移除，`src/tui/*` 与旧 `src/*.mjs` 已删除；全部工具均已接入统一 `herd/ui` 渲染。
 - **park/unpark（2026-11-14）**：`park` 只挂起工具等待，不取消、不重启已启动的 `call`；后台 Promise 继续运行。`park` 回执自动带自上次展示以来的增量 `:stdout`/`:stderr` 与 `:call-active true`（有活跃 call 时）。`unpark` 先对活跃 call 灌入字符串或 `{:stdin ... :eof ...}`，同时 resolve 挂起表达式，然后等待原程序 Promise 完成并返回最终结果；再次 park 返回新的 parked 回执。`abandon` 仍是唯一强制清理入口。`tests/cljs-sandbox.test.mjs` 覆盖增量输出与 stdin 灌入。
 - `clj_devops` 已删除必填 `scope`（`turnsRemaining`/`todosRemaining`），改为必填 `agent_state` 枚举（`Orienting`/`Converging`/`Consolidating`/`Stagnant`/`Drifting`/`Densifying`/`Reorienting`/`Settled`）；`clj_devops` 的渲染标题把英文枚举映射为中文标签（如 `--- [探索定向]`），仍用 dim 样式。该字段只用于 LLM 自报控制流状态，不改变能力、令牌或验收；工具结果 EDN 前只在状态切换时加一行 `;` 状态注释（连续同态不重复）。
 - 默认不再调用 `ctx.ui.setToolsExpanded(true)`；展开态由宿主默认与用户切换决定。`clj_devops` 的 `renderCall`/`renderResult` 同时支持展开与非展开：非展开保留标题、横线与完整多行正文；多行字符串或长度超过 40 字符的字符串替换为 dim 色的 `$$$`，仅单行且不超过 40 字符的字符串正常渲染；展开显示完整字符串。
@@ -110,12 +111,12 @@ herd/swarm/store ── herd/swarm/{edn,model}
 - **沙盒 console/stdio 防呆**：`herd/repl.cljs` 的 `guard-source!` 在用户代码执行前拒绝 `console`、`js/console`、`globalThis.console`、`js/process.stdout`/`stderr`、`process.stdout`/`stderr` 与 `(.-stdout js/process)` 等直接访问，返回 `:CAPABILITY_DENIED`（`:reason :console-or-stdio-forbidden`）。字符串、字符字面量、注释与 UFSS fence 中的同名词不误杀；`call` 仍用 pipe 捕获 stdout/stderr，但不落盘日志。这是基本防呆，不是安全边界。
 - **usage**：delta 显示最近活动子代理的最后一次请求，sum 合并所有 agent key；主会话后续请求不会把 delta 抢回主会话。
   工作条由真实 hook 事件驱动：`session_start`、`before_agent_start`、`before_provider_request`、`message_start`、`message_end`、`message_update`、`tool_execution_start`、`tool_execution_update`、`tool_execution_end`。`message_update` 与 `tool_execution_update` 只用于检测官方覆盖：宿主提供 `getWorkingMessage` 时优先读取；否则包装 `setWorkingMessage` 记录官方最后写入的文本。只有当前文本不是目标文本时才写回，文本相同不重发；没有 `setInterval`，也没有周期性 `setTimeout`。`ui-render` 的 `:last-working` 按 session 记录最后一次写出的文本；`apply-working-message!` 是唯一写入点，并在 `subagent-ctx?` 为真时跳过，子代理绝不写主 UI。证人：`tests/cljs-working-message.test.mjs`、`tests/cljs-usage.test.mjs`。
-- 旧 `src/*.mjs`（`main.mjs`、`bootstrap-main.mjs`、`clj-sandbox/*`、`stages/*`、`swarm/*`、`tui/*`）保留但不由清单加载；不要为旧工具名添加别名或兼容 shim。
+- 旧 `src/*.mjs` 实现已全部删除，不得恢复或为旧工具名添加别名或兼容 shim。
 - 真实宿主 S1→S5 端到端、tmux 交互、重启恢复与全量交错矩阵尚未验收；不得把组件窄测或 `omp -p` 冒烟当成验收（D3、D4、D5、D7）。
 
 ## 5 迁移完成状态
 
-旧运行时路径 `src/pi-goal/`、`src/pi-context/`、`src/editor-theme/`、`src/context/`、`src/manual-acceptance/`、旧提示词模块、`src/util/objects.mjs`、旧入口与旧 manual-acceptance 测试均已删除。当前业务实现位于 `src/herd/*.cljs`；`src/clj-sandbox/*`、`src/stages/*`、`src/swarm/*`、`src/tui/*`、`src/main.mjs` 与 `src/bootstrap-main.mjs` 是保留的旧 mjs，不由清单加载，待按 `MIGRATION.md` 删除。启动单例、per-pi 安装、vibe 工具面与 500ms 锁等待已收口；`src/tui/*` 保留但不由清单加载。当前测试面为 431 pass / 1 skip / 0 fail / 44 files（约 16.2s），但它只保护组件与接线。真实端到端验收仍由 `DEBT.md` D3 记录，不能用迁移完成代替验收。独立开发验收包只位于 `tools/dev-acceptance/`。
+旧运行时路径（`src/pi-goal/`、`src/pi-context/`、`src/editor-theme/`、`src/context/`、`src/manual-acceptance/`、`src/main.mjs`、`src/bootstrap-main.mjs`、`src/clj-sandbox/`、`src/stages/`、`src/swarm/`、`src/tui/`、`src/prompts/`、`src/sandbox/`、`src/host/{health,model-seed,hack-system-prompt,session-key}.mjs`、`src/util/{atomic-write,file-lock,broker}.mjs`）及对应旧 `.mjs` 测试均已删除。当前业务实现位于 `src/herd/*.cljs`，`src/` 下仅保留 `clj-main.mjs`、`host/*` 与 `util/errors.mjs`。启动单例、per-pi 安装、vibe 工具面、500ms 锁等待、每程序独立命名空间隔离与全工具 `herd/ui` 渲染均已收口。当前测试面为 267 pass / 0 fail / 25 files（`tests/fast.test.mjs` 45 pass / 0 fail），但它只保护组件与接线。真实端到端验收仍由 `DEBT.md` D3 记录，不能用迁移完成代替验收。独立开发验收包只位于 `tools/dev-acceptance/`。
 
 不要恢复这些旧路径，也不要为旧工具名添加别名或兼容 shim。若发现新的 legacy 引用，按根规格 §9.6 先确认无消费者再删除，并同步本文件与 `DEBT.md`。
 

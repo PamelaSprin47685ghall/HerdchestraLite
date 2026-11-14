@@ -10,29 +10,33 @@
 (defonce programs (atom {}))
 (defonce abandoned (atom #{}))
 
-(def ^:private prelude
-  (str (string/join
-         "\n"
-         ["(require '[herd.sandbox :as sandbox])"
-          "(require '[herd.repl :as repl])"
-          "(def cat (fn [request] (sandbox/guarded :cat (fn [] (sandbox/cat request)))))"
-          "(def read (fn [request] (sandbox/guarded :read (fn [] (sandbox/read request)))))"
-          "(def stat (fn [request] (sandbox/guarded :stat (fn [] (sandbox/stat request)))))"
-          "(def ls (fn [request] (sandbox/guarded :ls (fn [] (sandbox/ls request)))))"
-          "(def glob (fn [request] (sandbox/guarded :glob (fn [] (sandbox/glob request)))))"
-          "(def where (fn [request] (sandbox/guarded :where (fn [] (sandbox/where-with-name @sandbox/current-name request)))))"
-          "(def whereAll (fn [request] (sandbox/guarded :whereAll (fn [] (sandbox/whereAll request)))))"
-          "(def write (fn [request] (sandbox/guarded :write (fn [] (sandbox/write-with-name @sandbox/current-name request)))))"
-          "(def mkdir (fn [request] (sandbox/guarded :mkdir (fn [] (sandbox/mkdir-with-name @sandbox/current-name request)))))"
-          "(def rm (fn [request] (sandbox/guarded :rm (fn [] (sandbox/rm-with-name @sandbox/current-name request)))))"
-          "(def mv (fn [request] (sandbox/guarded :mv (fn [] (sandbox/mv-with-name @sandbox/current-name request)))))"
-          "(def call (fn"
-          "            ([request] (sandbox/guarded :call (fn [] (sandbox/call request))))"
-          "            ([request timeout-ms] (sandbox/guarded :call (fn [] (sandbox/call request timeout-ms))))))"
-          "(def park (fn [request] (sandbox/guarded :park (fn [] (sandbox/park request)))))"
-          "(def unpark (fn [request] (sandbox/guarded :unpark (fn [] (repl/unpark request)))))"
-          "(def abandon (fn [request] (sandbox/guarded :abandon (fn [] (repl/abandon request)))))"])
-       "\n"))
+(defonce eval-seq (atom 0))
+
+(defn- prelude-for [program-name ns-sym]
+  (let [n (pr-str program-name)]
+    (str (string/join
+           "\n"
+           [(str "(ns " ns-sym ")")
+            "(require '[herd.sandbox :as sandbox])"
+            "(require '[herd.repl :as repl])"
+            (str "(def cat (fn [request] (sandbox/guarded-for " n " :cat (fn [] (sandbox/cat request)))))")
+            (str "(def read (fn [request] (sandbox/guarded-for " n " :read (fn [] (sandbox/read request)))))")
+            (str "(def stat (fn [request] (sandbox/guarded-for " n " :stat (fn [] (sandbox/stat request)))))")
+            (str "(def ls (fn [request] (sandbox/guarded-for " n " :ls (fn [] (sandbox/ls request)))))")
+            (str "(def glob (fn [request] (sandbox/guarded-for " n " :glob (fn [] (sandbox/glob request)))))")
+            (str "(def where (fn [request] (sandbox/guarded-for " n " :where (fn [] (sandbox/where-with-name " n " request)))))")
+            (str "(def whereAll (fn [request] (sandbox/guarded-for " n " :whereAll (fn [] (sandbox/whereAll request)))))")
+            (str "(def write (fn [request] (sandbox/guarded-for " n " :write (fn [] (sandbox/write-with-name " n " request)))))")
+            (str "(def mkdir (fn [request] (sandbox/guarded-for " n " :mkdir (fn [] (sandbox/mkdir-with-name " n " request)))))")
+            (str "(def rm (fn [request] (sandbox/guarded-for " n " :rm (fn [] (sandbox/rm-with-name " n " request)))))")
+            (str "(def mv (fn [request] (sandbox/guarded-for " n " :mv (fn [] (sandbox/mv-with-name " n " request)))))")
+            (str "(def call (fn"
+                 "            ([request] (sandbox/guarded-for " n " :call (fn [] (sandbox/call-with-name " n " request nil))))"
+                 "            ([request timeout-ms] (sandbox/guarded-for " n " :call (fn [] (sandbox/call-with-name " n " request timeout-ms))))))")
+            (str "(def park (fn [request] (sandbox/guarded-for " n " :park (fn [] (sandbox/park-with-name " n " request)))))")
+            (str "(def unpark (fn [request] (sandbox/guarded-for " n " :unpark (fn [] (repl/unpark request)))))")
+            (str "(def abandon (fn [request] (sandbox/guarded-for " n " :abandon (fn [] (repl/abandon request)))))")])
+         "\n")))
 
 (defn- timeout-error []
   (ex-info "program timed out" {:code :STALLED}))
@@ -54,8 +58,9 @@
     (fn [resolve]
       (swap! sandbox/notifiers assoc name resolve))))
 
-(defn- source [_name code]
-  (str prelude (ufss/unwrap code) "\n"))
+(defn- source [name code]
+  (let [ns-sym (str "herd.run.p" (swap! eval-seq inc))]
+    (str (prelude-for name ns-sym) (ufss/unwrap code) "\n")))
 
 (def ^:private forbidden-source-patterns
   [[#"(?<![\w-])js/process\.stdout(?![\w-])" "js/process.stdout"]
@@ -369,23 +374,26 @@ Reject direct console or stdio access and capabilities outside the current
   (sandbox/begin-program! name)
   (swap! running conj name)
   (reset! sandbox/current-name name)
-  (let [n (notifier name)
-        p (try
-            (guard-source! code role)
-            (evaluate name code)
-            (catch :default error
-              (js/Promise.reject error)))
-        tracked (track! name p)]
-    (-> (js/Promise.race #js [tracked n (after 2000 fork-token)])
-        (.then (fn [value]
-                 (if (identical? value fork-token)
-                   {:name name :state :forked}
-                   (receipt name value))))
-        (.catch (fn [error]
-                  (if (or (contains? @abandoned name)
-                          (= :ABANDONED (:code (ex-data error))))
-                    {:name name :state :abandoned}
-                    (failed-receipt name error)))))))
+  (sandbox/with-program-name
+    name
+    (fn []
+      (let [n (notifier name)
+            p (try
+                (guard-source! code role)
+                (evaluate name code)
+                (catch :default error
+                  (js/Promise.reject error)))
+            tracked (track! name p)]
+        (-> (js/Promise.race #js [tracked n (after 2000 fork-token)])
+            (.then (fn [value]
+                     (if (identical? value fork-token)
+                       {:name name :state :forked}
+                       (receipt name value))))
+            (.catch (fn [error]
+                      (if (or (contains? @abandoned name)
+                              (= :ABANDONED (:code (ex-data error))))
+                        {:name name :state :abandoned}
+                        (failed-receipt name error)))))))))
 
 (defn run
   ([name code deadline] (run-role name code deadline :devops))

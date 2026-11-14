@@ -13,8 +13,9 @@
    [herd.swarm.edn :as edn]
    [herd.swarm.model :as model]
    [herd.swarm.store :as store]
-   [herd.util.atomic-write :as atomic]
-   [herd.ufss :as ufss]))
+   [herd.ufss :as ufss]
+   [herd.ui :as ui]
+   [herd.util.atomic-write :as atomic]))
 
 ;; K-path S5 audit scheduling.
 ;;
@@ -73,8 +74,10 @@
    (str ".herd/missions/" slug "/s2-cases.edn")])
 
 (defn validate-dataset
-  "Strictly validate a parsed `s2-cases.edn` value. Accepts either the bare
-   cases array or `{:cases [...]}`."
+  """
+Strictly validate a parsed `s2-cases.edn` value. Accepts either the bare
+   cases array or `{:cases [...]}`.
+"""
   [value]
   (let [cases (cond
                 (and (map? value) (contains? value :cases)) (:cases value)
@@ -96,8 +99,10 @@
            :message "s2-cases.edn failed strict CASE schema validation"})))))
 
 (defn ^:async read-case-dataset
-  "Read and validate the CASE dataset. `options.dataset` short-circuits I/O and
-   is intended for tests and offline migration tooling."
+  """
+Read and validate the CASE dataset. `options.dataset` short-circuits I/O and
+   is intended for tests and offline migration tooling.
+"""
   ([root slug] (read-case-dataset root slug {}))
   ([root slug options]
    (if (contains? options :dataset)
@@ -129,7 +134,7 @@
 
 (defn- excluded? [root source]
   (let [relative (-> (path/relative root source)
-                     (string/replace "\\" "/"))
+                     (string/replace #"\"# "/"))
         segments (string/split relative #"/")]
     (boolean (some #{"node_modules" ".git" ".herd"} segments))))
 
@@ -226,22 +231,60 @@
         case-spec (:case context)
         isolation (:isolation context)
         slug (:slug context)]
-    (str "[ROLE: CONCURRENT MANUAL AUDITOR — " (:case_id case-spec) " ONLY]\n"
-         "Mission: " (or (:mission-id mission) "unknown") " (slug: " slug ")\n\n"
-         "Contract paths (frozen by convention; read-only):\n"
+    (str "[ROLE: CONCURRENT MANUAL AUDITOR — " (:case_id case-spec) """
+ ONLY]
+
+"""
+         "Mission: " (or (:mission-id mission) "unknown") " (slug: " slug """
+)
+
+
+"""
+         """
+Contract paths (frozen by convention; read-only):
+
+"""
          (string/join "\n" (map #(str "- " %) (contract-paths slug))) "\n\n"
          "You own exactly one CASE: " (:case_id case-spec)
-         " (path: " (:path case-spec) ", PASS threshold: " (:threshold case-spec) "/100).\n"
-         "The framework has already validated the CASE dataset. The injected CASE record below is the sole authority for what to execute and how to score; do not read the dataset or other CASE data.\n\n"
-         "Injected CASE record:\n" (render-case-record case-spec) "\n\n"
-         "Other auditors are attacking the other CASEs in parallel right now. Spend 100% of your budget trying to falsify this single CASE against real software behavior.\n"
-         "Use `clj_auditor` (read-only inspection of the main workspace, tmux pane capture, destructive experiments only inside your isolated copy) and never spawn a subagent.\n"
+         " (path: " (:path case-spec) ", PASS threshold: " (:threshold case-spec) """
+/100).
+
+"""
+         """
+The framework has already validated the CASE dataset. The injected CASE record below is the sole authority for what to execute and how to score; do not read the dataset or other CASE data.
+
+
+"""
+         """
+Injected CASE record:
+
+""" (render-case-record case-spec) "\n\n"
+         """
+Other auditors are attacking the other CASEs in parallel right now. Spend 100% of your budget trying to falsify this single CASE against real software behavior.
+
+"""
+         """
+Use `clj_auditor` (read-only inspection of the main workspace, tmux pane capture, destructive experiments only inside your isolated copy) and never spawn a subagent.
+
+"""
          "Isolation: your working copy is " (:cwd isolation)
-         "; your tmux session name is `" (:session-name isolation) "`.\n"
-         "The main workspace is strictly read-only. Do not create an evidence directory; your only durable output is the `attach_case_audit` submission.\n"
-         "Automatic tests, CI, builds, coverage, and paperwork are not acceptance evidence.\n"
+         "; your tmux session name is `" (:session-name isolation) """
+`.
+
+"""
+         """
+The main workspace is strictly read-only. Do not create an evidence directory; your only durable output is the `attach_case_audit` submission.
+
+"""
+         """
+Automatic tests, CI, builds, coverage, and paperwork are not acceptance evidence.
+
+"""
          "Finish strictly by calling `attach_case_audit` once with case_id: "
-         (pr-str (:case_id case-spec)) ", finite user_score (0..100), finite developer_score (0..100), and complete human-readable report_markdown.\n")))
+         (pr-str (:case_id case-spec)) """
+, finite user_score (0..100), finite developer_score (0..100), and complete human-readable report_markdown.
+
+""")))
 
 (defn auditor-request [deps context]
   (let [mission (:mission context)
@@ -281,8 +324,8 @@
                   (fn [resolve]
                     (reset! timer
                             ((or (:set-timeout deps) js/setTimeout) (fn [] (resolve {:audit-timeout true}))
-                                           (max 1 timeout-ms)
-                                           case-id))))]
+                             (max 1 timeout-ms)
+                             case-id))))]
     (try
       (let [result (await (js/Promise.race (into-array [promise timeout])))]
         (when (and (map? result) (:audit-timeout result))
@@ -402,9 +445,11 @@
                :error (:error submitted)})))))))
 
 (defn ^:async start-auditors!
-  "Start all K auditors concurrently from already validated case specs.
+  """
+Start all K auditors concurrently from already validated case specs.
    Every auditor gets exactly one CASE record; the function never serializes
-   or skips a CASE."
+   or skips a CASE.
+"""
   [deps case-specs options]
   (let [specs (vec case-specs)
         batch-id (or (:batch-id options)
@@ -551,155 +596,154 @@
                      (str "audit-" slug "-" (short-token deps)))
         resume-submissions (vec (or (:resume-submissions options) []))
         resumed-ids (set (map :case_id resume-submissions))]
-     (cond
-       (not (and (text? root) (text? slug) (re-matches slug-pattern slug)))
-       (failure :INVALID_ARGUMENT "the audit batch needs a valid root and slug"
-                {:field (if (text? root) :slug :root)})
+    (cond
+      (not (and (text? root) (text? slug) (re-matches slug-pattern slug)))
+      (failure :INVALID_ARGUMENT "the audit batch needs a valid root and slug"
+               {:field (if (text? root) :slug :root)})
 
-       (nil? subagent)
-       (failure :HOST_API_MISMATCH
-                "the host exposes no runSubagent port; auditors cannot start"
-                {:port :subagent})
+      (nil? subagent)
+      (failure :HOST_API_MISMATCH
+               "the host exposes no runSubagent port; auditors cannot start"
+               {:port :subagent})
 
-       (not (map? mission))
-       (failure :INVALID_ARGUMENT
-                "the audit batch needs the mission contract (mission-id, revision)"
-                {:field :mission})
+      (not (map? mission))
+      (failure :INVALID_ARGUMENT
+               "the audit batch needs the mission contract (mission-id, revision)"
+               {:field :mission})
 
-       :else
-       (let [dataset (await (read-case-dataset root slug
-                                               (cond-> {}
-                                                 (contains? deps :dataset) (assoc :dataset (:dataset deps)))))
-]
-         (cond
-           (not (:ok dataset))
-           dataset
+      :else
+      (let [dataset (await (read-case-dataset root slug
+                                              (cond-> {}
+                                                (contains? deps :dataset) (assoc :dataset (:dataset deps)))))]
+        (cond
+          (not (:ok dataset))
+          dataset
 
-           :else
-           (let [case-specs (:cases dataset)
-      snapshot-paths (or (:snapshot-paths deps) (contract-paths slug))
-      snapshot-port (or (:snapshot-workspace! deps)
-                        (fn [request] (snapshot-workspace-default! request)))
-      before (await (snapshot-port {:root root :paths snapshot-paths :slug slug}))
-      specs-to-start (vec (remove (fn [spec]
-                                    (contains? resumed-ids (:case_id spec)))
-                                  case-specs))
-      started (if (:ok before)
-                (if (empty? specs-to-start)
-                  {:ok true
-                   :batch-id batch-id
-                   :case-specs []
-                   :results []
-                   :submissions []
-                   :timeouts []
-                   :errors []}
-                  (await (start-auditors! deps specs-to-start
-                                          (assoc options :batch-id batch-id))))
-                (failure :INVALID_ARGUMENT
-                         "the pre-audit workspace snapshot failed"
-                         {:snapshot before}))](if-not (:ok before)
-               started
-               (let [after (await (snapshot-port {:root root :paths snapshot-paths :slug slug}))
-                     mutated? (not (snapshot-equal? before after))
-                     resumed-results (mapv (fn [submission]
-                                             {:case-id (:case_id submission)
-                                              :status :submitted
-                                              :submission submission})
-                                           resume-submissions)
-                     results (into resumed-results (:results started))
-                     submissions (into (vec resume-submissions) (:submissions started))
-                     timeout-errors (mapv :error (:timeouts started))
-                     all-errors (vec (concat (:errors started)
-                                             (keep :error (:results started))
-                                             timeout-errors))
-                     aggregate (if mutated?
-                                 nil
-                                 (scores/aggregate
-                                   (aggregate-input deps case-specs submissions
-                                                    before after mission
-                                                    (str "single main workspace; isolated /tmp copies; "
-                                                         "tmux sessions " "herd-" slug "-<CASE>"))))
-                     base {:batch-id (:batch-id started)
-                           :slug slug
-                           :case-ids (:case-ids dataset)
-                           :case-specs case-specs
-                           :results results
-                           :submissions submissions
-                           :timeouts (:timeouts started)
-                           :errors all-errors
-                           :snapshot-before before
-                           :snapshot-after after
-                           :aggregate aggregate
-                           :mandatory "Automatic tests, CI, builds, and coverage are never acceptance evidence."}]
-                 (cond
-                   mutated?
-                   (merge base
-                          {:ok false
-                           :state :workspace-mutated
-                           :verdict :INCOMPLETE
-                           :code :AUDIT_WORKSPACE_MUTATED
-                           :message "the main workspace changed while auditors were running"
-                           :errors (conj all-errors
-                                         (failure :AUDIT_WORKSPACE_MUTATED
-                                                  "the main workspace changed while auditors were running"
-                                                  {:field :snapshot-after}))})
+          :else
+          (let [case-specs (:cases dataset)
+                snapshot-paths (or (:snapshot-paths deps) (contract-paths slug))
+                snapshot-port (or (:snapshot-workspace! deps)
+                                  (fn [request] (snapshot-workspace-default! request)))
+                before (await (snapshot-port {:root root :paths snapshot-paths :slug slug}))
+                specs-to-start (vec (remove (fn [spec]
+                                              (contains? resumed-ids (:case_id spec)))
+                                            case-specs))
+                started (if (:ok before)
+                          (if (empty? specs-to-start)
+                            {:ok true
+                             :batch-id batch-id
+                             :case-specs []
+                             :results []
+                             :submissions []
+                             :timeouts []
+                             :errors []}
+                            (await (start-auditors! deps specs-to-start
+                                                    (assoc options :batch-id batch-id))))
+                          (failure :INVALID_ARGUMENT
+                                   "the pre-audit workspace snapshot failed"
+                                   {:snapshot before}))] (if-not (:ok before)
+                                                           started
+                                                           (let [after (await (snapshot-port {:root root :paths snapshot-paths :slug slug}))
+                                                                 mutated? (not (snapshot-equal? before after))
+                                                                 resumed-results (mapv (fn [submission]
+                                                                                         {:case-id (:case_id submission)
+                                                                                          :status :submitted
+                                                                                          :submission submission})
+                                                                                       resume-submissions)
+                                                                 results (into resumed-results (:results started))
+                                                                 submissions (into (vec resume-submissions) (:submissions started))
+                                                                 timeout-errors (mapv :error (:timeouts started))
+                                                                 all-errors (vec (concat (:errors started)
+                                                                                         (keep :error (:results started))
+                                                                                         timeout-errors))
+                                                                 aggregate (if mutated?
+                                                                             nil
+                                                                             (scores/aggregate
+                                                                               (aggregate-input deps case-specs submissions
+                                                                                                before after mission
+                                                                                                (str "single main workspace; isolated /tmp copies; "
+                                                                                                     "tmux sessions " "herd-" slug "-<CASE>"))))
+                                                                 base {:batch-id (:batch-id started)
+                                                                       :slug slug
+                                                                       :case-ids (:case-ids dataset)
+                                                                       :case-specs case-specs
+                                                                       :results results
+                                                                       :submissions submissions
+                                                                       :timeouts (:timeouts started)
+                                                                       :errors all-errors
+                                                                       :snapshot-before before
+                                                                       :snapshot-after after
+                                                                       :aggregate aggregate
+                                                                       :mandatory "Automatic tests, CI, builds, and coverage are never acceptance evidence."}]
+                                                             (cond
+                                                               mutated?
+                                                               (merge base
+                                                                      {:ok false
+                                                                       :state :workspace-mutated
+                                                                       :verdict :INCOMPLETE
+                                                                       :code :AUDIT_WORKSPACE_MUTATED
+                                                                       :message "the main workspace changed while auditors were running"
+                                                                       :errors (conj all-errors
+                                                                                     (failure :AUDIT_WORKSPACE_MUTATED
+                                                                                              "the main workspace changed while auditors were running"
+                                                                                              {:field :snapshot-after}))})
 
-                   (and (not (:ok aggregate))
-                        (not= :FAIL (:verdict aggregate)))
-                   (let [first-error (or (first all-errors)
-                                         (first (:invalid aggregate))
-                                         (first (:errors aggregate)))]
-                     (merge base
-                            {:ok false
-                             :state :incomplete
-                             :verdict (or (:verdict aggregate) :INCOMPLETE)
-                             :code (or (:code first-error)
-                                       (when (seq (:timeouts started)) :AUDIT_TIMEOUT)
-                                       :AUDIT_MISSING)
-                             :stable-order (:case-ids dataset)}))
+                                                               (and (not (:ok aggregate))
+                                                                    (not= :FAIL (:verdict aggregate)))
+                                                               (let [first-error (or (first all-errors)
+                                                                                     (first (:invalid aggregate))
+                                                                                     (first (:errors aggregate)))]
+                                                                 (merge base
+                                                                        {:ok false
+                                                                         :state :incomplete
+                                                                         :verdict (or (:verdict aggregate) :INCOMPLETE)
+                                                                         :code (or (:code first-error)
+                                                                                   (when (seq (:timeouts started)) :AUDIT_TIMEOUT)
+                                                                                   :AUDIT_MISSING)
+                                                                         :stable-order (:case-ids dataset)}))
 
-                   (= :PASS (:verdict aggregate))
-                   (let [report-result (await (report/write-report!
-                                                root slug aggregate
-                                                {:approval-port (:approval-port deps)
-                                                 :recheck-port (:recheck-port deps)}))]
-                     (merge base
-                            {:ok (boolean (:ok report-result))
-                             :state (if (:ok report-result) :closed :report-refused)
-                             :verdict :PASS
-                             :report report-result
-                             :approval (:approval report-result)
-                             :code (when-not (:ok report-result) (:code report-result))
-                             :errors (if (:ok report-result)
-                                       (:errors aggregate)
-                                       (or (:errors report-result)
-                                           [(failure (or (:code report-result) :APPROVAL_REQUIRED)
-                                                     (or (:message report-result)
-                                                         "the PASS report could not be issued") {})]))}))
+                                                               (= :PASS (:verdict aggregate))
+                                                               (let [report-result (await (report/write-report!
+                                                                                            root slug aggregate
+                                                                                            {:approval-port (:approval-port deps)
+                                                                                             :recheck-port (:recheck-port deps)}))]
+                                                                 (merge base
+                                                                        {:ok (boolean (:ok report-result))
+                                                                         :state (if (:ok report-result) :closed :report-refused)
+                                                                         :verdict :PASS
+                                                                         :report report-result
+                                                                         :approval (:approval report-result)
+                                                                         :code (when-not (:ok report-result) (:code report-result))
+                                                                         :errors (if (:ok report-result)
+                                                                                   (:errors aggregate)
+                                                                                   (or (:errors report-result)
+                                                                                       [(failure (or (:code report-result) :APPROVAL_REQUIRED)
+                                                                                                 (or (:message report-result)
+                                                                                                     "the PASS report could not be issued") {})]))}))
 
-                   :else
-                   (let [specs (repair-specs (:rows aggregate))
-                         repair (if (and (seq specs) (some? (:board deps)))
-                                  (await (add-repair-tasks! deps specs))
-                                  {:ok false
-                                   :error (failure :INVALID_ARGUMENT
-                                                   "FAIL repair needs an open board handle"
-                                                   {:field :board})})
-                         wake (if (and (:ok repair) (some? (:board deps)))
-                                (await (bump-wake! deps :audit-fail-repair))
-                                nil)]
-                     (merge base
-                            {:ok false
-                             :state :repair
-                             :verdict :FAIL
-                             :code :AUDIT_FAIL
-                             :repair {:specs specs
-                                      :task-ids (:task-ids repair)
-                                      :repaired (boolean (:ok repair))
-                                      :error (:error repair)}
-                             :wake wake
-                             :stable-order (:case-ids dataset)
-                             :message "one or more CASEs fell below threshold; repair tasks were written to the board"})))))))))))
+                                                               :else
+                                                               (let [specs (repair-specs (:rows aggregate))
+                                                                     repair (if (and (seq specs) (some? (:board deps)))
+                                                                              (await (add-repair-tasks! deps specs))
+                                                                              {:ok false
+                                                                               :error (failure :INVALID_ARGUMENT
+                                                                                               "FAIL repair needs an open board handle"
+                                                                                               {:field :board})})
+                                                                     wake (if (and (:ok repair) (some? (:board deps)))
+                                                                            (await (bump-wake! deps :audit-fail-repair))
+                                                                            nil)]
+                                                                 (merge base
+                                                                        {:ok false
+                                                                         :state :repair
+                                                                         :verdict :FAIL
+                                                                         :code :AUDIT_FAIL
+                                                                         :repair {:specs specs
+                                                                                  :task-ids (:task-ids repair)
+                                                                                  :repaired (boolean (:ok repair))
+                                                                                  :error (:error repair)}
+                                                                         :wake wake
+                                                                         :stable-order (:case-ids dataset)
+                                                                         :message "one or more CASEs fell below threshold; repair tasks were written to the board"})))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Audit batch state (S5 idempotency)
@@ -740,8 +784,10 @@
        (or (nil? (:history value)) (sequential? (:history value)))))
 
 (defn ^:async read-batch-state!
-  "Read the current batch record. A missing file is a clean slate; an
-   unreadable or invalid record is corrupt and MUST fail closed."
+  """
+Read the current batch record. A missing file is a clean slate; an
+   unreadable or invalid record is corrupt and MUST fail closed.
+"""
   [root slug]
   (let [target (batch-state-path root slug)]
     (try
@@ -777,10 +823,12 @@
          :cause (str error)}))))
 
 (defn- ^:async clear-case-submissions!
-  "Remove the named `<CASE>.submit.edn` files before a fresh batch. The
+  """
+Remove the named `<CASE>.submit.edn` files before a fresh batch. The
    submission files carry no batch marker, so a new batch (including a REPAIR
    retry) needs them gone before its auditors can submit. Each removal names
-   exactly one file."
+   exactly one file.
+"""
   [root slug case-ids]
   (let [directory (path/join root ".herd" "missions" slug "audit")]
     (await (js/Promise.all
@@ -855,8 +903,10 @@
    :history history})
 
 (defn ^:async run-audit-batch!
-  "Run or resume the S5 K-path audit batch. Entry is idempotent through
-   `.herd/missions/<slug>/audit/batch.edn`."
+  """
+Run or resume the S5 K-path audit batch. Entry is idempotent through
+   `.herd/missions/<slug>/audit/batch.edn`.
+"""
   ([deps] (run-audit-batch! deps {}))
   ([deps options]
    (let [root (or (:root deps) (:root options))
@@ -927,9 +977,9 @@
                                                                     case-ids state history result)))]
                            (if (:ok completed)
                              (assoc result :verdict (or (:verdict result) :INCOMPLETE) :batch-state {:ok true
-                                                         :state state
-                                                         :batch-id batch-id
-                                                         :path (:path completed)})
+                                                                                                     :state state
+                                                                                                     :batch-id batch-id
+                                                                                                     :path (:path completed)})
                              (assoc result :batch-state {:ok false
                                                          :state state
                                                          :batch-id batch-id
@@ -1025,6 +1075,8 @@
                              :user_score {:type "number" :minimum 0 :maximum 100}
                              :developer_score {:type "number" :minimum 0 :maximum 100}
                              :report_markdown {:type "string" :minLength 1}}}
+   :renderCall ui/audit-render-call
+   :renderResult ui/audit-render-result
    :execute (fn [call-id params _signal _on-update ctx]
               (execute-attach-case-audit!
                 deps
@@ -1051,24 +1103,32 @@
         (clj->js (tool-result (failure :INTERNAL (or (ex-message error) (str error)) {})))))))
 
 (defn register-audit-tools!
-  "Register `attach_case_audit` on the host extension API. Returns the
-   registered definition for the entry-point contract."
+  """
+Register `attach_case_audit` on the host extension API. Returns the
+   registered definition for the entry-point contract.
+"""
   [pi deps]
   (when-not (and pi (instance? js/Function (.-registerTool pi)))
     (throw (ex-info "host extension API lacks registerTool"
                     {:code :HOST_API_MISMATCH})))
   (let [definition (tool-definition deps)]
-    (.registerTool pi #js {:name (:name definition)
-                           :label (:label definition)
-                           :description (:description definition)
-                           :loadMode (:load-mode definition)
-                           :parameters (clj->js (:parameters definition))
-                           :execute (bridge-execute (:execute definition))})
+    (.registerTool pi
+                   (clj->js
+                     (cond-> {:name (:name definition)
+                              :label (:label definition)
+                              :description (:description definition)
+                              :loadMode (:load-mode definition)
+                              :parameters (:parameters definition)
+                              :execute (bridge-execute (:execute definition))}
+                       (:renderCall definition) (assoc :renderCall (:renderCall definition))
+                       (:renderResult definition) (assoc :renderResult (:renderResult definition)))))
     (assoc definition :registered true)))
 
 (defn install!
-  "Install the S5 audit batch port for the entry point. This contract does not
-   register a model-facing tool: `system.cljs` owns `attach_case_audit`."
+  """
+Install the S5 audit batch port for the entry point. This contract does not
+   register a model-facing tool: `system.cljs` owns `attach_case_audit`.
+"""
   [deps]
   {:runBatch (fn [request]
                (let [request (or request {})

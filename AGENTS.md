@@ -110,7 +110,7 @@ Lite 版不把模型当傻子。它不把每个动作都拆成一条“爷爷辈
 
 运行时是 `nbb`（Node 上的 SCI）。沙箱代码全部是 `src/herd/*.cljs`：`sandbox.cljs` 提供 `cat`/`read`/`write`/`mkdir`/`rm`/`mv`/`ls`/`stat`/`where`/`whereAll`/`call`/`park`/`unpark`/`abandon`，并维护 Promise 护栏；`repl.cljs` 负责程序状态、超时、`wait` 与顶层用户代码执行；用户代码在顶层直接 `require` 任意 nbb 可用命名空间；能力全部是返回 `js/Promise` 的普通函数，不以宏注入 `await`/`^:async`；`promesa.core` 由 nbb 提供但不在 prelude 预加载，LLM 必须自行 `require` 并用于编排；`ufss.cljs` 负责 UFSS pre-pass 与 post-pass。`.mjs` 只做宿主引导与 `pi` 注入。
 
-默认模式注册 `clj_devops`、`wait`、`handoff`。`/clj-status` 已由人类操作员取消，不再属于默认面。系统提示词注入与宿主工具黑名单已接通；Ariadne/Time Leap/Beacon 机制已删除，由 `handoff` 取代。`src/main.mjs`、`src/stages/`、`src/swarm/`、`src/tui/` 是保留的完整装配代码，当前清单不加载。
+默认模式注册 `clj_devops`、`wait`、`handoff`。`/clj-status` 已由人类操作员取消，不再属于默认面。系统提示词注入已接通；Ariadne/Time Leap/Beacon 机制与旧 `.mjs` 实现（`main.mjs`、`bootstrap-main.mjs`、`clj-sandbox/`、`stages/`、`swarm/`、`tui/`）已删除，完整装配已由 `src/herd/*.cljs` 承载。
 
 默认模式下每次 `clj_devops` 调用必须显式提供唯一 `name` 与 `agent_state`；`name` 在运行中不可复用，同一 `toolCallId` 重放返回原回执。
 
@@ -145,7 +145,7 @@ Lite 的实现只能依赖以下宿主语义。具体类型签名以 `omp` 当�
 
 | 能力 | Lite 的用法 | 降级要求 |
 |---|---|---|
-| 扩展清单入口 | `package.json` 的 `omp.extensions` / `pi.extensions` 声明单个主入口（当前 dogfood 为 `clj-main.mjs`，完整版为 `bootstrap-main.mjs`）；入口惰性 `import()` 业务模块。当前清单只声明 `clj-main.mjs`；其余入口与模块是保留代码。 | 加载失败不得阻断宿主会话；失败只让相关能力不可用，并在 `.herd/` 健康降级记录中报告。 |
+| 扩展清单入口 | `package.json` 的 `omp.extensions` / `pi.extensions` 声明唯一主入口 `./src/clj-main.mjs`，惰性引导 `nbb` 与 `src/herd/bootstrap.cljs`。 | 加载失败不得阻断宿主会话；失败只让相关能力不可用，并在 `.herd/` 健康降级记录中报告。 |
 | 扩展工厂与钩子 | `pi.on("before_agent_start" \| "context" \| "before_provider_request" \| "tool_call" \| "tool_execution_end" \| "agent_end" \| "session_start", ...)`；`pi.registerTool`、`pi.registerCommand`、`pi.setActiveTools`、`pi.typebox`。`before_agent_start` 返回 `{systemPrompt}`；`context` 返回 `{messages}`；`before_provider_request` 返回替换后的 payload；`tool_call` 返回 `{block, reason}`，18.x 另支持 `{input}` 改写。 | 钩子缺失时禁用对应功能，不抛到宿主主循环；16.x 若不支持 `{input}`，不得依赖入参改写，工具执行器必须忽略未知字段。 |
 | 子代理执行器 | `runSubprocess({ cwd, agent, task, index, id, signal, sessionFile, artifactsDir, eventBus, outputSchema, modelOverride, modelRegistry, settings, ... })`。`agent` 必须是完整 `AgentDefinition` 对象，不是名字；`artifactsDir` 是子会话 transcript 落盘的唯一开关；`sessionFile` 是父会话链接；`eventBus`/`subagentEventBus` 提供 Agent Hub 实时 progress；`persistArtifacts` 当前不要依赖。 | 子代理启动失败必须留下槽位与责任，不得把任务悄悄丢失；没有 `artifactsDir` 时回执必须明示“仅内存可见”；重启补位。 |
 | 工具面收敛 | 使命激活时只保留当前角色工具；封禁宿主裸 `read` / `write` / `edit` / `bash` 的绕过路径。 | 无法收敛时必须在系统提示词与门禁层双重拒绝，不能只靠模型自觉。 |
@@ -297,7 +297,7 @@ S5 的 dogfood 面是单工作区、单看板：
 4. 继任 Reviewer 空账且 quiescence 通过后，进入 K 路审计；不出现 `attach_s5`。
 5. 初任 Reviewer 首次空账且主工作区已满足契约时，保留一次性 `ask_user` 例外。
 
-`fork_slices`、`join_slice`、`gc_worktrees`、`abandon_slice` 与 worktree/rebase/ff 编排暂不进入 dogfood 工具面；`src/swarm/worktree.mjs` 保留为休眠代码。S4 的 attach 不调用 fork，也不依赖 `runner.forkSlices`。
+`fork_slices`、`join_slice`、`gc_worktrees`、`abandon_slice` 与 worktree/rebase/ff 编排暂不进入单工作区 S5 工具面（旧 `src/swarm/worktree.mjs` 已随旧 `.mjs` 清理删除）。S4 的 attach 不调用 fork，也不依赖 `runner.forkSlices`。
 
 ### 2.6 终局：K 路并发实操审计
 
@@ -851,7 +851,7 @@ COMMON_RULES
 
 ### 6.1 编辑器上方看板（已移除）
 
-TUI 看板已按用户 2026-11-14 指令整体移除。`src/tui/*` 保留为未加载源码，不再挂载，也不作为协议依赖；状态通过 `.herd/` 控制态、工具回执与宿主会话观察。原双态看板、紧凑/展开态、稳定高度锁与 `Ctrl+Shift+T` 要求全部失效。
+TUI 看板已按用户 2026-11-14 指令整体移除。原 `src/tui/*` 源码已删除，不再挂载，也不作为协议依赖；状态通过 `.herd/` 控制态、工具回执与宿主会话观察。原双态看板、紧凑/展开态、稳定高度锁与 `Ctrl+Shift+T` 要求全部失效。
 
 ### 6.2 命令集
 
@@ -1078,9 +1078,9 @@ Lite 不启动独立服务；控制状态由 `omp` 进程内的主会话与子�
 
 ### 8.1 组装与维护纪律
 
-1. 本节的文本是**运行时提示词的规范原文**。实现可以把它们放进 `src/prompts/common.mjs`、`disclosures.mjs`、`roles.mjs`、`runtime-wires.mjs`，但不得改写语义、删减锐度、把禁令软化成建议。
+1. 本节的文本是**运行时提示词的规范原文**。实现放进 `src/herd/prompts.cljs` 与 `src/herd/stages/disclosures.cljs`，不得改写语义、删减锐度、把禁令软化成建议。
 2. 工具名统一为宿主 snake_case：`clj_plan`、`clj_devops`、`clj_review`、`clj_worker`、`clj_auditor`、`ask_user`、`devops`、`review`、`attach_brainstorm`、`attach_manual_tests`、`attach_dev_guide`、`attach_coordination`、`submit_devops_report`、`attach_case_audit`、`board_*`、`wait`、`handoff`。默认模式只注册 `clj_devops`、`wait` 与 `handoff`；不注册 `clj_plan`、`clj_review`、`clj_worker`。设计讨论中出现的 `clj-plan` 等连字符写法是角色面名称，不是工具 ID。
-3. S2–S5 的简报只存在于 `disclosures.mjs`，只在 attach 成功后的 successor 初始化中读取；`common.mjs` 不得 import 它们。S1 简报可以独立导出，由 `/herd` 启动时注入。
+3. S2–S5 的简报只存在于 `src/herd/stages/disclosures.cljs`，只在 attach 成功后的 successor 初始化中读取；`src/herd/prompts.cljs` 不得 require 它们。S1 简报可以独立导出，由 `/herd` 启动时注入。
 4. 角色提示词只包含该角色需要知道的内容；不要把全部角色提示词拼进主会话。子代理的提示词必须自包含。
 5. 任何提示词改动必须同时更新本文件与相应实现；S1 出站请求不得含 S2–S5 关键词、attach 成功后下一阶段简报必须出现、旧 tenure 退休后旧简报必须从出站请求消失，这些由代码评审与人工/运行时观察确认，测试不得断言 LLM-facing 文本内容。
 6. 不允许在提示词中写“每次工具调用都要问用户”“不确定就停下来”这类与常授权无人值守冲突的 grandpa rules。唯一的等待点是 §2.7 的合法出口。
@@ -1416,66 +1416,41 @@ HerdchestraLite/
 ├── plans/                        # 用户可见交付物 (plans/<slug>/s1..s4、s5-report.md)
 └── src/
     ├── AGENTS.md                 # 全局架构师装配笔记与模块单向依赖图
-    ├── bootstrap-main.mjs        # 清单入口 1：惰性 import("./main.mjs")
-    ├── clj-main.mjs              # 薄引导：globalThis.__pi + addClassPath + loadFile("herd/main.cljs")
+    ├── clj-main.mjs              # 唯一清单入口：globalThis.__pi + nbb 引导 + loadFile("herd/bootstrap.cljs")
     ├── herd/
-    │   ├── main.cljs             # 工具注册：clj_devops + wait + handoff
+    │   ├── bootstrap.cljs        # 源码定位、UFSS 预处理与模块加载顺序
+    │   ├── main.cljs             # CLJ 工具注册、提示词受管区、handoff 消费、usage/status、hooks
+    │   ├── system.cljs           # 完整装配：/herd、mission/focus、门禁/看板/审计接线、Nudge、S1 面板
+    │   ├── ui.cljs               # 所有 CLJ/门禁/看板/审计工具的统一视觉渲染
+    │   ├── highlight.cljs        # 宿主高亮与彩虹括号 overlay
     │   ├── handoff.cljs          # 双锚点解码与交接文档排队
     │   ├── prompts.cljs          # COMMON_RULES_TEXT 与 UFSS prompt note
-    │   ├── highlight.cljs        # 宿主高亮与彩虹括号 overlay
-    │   ├── bootstrap.cljs        # 源码预处理与模块加载
-    │   ├── gates_host.cljs       # 完整装配 gate 工具的 JS 适配器
-    │   ├── sandbox.cljs          # 能力：fs、where、call、park/unpark/abandon + Promise 护栏
+    │   ├── gates_host.cljs       # 门禁工具 JS 适配器
+    │   ├── sandbox.cljs          # 能力：fs、where、call、park/unpark/abandon、跨进程写锁
     │   ├── clock.cljs            # 时间源（测试可注入 fake clock）
-    │   ├── repl.cljs             # 程序状态、超时、wait、顶层用户代码执行
-    │   ├── ufss.cljs             # EDN + UFSS 读取、UfssString 打印、prompt note
-    │   ├── stages/               # review/attach/tenure/CASE 等 CLJS 积木
-    │   ├── swarm/                # 看板内核、令牌与 board_* 工具
-    │   └── util/                 # 原子写与锁
-    ├── main.mjs                  # 主装配器：提示词、review/attach、沙箱、蜂群、TUI 与命令
+    │   ├── repl.cljs             # 每程序独立命名空间隔离、超时、wait、顶层用户代码执行
+    │   ├── ufss.cljs             # EDN + UFSS 读取、canonical 打印、prompt note
+    │   ├── stages/               # review/attach/tenure/CASE/report/audit 等 CLJS 积木
+    │   ├── swarm/                # 看板内核、令牌、board_* 工具、单工作区 runner 与 K 路审计
+    │   └── util/                 # 原子写（atomic_write.cljs）
     ├── host/
-    │   ├── imports.mjs           # 宿主与 nbb 的 eager 导入集中处；重导出 native-runner
+    │   ├── imports.mjs           # 宿主包导入与能力探测；重导出 native-runner
     │   ├── native-runner.mjs     # 唯一受控原型捕获：ExtensionRunner.createContext → live runner
     │   ├── subprocess.mjs        # runSubprocess 封装（超时、递归 AbortSignal、Agent Hub 产物）
+    │   ├── hack-context.mjs      # context 钩子与增量持久化屏障
     │   └── language-detect.mjs   # highlight.js 内容语言识别；仅检测，不渲染
-    ├── util/
-    │   ├── atomic-write.mjs      # 同目录 .tmp + fsync + rename
-    │   └── file-lock.mjs         # wx 排他锁、PID 存活检测、陈旧锁回收
-    ├── clj-sandbox/
-    │   ├── ufss.mjs              # 旧 EDN + UFSS 实现（迁移后删除，CLJS 版在 src/herd/ufss.cljs）
-    │   ├── evaluator.mjs         # 旧 CEK 解释器（迁移后删除，nbb 版在 src/herd/repl.cljs）
-    │   ├── where.mjs             # UTF-16 精确匹配与 Ukkonen 带状 DP 诊断
-    │   ├── sandbox-worker.mjs    # 独立 Worker 线程宿主（隔离 CEK/where 计算）
-    │   ├── glob-pool.mjs         # 多核 Worker 池（glob :exec 并发求值）
-    │   ├── vfs.mjs               # call 执行、大小锁桥接、输出上限与取消记账（无写入批次）
-    │   └── tools.mjs             # clj_plan / clj_devops / clj_review / clj_worker / clj_auditor
-    ├── stages/
-    │   ├── disclosures.mjs       # S1–S5 简报（只由 attach successor 初始化读取）
-    │   ├── parsers.mjs           # S1–S4 结构校验、S2 CASE Schema 校验与序列化（不从 Markdown 解析 CASE）
-    │   ├── tenure.mjs            # Plan tenure、review-ready、attach barrier 与 successor 描述
-    │   ├── contract.mjs          # 原子写、S2 CASE 持久化、阶段文档路径推导（无 frozen 哈希）
-    │   ├── gate-tools.mjs        # review、attach_*、ask_user、devops
-    │   └── scores.mjs            # 从 s2-cases.edn 做 K 路审计汇总、min(U,D) 裁决、s5-report.md
-    ├── swarm/
-    │   ├── board.mjs             # board.edn 短事务与 board_* 工具（S5 唯一 board lock）
-    │   ├── worktree.mjs          # 休眠：fork_slices/join_slice、集成锁、rebase + --ff-only、GC
-    │   ├── runner.mjs            # 单工作区 Reviewer ⇄ Swarm 槽位调度、接力、Nudge
-    │   └── auditors.mjs          # K 路审计隔离、主工作区观察、汇总与返工闭环
-    ├── prompts/
-    │   ├── common.mjs            # COMMON（无 S2–S5 剧透）
-    │   ├── roles.mjs             # 角色提示词与 buildCaseAuditorPrompt
-    │   └── runtime-wires.mjs     # LANGUAGE_SKILL、出站尾注、Nudge
-    └── tui/                        # 已按用户指令移除；源码保留，不加载
+    └── util/
+        └── errors.mjs            # 宿主边界错误码与 EDN 错误渲染
 └── tests/                        # 开发者内部属性/交错测试（绝不充当验收证据）
 ```
 
 **模块单向依赖**：
 
 ```text
-host/util → clj-sandbox → stages/swarm → prompts/tui → main
+host/util → herd/{ufss,highlight,ui,clock,sandbox,repl} → herd/{stages,swarm} → herd/{system,main} → clj-main
 ```
 
-底层模块不得 import 上层；`main.mjs` 只装配，不实现看板/门禁逻辑。任何循环依赖视为设计缺陷。`src/swarm/worktree.mjs` 保留为休眠代码，当前 dogfood 不加载、不注册。\n\n### 9.2 文档与实现同步纪律
+底层模块不得 import/require 上层；`clj-main.mjs` 与 `herd/main.cljs` 只做宿主引导与装配，不实现看板/门禁逻辑。任何循环依赖视为设计缺陷。\n\n### 9.2 文档与实现同步纪律
 
 1. **本文件是唯一根规格**。不设根 `README.md` 代替规格；外部库/平台/宿主的实测限制、源码行号、测量数据与复检步骤统一记入 `HACK.md`。
 2. `src/AGENTS.md` 存放全局架构师笔记（模块划分、装配边界、单向依赖图）；各子目录可建局部 `AGENTS.md`，体例参照本文件。AI 有权利和义务直接同步局部规格与源码，无需请示。
@@ -1576,7 +1551,7 @@ host/util → clj-sandbox → stages/swarm → prompts/tui → main
 2. 删除旧实现的所有猴子补丁：`AgentSession.prototype.getContextUsage`、`TUI.prototype` 主题 getter、`_goalCore` 私有属性、`xd://context_compact` 历史改写、`goalService.apply` 替换、Proxy UI 垫片。唯一保留的新例外是 §1.1 的 `ExtensionRunner.prototype.createContext` 捕获；它不是旧实现的延续，且必须保持单文件、懒加载、fail-closed。
 3. 删除旧 CASE Markdown 解析路径：`parseS2Cases`、`extractCaseBlocks`、`extractCaseBlock`、`loadS2Markdown`、`rubric_summary`、`rawBlock` 及任何 Markdown 回退分支；把旧 `s2-manual-tests.md` 中的可执行 CASE 一次性迁移到 `.herd/missions/<slug>/s2-cases.edn`，Markdown 只保留方法论。迁移只由离线迁移工具执行一次，**不进入运行时**；迁移后不得双写、不得从 Markdown 提取或对照 CASE，也不得保留运行时 Markdown 解析回退。旧产物保留只读。
 4. 把 `docs/manual-acceptance/<slug>/requirements.md` 等旧流程迁移为 `plans/<slug>/s1..s5`；旧产物保留只读，不静默删除。
-5. 更新 `package.json`：运行时依赖只保留 `nbb`；`omp.extensions` / `pi.extensions` 只声明单主入口（`clj-main.mjs` 或 `bootstrap-main.mjs`）；`engines.bun` 保留。
+5. 更新 `package.json`：运行时依赖保留 `nbb`、`@chrisoakman/standard-clojure-style` 与 `highlight.js`；`omp.extensions` / `pi.extensions` 只声明单主入口 `./src/clj-main.mjs`；`engines.bun` 保留。
 6. 重新 `omp plugin link`；用 `/herd` 跑一个小型真实使命，验证 S1 `attach_brainstorm` 手工批准、S2–S4 自动、单工作区 S5、K=1 审计、结案。
 7. 迁移后删除旧路径别名、旧工具名与兼容 shim；不留“先走旧路”的隐藏分支。
 

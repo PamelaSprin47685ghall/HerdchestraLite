@@ -17,6 +17,7 @@
    [herd.swarm.store :as swarm-store]
    [herd.swarm.tools :as swarm-tools]
    [herd.ufss :as ufss]
+   [herd.ui :as ui]
    [herd.util.atomic-write :as atomic]))
 
 (def ^:private newline-char (js/String.fromCharCode 10))
@@ -914,12 +915,15 @@
       (fn? (.-registerTool pi))
       (do
         (.registerTool pi
-                       #js {:name name
-                            :label (:label definition)
-                            :description (:description definition)
-                            :loadMode (:load-mode definition)
-                            :parameters (clj->js (:parameters definition))
-                            :execute (:execute definition)})
+                       (clj->js
+                         (cond-> {:name name
+                                  :label (:label definition)
+                                  :description (:description definition)
+                                  :loadMode (:load-mode definition)
+                                  :parameters (:parameters definition)
+                                  :execute (:execute definition)}
+                           (:renderCall definition) (assoc :renderCall (:renderCall definition))
+                           (:renderResult definition) (assoc :renderResult (:renderResult definition)))))
         (swap! names conj name)
         true)
 
@@ -1810,6 +1814,8 @@
                    :description "Submit one Manual Auditor CASE verdict with dual willingness-to-pay scores and a complete report."
                    :load-mode "essential"
                    :parameters (audit-parameters)
+                   :renderCall ui/audit-render-call
+                   :renderResult ui/audit-render-result
                    :execute (bridge-execute-tool
                               (fn [call-id params _signal _on-update ctx]
                                 (audit-execute! params ctx call-id)))}))

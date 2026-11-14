@@ -19,12 +19,15 @@
         (clj->js (tool-failure error))))))
 
 (defn- to-js-definition [definition]
-  #js {:name (:name definition)
-       :label (:label definition)
-       :description (:description definition)
-       :loadMode (:load-mode definition)
-       :parameters (clj->js (:parameters definition))
-       :execute (bridge-execute (:execute definition))})
+  (let [spec (cond-> {:name (:name definition)
+                      :label (:label definition)
+                      :description (:description definition)
+                      :loadMode (:load-mode definition)
+                      :parameters (:parameters definition)
+                      :execute (bridge-execute (:execute definition))}
+               (:renderCall definition) (assoc :renderCall (:renderCall definition))
+               (:renderResult definition) (assoc :renderResult (:renderResult definition)))]
+    (clj->js spec)))
 
 (defn register! [pi deps]
   (when-not (and pi (instance? js/Function (.-registerTool pi)))

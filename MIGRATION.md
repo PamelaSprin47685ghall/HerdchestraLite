@@ -48,7 +48,7 @@
 - [x] 看板：`herd/swarm/{edn,model,ledger,actors,tasks,commands,token,kernel,store,apply}.cljs` 积木化实现；纯内核、令牌生命周期、文件锁、EDN 板、JSONL 事件、checkpoint 与两阶段 `take_or_die` 已由 `tests/cljs-board.test.mjs`（6）与 `tests/cljs-board-store.test.mjs`（5）覆盖。
 - [x] `board_*` host 工具定义与注册：`herd/swarm/tools.cljs` 暴露 11 个 snake_case 工具，回执只投影 receipt；`tests/cljs-board-tools.test.mjs` 覆盖定义、claim/finish、split 版本守卫、take 重放。
 - [x] S5 单工作区 runner 与 K 路审计：`herd/swarm/runner.cljs` 的 Reviewer ⇄ Swarm 接力、quiescence 屏障与 Nudge 已接线；`herd/swarm/auditors.cljs` 的 K 路审计、`.herd/missions/<slug>/audit/batch.edn` 幂等批次、FAIL 返工根任务与 `s5-report.md` 已接线并有测试。审计员隔离是防呆与信任边界，不要求 bwrap。
-- [-] TUI 看板：按用户 2026-11-14 指令移除，覆盖根规格 §6.1；`src/tui/*` 保留但无 import/挂载，`tests/cljs-dashboard-wiring.test.mjs` 只断言从不挂载。
+- [-] TUI 看板：按用户 2026-11-14 指令移除，覆盖根规格 §6.1；`src/tui/*` 已删除，`tests/cljs-dashboard-wiring.test.mjs` 只断言从不挂载。
 - [x] `stages/scores`、`stages/report`（`write-report!` 含 recheck 与批准端口）、`stages/audit`（`attach_case_audit` 持久化）已在 CLJS 层实现并有测试；`src/herd/system.cljs` 已注册 `attach_case_audit` 并注入批准端口。
 - [-] Ariadne 线程、Time Leap、Beacon：已删除，由 `handoff` 取代。
 - [x] 写锁、stamp、events、checkpoint、恢复：`herd/sandbox.cljs` 跨进程写锁与 `stamp`、`herd/swarm/store.cljs` 的 JSONL 事件/checkpoint、`herd/swarm/runner.cljs` 的恢复路径已实现并有窄测；真实重启恢复仍属 D3。
@@ -81,11 +81,11 @@
 | `src/swarm/board.mjs` | 看板短事务、令牌 | `herd/swarm/{edn,model,ledger,actors,tasks,commands,token,kernel,store,apply}.cljs` | [x]（内核/存储/两阶段取令/host 工具/runner 均已接） |
 | `src/swarm/runner.mjs` | Reviewer ⇄ Swarm、接力 | `herd/swarm/runner.cljs`（单工作区；worktree 不接线） | [x] |
 | `src/swarm/auditors.mjs` | K 路审计、提交落盘 | `herd/swarm/auditors.cljs`（隔离路径、批次幂等、FAIL 返工） | [x] |
-| `src/tui/*.mjs` | 双态看板 | 保留未加载；用户指令移除看板 | [-]（指令移除） |
-| `src/host/*.mjs` | imports、native runner、hack context、health | 保留为宿主适配层；`src/clj-main.mjs` 直接 import（`health` 仅旧 `bootstrap-main` 使用） | [x]（有意保留 JS） |
+| `src/tui/*.mjs` | 双态看板 | 已删除；用户指令移除看板 | [-]（已删除） |
+| `src/host/*.mjs` | imports、native runner、subprocess、hack context、language-detect | 保留为宿主适配层；`src/clj-main.mjs` 直接 import（旧 `health`/`model-seed`/`hack-system-prompt`/`session-key` 已删除） | [x]（有意保留 JS） |
 | `src/prompts/*.mjs` | COMMON、角色、尾注 | `herd/prompts.cljs`；系统提示词已由 `before_agent_start` 注入 | [x] |
-| `src/main.mjs` | 完整装配 | `herd/main.cljs` + `herd/system.cljs`；旧文件保留未加载 | [x]（语义已接，旧文件待删） |
-| `src/bootstrap-main.mjs` | 完整入口 | `src/clj-main.mjs` + `herd/bootstrap.cljs`；旧文件保留未加载 | [x]（语义已接，旧文件待删） |
+| `src/main.mjs` | 完整装配 | `herd/main.cljs` + `herd/system.cljs` | [x]（已删除） |
+| `src/bootstrap-main.mjs` | 完整入口 | `src/clj-main.mjs` + `herd/bootstrap.cljs` | [x]（已删除） |
 
 ## 3 迁移规则
 
@@ -96,12 +96,12 @@
 
 ## 4 当前验证
 
-- `env -u BUN_OPTIONS bun test tests --parallel`：431 pass / 1 skip / 0 fail / 2041 expect / 432 tests / 44 files，约 16.2s。`tests/` 下没有 `.disabled` 文件；旧 Cherry/CEK 测试已删除并以 CLJS 测试替代；`tests/fixtures/s5-wiring-scenario.mjs` 已删除。
+- `env -u BUN_OPTIONS bun test tests --parallel`：267 pass / 0 fail / 1524 expect / 25 files（`tests/fast.test.mjs` 45 pass / 0 fail）；`tests/` 下没有 `.disabled` 文件，旧 `.mjs` 冗余测试与夹具目录已删除，新增 `tests/cljs-tool-ui.test.mjs` 覆盖 27 个工具 UI。
 - 真实 `omp 18.20.0` 已加载本工作区；`timeout 120 omp -p '只回复 ok'` exit 0、wall 5.1s。该冒烟只证明扩展可加载与模型可调用，不是 S1–S5 验收。
 - `HERD_TRACE=1` 的真实 `omp -p` 记录中没有 sync-ms > 200ms 的条目；性能窄测见 `tests/perf-hot-path.test.mjs`。
 - `tests/cljs-sandbox.test.mjs`：CLJS/nbb 工具注册、EDN 回执、UFSS fence、`cat`、`where`、`park`/`wait`、`call`、call-id 重放、错误回执、工具面收窄。
 - `tests/cljs-parsers.test.mjs`：S1 八段校验、CASE 严格 Schema、重复 ID、未知字段、阈值越界、S4 Promela 必填。
-- `tests/cljs-report.test.mjs`：`write-report!` 的 PASS 写入、批准端口、recheck 拒绝与非 PASS 拒绝；`attach_case_audit` 的耐久提交、重复拒绝、CASE 错配，以及与 mjs `auditors.mjs` 的双向互读。
+- `tests/cljs-report.test.mjs`：`write-report!` 的 PASS 写入、批准端口、recheck 拒绝与非 PASS 拒绝；`attach_case_audit` 的耐久提交、重复拒绝与 CASE 错配。
 - `tests/cljs-gates.test.mjs`：review 开账/空账、attach 未就绪拒绝、S1 approve/revise/deny/pending、磁盘编辑后的批准、S2 晋级、call-id 重放、角色拒绝、八工具注册，以及 `ask_user` 的 S1 问答与禁止面、`devops` 端口报告。
 - `tests/cljs-gates-host.test.mjs`：`gates_host/register!` 向宿主注册 JS 形状的八个工具，并通过真实 `execute` 执行 review。
 - `tests/ufss-cljs.test.mjs`：数据双射与六个业务源码的 `canonical` 幂等。
@@ -114,7 +114,6 @@
 - `tests/cljs-console-guard.test.mjs`：`console`/`js/console`/`globalThis.console`/`js/process.stdout`/`stderr` 拒绝、字符串与注释不误杀、`call` pipe 捕获不写宿主流。
 - `tests/cljs-dashboard-wiring.test.mjs`：`install!`、`session-start!` 与 `/herd` 均不挂载看板，`system/state` 无 dashboard 键。
 - `tests/perf-hot-path.test.mjs`：5MB probe off、1000 条 context、1000 次 message_update、1MB `where`、20k `glob`、500ms 锁超时、2 MiB `cat`、100 次 `write`。
-- 旧 `tests/sandbox-isolation.test.mjs` 的 bwrap 用例保留为历史代码，不是当前规格或验收要求。
 
 ## 5 已知偏差
 
@@ -126,12 +125,12 @@
 - `console`、`js/console`、`globalThis.console`、`js/process.stdout`、`js/process.stderr` 等直接访问在 `guard-source!` 处返回 `:CAPABILITY_DENIED`；字符串、注释与 UFSS fence 中的同名词不误杀。`call` 用 pipe 捕获 stdout/stderr，但不落盘日志。
 - 性能诊断开关默认关闭：`HERD_CACHE_PROBE=1` 才写 `.herd/cache-probe.jsonl`；`HERD_TRACE=1` 才写 `.herd/perf-trace.jsonl`（1 MiB 上限）。`HERD_TRACE`/`HERD_CACHE_PROBE` 的 `*_PATH` 可改路径。
 - usage 面板的 delta 显示最近活动子代理的最后一次请求，sum 合并所有 agent key；主会话请求不会把 delta 抢回主会话。
-- TUI 看板按用户 2026-11-14 指令整体移除：`src/tui/*` 保留但无 import/挂载；`tests/cljs-dashboard-wiring.test.mjs` 只断言从不挂载。根规格 §6.1 看板要求被该指令覆盖。
+- TUI 看板按用户 2026-11-14 指令整体移除：`src/tui/*` 已删除，`tests/cljs-dashboard-wiring.test.mjs` 只断言从不挂载。根规格 §6.1 看板要求被该指令覆盖。
 - vibe 工具面：无使命主会话与无收窄角色的普通子代理保留全部宿主工具并追加 `clj_devops`/`wait`/`handoff`（devops 面）；`/vibe` 主代理不干预；旧宿主工具黑名单已删除；只有使命内主会话按阶段、显式 herd 角色按角色收窄。
 - 启动与安装单例：并发激活共享 `globalThis.__herdBootPromise`，失败清空可重试；`contextPis`、`activated-pis`、`installed-pis` 是 per-pi `WeakSet`，同进程多 pi 各自只安装一次。`tests/cljs-system-install.test.mjs`、`tests/clj-main-trace.test.mjs` 覆盖。
 - context 自动重写：每会话分支最多一次（host leaf 变化后重置预算），之后 prefix miss 只记录 `prefix-miss-suppressed`，boundary 存在时不重写；`tests/hack-context-rewrite.test.mjs` 覆盖。
-- 真实 S1→S5 手工验收未完成，用户已暂停 dog food；没有 `plans/<slug>/s5-report.md` 与 `docs/manual-acceptance/clean-break/report.md`，不得把 431 pass 或 `omp -p` 冒烟写成验收。
-- 旧 `src/*.mjs` 模块仍存在但不再由默认入口加载；最终删除。
+- 真实 S1→S5 手工验收未完成，用户已暂停 dog food；没有 `plans/<slug>/s5-report.md` 与 `docs/manual-acceptance/clean-break/report.md`，不得把 267 pass 或 `omp -p` 冒烟写成验收。
+- 旧 `src/*.mjs` 模块（含 `main.mjs`、`bootstrap-main.mjs`、`tui/`、`prompts/`、`stages/`、`swarm/`、`clj-sandbox/`、`sandbox/` 等）已全部删除。
 - Ariadne/Time Leap/Beacon 已删除；未进入使命时主会话与普通子代理保留全部宿主工具并追加 `clj_devops`/`wait`/`handoff`（devops 面），`/vibe` 主代理不干预；进入使命后按阶段收窄为 `review`/`attach_*`/`ask_user`/`devops`，子代理按角色收窄为 `clj_devops`+`submit_devops_report`、`review`、11 个 `board_*`、`attach_case_audit`。`handoff` 是唯一上下文换血入口。
 - 语言尾注、系统提示词受管区与 Nudge（空转提醒 + 上游断流退避）已接；S1 四态确认面板在真实宿主的键盘/滚动行为仍属 D4。
 

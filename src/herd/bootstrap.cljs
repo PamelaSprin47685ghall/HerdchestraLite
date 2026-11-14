@@ -56,7 +56,7 @@
         true))))
 
 (def ^:private modules
-  ["clock" "prompts" "handoff" "sandbox" "repl" "stages/parsers" "stages/tenure"
+  ["clock" "prompts" "handoff" "highlight" "ui" "sandbox" "repl" "stages/parsers" "stages/tenure"
    "stages/disclosures" "stages/paths" "stages/mission" "util/atomic_write"
    "stages/store" "stages/attach" "stages/review" "stages/approval"
    "stages/scores" "stages/audit" "stages/report" "stages/gates" "gates_host"

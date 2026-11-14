@@ -747,9 +747,18 @@ Breadth-first walk bounded by an entry cap and a wall-clock budget. Both
         (recur (inc at)
                (conj acc [at (+ at (count needle))]))))))
 
+(def ^:private async-hooks (js/require "node:async_hooks"))
+(defonce program-storage (new (.-AsyncLocalStorage async-hooks)))
+
 (defonce current-notifier (atom nil))
 (defonce notifiers (atom {}))
 (defonce current-name (atom nil))
+
+(defn active-name []
+  (or (.getStore program-storage) @current-name))
+
+(defn with-program-name [name f]
+  (.run program-storage name f))
 
 (defonce program-runtimes (atom {}))
 
@@ -794,8 +803,8 @@ Breadth-first walk bounded by an entry cap and a wall-clock budget. Both
   (.catch promise (fn [_] nil))
   promise)
 
-(defn guarded [_label thunk]
-  (let [name @current-name]
+(defn guarded-for [program-name _label thunk]
+  (let [name (or program-name (active-name))]
     (try
       (begin-call! name)
       (let [promise (try
@@ -812,6 +821,9 @@ Breadth-first walk bounded by an entry cap and a wall-clock budget. Both
         (quiet-rejection safe))
       (catch :default error
         (quiet-rejection (js/Promise.reject error))))))
+
+(defn guarded [label thunk]
+  (guarded-for (active-name) label thunk))
 
 (defonce parked (atom {}))
 (defonce active-calls (atom {}))
@@ -849,7 +861,7 @@ Breadth-first walk bounded by an entry cap and a wall-clock budget. Both
 (declare call-snapshot)
 
 (defn park [payload]
-  (let [name (or (:name payload) @current-name)
+  (let [name (or (:name payload) (active-name))
         snapshot (call-snapshot name)
         base (if (map? payload) payload {:payload payload})
         payload (merge snapshot base)
@@ -1039,14 +1051,14 @@ Breadth-first walk bounded by an entry cap and a wall-clock budget. Both
       (when (some? input) (.write stdin input))
       (when eof? (.end stdin))
       (when-let [parked-entry (@parked name)]
-        ((:resolve parked-entry) value)
+        (with-program-name name (fn [] ((:resolve parked-entry) value)))
         (forget-park! name))
       {:name name :state :running :call true :stdin (some? input) :eof (boolean eof?)})
     (let [entry (@parked name)]
       (when-not entry
         (throw (ex-info "unknown parked program"
                         {:code :PROGRAM_UNKNOWN :name name})))
-      ((:resolve entry) value)
+      (with-program-name name (fn [] ((:resolve entry) value)))
       (forget-park! name)
       value)))
 (defn- kill-process-group!
@@ -1089,7 +1101,7 @@ Breadth-first walk bounded by an entry cap and a wall-clock budget. Both
 
 (defn call
   [{:keys [argv cwd name max-inline-bytes] :or {cwd "."}} timeout-ms]
-  (let [program-name (or name @current-name)]
+  (let [program-name (or name (active-name))]
     (with-global-token
       (fn []
         (with-lock
@@ -1125,4 +1137,4 @@ Breadth-first walk bounded by an entry cap and a wall-clock budget. Both
                                    :output-truncated (:truncated @state)}))))))))))))
 
 (defn call-with-name [name request timeout-ms]
-  (call (assoc request :name name) timeout-ms))
+  (call (if (:name request) request (assoc request :name name)) timeout-ms))

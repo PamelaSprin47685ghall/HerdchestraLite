@@ -60,7 +60,30 @@ describe("CLJS UFSS", () => {
 	});
 
 	it("reads every source string through the official reader", async () => {
-		for (const name of ["prompts.cljs", "sandbox.cljs", "repl.cljs", "main.cljs", "ufss.cljs", "stages/parsers.cljs", "stages/tenure.cljs", "stages/disclosures.cljs", "stages/scores.cljs", "stages/paths.cljs", "stages/mission.cljs", "stages/attach.cljs", "stages/approval.cljs", "stages/review.cljs", "stages/store.cljs", "stages/report.cljs", "stages/audit.cljs", "stages/gates.cljs", "gates_host.cljs", "util/atomic_write.cljs", "system.cljs"]) {
+		for (const name of [
+			"prompts.cljs",
+			"sandbox.cljs",
+			"repl.cljs",
+			"main.cljs",
+			"ufss.cljs",
+			"ui.cljs",
+			"stages/parsers.cljs",
+			"stages/tenure.cljs",
+			"stages/disclosures.cljs",
+			"stages/scores.cljs",
+			"stages/paths.cljs",
+			"stages/mission.cljs",
+			"stages/attach.cljs",
+			"stages/approval.cljs",
+			"stages/review.cljs",
+			"stages/store.cljs",
+			"stages/report.cljs",
+			"stages/audit.cljs",
+			"stages/gates.cljs",
+			"gates_host.cljs",
+			"util/atomic_write.cljs",
+			"system.cljs",
+		]) {
 			const source = readFileSync(new URL(`../src/herd/${name}`, import.meta.url), "utf8");
 			const roundtrip = await nbb.loadString(
 				`(require '[herd.ufss :as u]) (every? (fn [s] (= s (u/read (u/canonical (pr-str s))))) (u/literals ${JSON.stringify(source)}))`,
@@ -70,11 +93,33 @@ describe("CLJS UFSS", () => {
 	});
 
 	it("keeps every source canonical under the formatter pipeline", async () => {
-		for (const name of ["prompts.cljs", "sandbox.cljs", "repl.cljs", "main.cljs", "ufss.cljs", "bootstrap.cljs", "stages/parsers.cljs", "stages/tenure.cljs", "stages/disclosures.cljs", "stages/scores.cljs", "stages/paths.cljs", "stages/mission.cljs", "stages/attach.cljs", "stages/approval.cljs", "stages/review.cljs", "stages/store.cljs", "stages/report.cljs", "stages/audit.cljs", "stages/gates.cljs", "gates_host.cljs", "util/atomic_write.cljs", "system.cljs"]) {
+		for (const name of [
+			"prompts.cljs",
+			"sandbox.cljs",
+			"repl.cljs",
+			"main.cljs",
+			"ufss.cljs",
+			"ui.cljs",
+			"bootstrap.cljs",
+			"stages/parsers.cljs",
+			"stages/tenure.cljs",
+			"stages/disclosures.cljs",
+			"stages/scores.cljs",
+			"stages/paths.cljs",
+			"stages/mission.cljs",
+			"stages/attach.cljs",
+			"stages/approval.cljs",
+			"stages/review.cljs",
+			"stages/store.cljs",
+			"stages/report.cljs",
+			"stages/audit.cljs",
+			"stages/gates.cljs",
+			"gates_host.cljs",
+			"util/atomic_write.cljs",
+			"system.cljs",
+		]) {
 			const source = readFileSync(new URL(`../src/herd/${name}`, import.meta.url), "utf8");
-			const canonical = await nbb.loadString(
-				`(require '[herd.ufss :as u]) (u/canonical ${JSON.stringify(source)})`,
-			);
+			const canonical = await nbb.loadString(`(require '[herd.ufss :as u]) (u/canonical ${JSON.stringify(source)})`);
 			expect(canonical, name).toBe(source);
 		}
 	});

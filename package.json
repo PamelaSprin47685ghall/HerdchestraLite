@@ -16,10 +16,9 @@
     ]
   },
   "exports": {
-    ".": "./src/main.mjs",
-    "./bootstrap-main": "./src/bootstrap-main.mjs",
-    "./package.json": "./package.json",
-    "./clj-main": "./src/clj-main.mjs"
+    ".": "./src/clj-main.mjs",
+    "./clj-main": "./src/clj-main.mjs",
+    "./package.json": "./package.json"
   },
   "files": [
     "src/",

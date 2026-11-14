@@ -2,7 +2,7 @@
  * The only place where HerdchestraLite touches the omp host package.
  *
  * Every external package import lives here. Domain modules import `host`,
- * `loadCherry`, `detectCapabilities`, or `hostDiagnostics` from this module, so
+ * `detectCapabilities`, or `hostDiagnostics` from this module, so
  * a host version drift has exactly one landing place.
  *
  * One deliberate exception patches a host prototype: `native-runner.mjs`
@@ -25,7 +25,6 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as codingAgent from "@oh-my-pi/pi-coding-agent";
-import { cherryStatus } from "../clj-sandbox/cherry.mjs";
 
 const HOST_PACKAGE = "@oh-my-pi/pi-coding-agent";
 
@@ -206,15 +205,6 @@ export const hostDiagnostics = Object.freeze({
 });
 
 /* ------------------------------------------------------------------ */
-/* Cherry                                                              */
-/* ------------------------------------------------------------------ */
-
-// The Cherry loader lives in clj-sandbox/cherry.mjs so the sandbox tools can
-// run without importing the omp host package. Re-export it here to keep the
-// host boundary as the single import point for host-facing modules.
-export { CHERRY_RUNTIME_SPECIFIERS, cherryStatus, inspectCherryModule, loadCherry } from "../clj-sandbox/cherry.mjs";
-
-/* ------------------------------------------------------------------ */
 /* Capability probes                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -321,8 +311,6 @@ export function detectCapabilities(pi, context, observed = {}) {
 		hasSettingsInstance: settingsInstanceAvailable(),
 		hasRestrictToolNames: fact("hasRestrictToolNames", true),
 		hasRunSubagentFollowUpTurn: typeof runSubagentFollowUpTurn === "function",
-		cherryLoaded: cherryStatus().loaded,
-		cherryHasEdnReader: cherryStatus().hasEdnReader,
 		unverified: Object.freeze([...new Set(unverified)]),
 	};
 	return Object.freeze(table);

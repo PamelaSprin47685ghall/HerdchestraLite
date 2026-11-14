@@ -10,6 +10,7 @@
    [herd.stages.store :as store]
    [herd.stages.tenure :as tenure]
    [herd.ufss :as ufss]
+   [herd.ui :as ui]
    [herd.util.atomic-write :as atomic]))
 
 (def ^:private slug-pattern #"^[a-z0-9][a-z0-9-]{0,63}$")
@@ -785,22 +786,24 @@
    :call-id call-id})
 
 (defn- tool-definition [service deps tool-name label description parameters tool]
-  {:name (clojure.core/name tool-name)
-   :label label
-   :description description
-   :load-mode "essential"
-   :parameters parameters
-   :execute (safe (fn [call-id params signal on-update ctx]
-                    (-> (invoke service tool params (tool-options deps ctx call-id))
-                        (.then (fn [value]
-                                 (if (:ok value)
-                                   (tool-result value)
-                                   (tool-error value))))
-                        (.catch (fn [error]
-                                  (tool-error
-                                    (failure :INTERNAL
-                                             (or (ex-message error) (str error))
-                                             {})))))))})
+  (merge
+    {:name (clojure.core/name tool-name)
+     :label label
+     :description description
+     :load-mode "essential"
+     :parameters parameters
+     :execute (safe (fn [call-id params signal on-update ctx]
+                      (-> (invoke service tool params (tool-options deps ctx call-id))
+                          (.then (fn [value]
+                                   (if (:ok value)
+                                     (tool-result value)
+                                     (tool-error value))))
+                          (.catch (fn [error]
+                                    (tool-error
+                                      (failure :INTERNAL
+                                               (or (ex-message error) (str error))
+                                               {})))))))}
+    (ui/gate-renderers tool)))
 
 (defn- review-parameters []
   {:type "object"

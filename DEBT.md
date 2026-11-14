@@ -8,7 +8,7 @@
 
 - **缺口**：没有真实 tmux 中的 S1→S5 小型使命，没有 `plans/<slug>/s5-report.md`，没有 `docs/manual-acceptance/clean-break/report.md`。
 - **已完成的代码闭环**：唯一清单入口 `src/clj-main.mjs` 已加载 `src/herd/bootstrap.cljs` → `src/herd/main.cljs` + `src/herd/system.cljs`；`/herd` 创建使命与 `.herd/focus.edn`；八门禁工具、11 个 `board_*`、`attach_case_audit` 已注册；S1 面板四态、角色探测、Nudge、单工作区 S5 runner、K 路审计与 FAIL 返工根任务已接线。`tests/` 无 `.disabled`，旧 Cherry/CEK 测试已删除并由 CLJS 测试替代。
-- **已有冒烟**：`timeout 120 omp -p '只回复 ok'` 在 `omp 18.20.0` 下 exit 0、wall 5.1s；真实 `-p` 的 `HERD_TRACE` 记录没有 sync-ms > 200ms 的条目。`env -u BUN_OPTIONS bun test tests --parallel` 为 431 pass / 1 skip / 0 fail（44 files）。
+- **已有冒烟**：`timeout 120 omp -p '只回复 ok'` 在 `omp 18.20.0` 下 exit 0、wall 5.1s；真实 `-p` 的 `HERD_TRACE` 记录没有 sync-ms > 200ms 的条目。`env -u BUN_OPTIONS bun test tests --parallel` 为 267 pass / 0 fail（25 files）。
 - **暂停原因**：用户明确暂停 dog food，准备修复后重启；未完成的真实验收不得写成已完成。
 - **下一步**：用户恢复 dogfood 后，重新 link 本工作区，按 S1 人工批准 → S2–S4 自动 → 单工作区 S5 → K=1 审计跑最小使命；证据写入 `docs/manual-acceptance/clean-break/`，不得用 `bun test` 代替。
 
@@ -25,9 +25,9 @@
 
 ## D7 全量 V/T/F 交错矩阵未运行
 
-- **缺口**：`env -u BUN_OPTIONS bun test tests --parallel` 已恢复为 431 pass / 1 skip / 0 fail（44 files），但尚未逐项核对根规格 §9.4 V01–V08、§3.5 T01–T13、F01–F15 的全量交错矩阵，也没有真实的跨进程/tmux 交错重放。
+- **缺口**：`env -u BUN_OPTIONS bun test tests --parallel` 已恢复为 267 pass / 0 fail（25 files），但尚未逐项核对根规格 §9.4 V01–V08、§3.5 T01–T13、F01–F15 的全量交错矩阵，也没有真实的跨进程/tmux 交错重放。
 - **已有材料**：`tmp/d7-matrix.md` 是 2026-11-14 的早期临时映射，记录 239 pass / 1 skip / 4 fail；该数字与当前测试面不一致，只能作为缺口清单参考，不能当成本轮验证。矩阵中 T05、T06、T11 仍无直接用例，V02、V04、V05、T03、T04、T07–T10、T12、T13 仅部分覆盖。
-- **下一步**：以当前 431 pass 为基线重新生成映射，补齐或明确接受 T05/T06/T11 等缺口；真实交错与重启恢复仍需 D3 的宿主验收，测试不是验收。
+- **下一步**：以当前 267 pass 为基线重新生成映射，补齐或明确接受 T05/T06/T11 等缺口；真实交错与重启恢复仍需 D3 的宿主验收，测试不是验收。
 
 ## 已裁决：审计员只做防呆（不是缺口）
 
@@ -35,7 +35,7 @@
 
 ## D17 本机 `bun test` 需先清除 `BUN_OPTIONS`
 
-- **现状**：宿主设置 `BUN_OPTIONS=--preload /home/kunweiz/.config/omp/zstd-preload.js`；Bun 1.4.4 在该变量存在时把 `bun test` 误解析为脚本名，输出 `Script not found "test"`。`env -u BUN_OPTIONS bun test tests --parallel` 已实测 431 pass / 1 skip / 0 fail（44 files）。
+- **现状**：宿主设置 `BUN_OPTIONS=--preload /home/kunweiz/.config/omp/zstd-preload.js`；Bun 1.4.4 在该变量存在时把 `bun test` 误解析为脚本名，输出 `Script not found "test"`。`env -u BUN_OPTIONS bun test tests --parallel` 已实测 267 pass / 0 fail（25 files）。
 - **影响**：放行命令必须带 `env -u BUN_OPTIONS`；该变量属于宿主环境，不得写入 `package.json` 或 CI。
 - **下一步**：无需改仓库；验收记录写明该前缀即可。
 
@@ -71,7 +71,7 @@
 ### TUI 看板按用户指令移除（2026-11-14）
 
 - 用户明确指令移除 TUI 看板，覆盖根规格 §6.1 的看板要求；这是已裁决的偏离，不是迁移遗漏。
-- `src/tui/dashboard-model.mjs`、`src/tui/dashboard-widget.mjs` 保留在源码树中，但没有任何入口 import 或挂载；`src/main.mjs` 仍引用它们，但 `main.mjs` 不由清单加载。
+- `src/tui/dashboard-model.mjs`、`src/tui/dashboard-widget.mjs` 与 `src/main.mjs` 已在清理阶段删除，不再存在于源码树中。
 - `tests/cljs-dashboard-wiring.test.mjs` 明确断言 `install!`、`session-start!` 与 `/herd` 都不挂载 `herdchestra-dashboard`。不得以“根规格要求”为由恢复看板，除非人类操作员撤销该指令。
 
 ## D19 完整测试套件的 nbb bootstrap 成本

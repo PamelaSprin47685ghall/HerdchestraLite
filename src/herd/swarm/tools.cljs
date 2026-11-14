@@ -3,7 +3,8 @@
    [herd.swarm.apply :as apply]
    [herd.swarm.edn :as edn]
    [herd.swarm.store :as store]
-   [herd.ufss :as ufss]))
+   [herd.ufss :as ufss]
+   [herd.ui :as ui]))
 
 (defn- failure [code message data]
   {:ok false :error (merge {:code code :message message} data)})
@@ -247,14 +248,16 @@
                 :handoff_markdown (string-schema 1)}})
 
 (defn- definition [deps tool label description parameters]
-  {:name (name tool)
-   :label label
-   :description description
-   :load-mode "essential"
-   :parameters parameters
-   :execute (fn [call-id params _signal _on-update ctx]
-              (execute-tool! deps tool (js->clj (or params #js {}) :keywordize-keys true)
-                             ctx call-id))})
+  (merge
+    {:name (name tool)
+     :label label
+     :description description
+     :load-mode "essential"
+     :parameters parameters
+     :execute (fn [call-id params _signal _on-update ctx]
+                (execute-tool! deps tool (js->clj (or params #js {}) :keywordize-keys true)
+                               ctx call-id))}
+    (ui/board-renderers tool)))
 
 (defn tool-definitions [deps]
   [(definition deps :board_split "Split Task"
@@ -308,10 +311,13 @@
     (throw (ex-info "host extension API lacks registerTool" {:code :HOST_API_MISMATCH})))
   (register-all!
     (fn [definition]
-      (.registerTool pi #js {:name (:name definition)
-                             :label (:label definition)
-                             :description (:description definition)
-                             :loadMode (:load-mode definition)
-                             :parameters (clj->js (:parameters definition))
-                             :execute (bridge-execute (:execute definition))}))
+      (let [spec (cond-> {:name (:name definition)
+                          :label (:label definition)
+                          :description (:description definition)
+                          :loadMode (:load-mode definition)
+                          :parameters (:parameters definition)
+                          :execute (bridge-execute (:execute definition))}
+                   (:renderCall definition) (assoc :renderCall (:renderCall definition))
+                   (:renderResult definition) (assoc :renderResult (:renderResult definition)))]
+        (.registerTool pi (clj->js spec))))
     deps))

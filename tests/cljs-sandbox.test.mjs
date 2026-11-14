@@ -710,7 +710,8 @@ describe("CLJS nbb sandbox", () => {
 
 	it("runs serial writes through p/loop", async () => {
 		const result = await run(
-			'(p/loop [xs [1 2] acc []] (if (seq xs) (p/let [_ (write {:path (str "tmp/p-loop-" (first xs) ".txt") :content "x"})] (p/recur (next xs) (conj acc (first xs)))) acc))',
+			`(require '[promesa.core :as p])
+       (p/loop [xs [1 2] acc []] (if (seq xs) (p/let [_ (write {:path (str "tmp/p-loop-" (first xs) ".txt") :content "x"})] (p/recur (next xs) (conj acc (first xs)))) acc))`,
 		);
 		const text = result.content[0].text;
 		expect(text).toContain(":state :completed");
@@ -857,5 +858,39 @@ describe("CLJS nbb sandbox", () => {
 	it("returns idle when no program is running", async () => {
 		const idle = await waitTool.execute(null, { otherwise_independent_work: "none" }, null);
 		expect(idle.content[0].text).toContain(":state :idle");
+	});
+
+	it("isolates concurrent p/let programs without false DANGLING_PROMISE", async () => {
+		await drain();
+		const codeA = `(require '[promesa.core :as p])
+(p/let [a (ls {:path "src"})
+        b (cat {:path "package.json"})
+        c (ls {:path "tests"})]
+  {:a (:exists a) :b (pos? (count b)) :c (:exists c)})`;
+		const codeB = `(require '[promesa.core :as p])
+(p/let [x (cat {:path "src/herd/sandbox.cljs"})
+        y (ls {:path "src/herd"})]
+  {:x (pos? (count x)) :y (:exists y)})`;
+		for (let i = 0; i < 10; i++) {
+			const [resA, resB] = await Promise.all([
+				runNamed(`concurrent-a-${i}`, codeA),
+				runNamed(`concurrent-b-${i}`, codeB),
+			]);
+			expect(resA.content[0].text).toContain(":state :completed");
+			expect(resB.content[0].text).toContain(":state :completed");
+		}
+		await drain();
+	});
+
+	it("still catches genuine dangling promises within a single program", async () => {
+		await drain();
+		const result = await runNamed(
+			"genuine-dangling",
+			`(require '[promesa.core :as p])
+       (p/race [(js/Promise.resolve :fast) (call {:argv ["sh" "-c" "sleep 0.1"]})])`,
+		);
+		expect(result.content[0].text).toContain(":state :failed");
+		expect(result.content[0].text).toContain(":DANGLING_PROMISE");
+		await drain();
 	});
 });

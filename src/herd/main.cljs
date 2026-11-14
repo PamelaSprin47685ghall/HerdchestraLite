@@ -4,11 +4,11 @@
    [clojure.string :as str]
    [herd.clock :as clock]
    [herd.handoff :as handoff]
-   [herd.highlight :as highlight]
    [herd.prompts :as prompts]
    [herd.repl :as repl]
    [herd.system :as system]
-   [herd.ufss :as ufss]))
+   [herd.ufss :as ufss]
+   [herd.ui :as ui]))
 
 (defn- text-block [text]
   {:type "text" :text text})
@@ -68,16 +68,6 @@
   ["Orienting" "Converging" "Consolidating" "Stagnant" "Drifting" "Densifying" "Reorienting" "Settled"])
 
 (def ^:private agent-state-set (set agent-state-values))
-
-(def ^:private agent-state-labels
-  {"Orienting" "探索定向"
-   "Converging" "稳定收敛"
-   "Consolidating" "固结沉淀"
-   "Stagnant" "局部停滞"
-   "Drifting" "目标漂移"
-   "Densifying" "细节致密"
-   "Reorienting" "回溯重整"
-   "Settled" "完全收敛"})
 
 (def ^:private agent-state-comments
   {"Orienting" "; Karl Popper's piecemeal engineering and falsification, Herbert Simon's bounded rationality and satisficing, and Friedrich Hayek's respect for local, dispersed knowledge all converge on one practical rule: act now, in small steps, without hoarding context or over-planning. Let reality correct you before you re-orient."
@@ -411,90 +401,6 @@ Index of the last persisted handoff document, searched in the trailing
       (catch :default error
         (clj->js (tool-error error))))))
 
-(defn- pi-root []
-  (.-pi js/globalThis.__pi))
-
-(defn- raw-text [text]
-  (let [Text (.-Text (pi-root))]
-    (new Text text 0 0)))
-
-(defn- result-text [result]
-  (let [blocks (.-content result)
-        block (when (and blocks (pos? (.-length blocks)))
-                (aget blocks 0))]
-    (or (.-text block) "")))
-
-(defn- humanize-name [text]
-  (->> (str/split text #"[-_]")
-       (map (fn [part]
-              (if (pos? (count part))
-                (str (str/upper-case (subs part 0 1)) (subs part 1))
-                part)))
-       (str/join " ")))
-
-(defn- dim-text [theme text]
-  (try (.fg theme "dim" text)
-       (catch :default _ text)))
-
-(def ^:private canonical-highlight-limit 8192)
-
-(defn- canonical-view [text theme expanded?]
-  (let [highlighter (highlight/make-highlighter theme)
-        options {:collapse-strings? true
-                 :placeholder (fn [s] (dim-text theme s))}]
-    (cond
-      expanded?
-      (ufss/canonical text highlighter)
-
-      (and (string? text) (> (count text) canonical-highlight-limit))
-      ;; Large collapsed previews keep the UFSS structure and the $$$ collapse
-      ;; but skip syntax highlighting; streaming re-renders must stay cheap.
-      ;; Expand the tool output to get the highlighted view.
-      (ufss/canonical text nil options)
-
-      :else
-      (ufss/canonical text highlighter options))))
-
-(declare hrule)
-
-(defn- clj-render-call [args options theme]
-  (let [Container (.-Container (pi-root))
-        name (or (.-name args) "<unnamed>")
-        state (.-agent_state args)
-        state-label (get agent-state-labels state)
-        state-tag (when (and state (not (str/blank? (str state))))
-                    (str "[" (or state-label state) "]"))
-        code (or (.-code args) "")
-        suffix (if state-tag (str "--- " state-tag) "")
-        title (if (str/blank? suffix)
-                (.fg theme "accent" (humanize-name name))
-                (str (.fg theme "accent" (humanize-name name))
-                     " "
-                     (.fg theme "dim" suffix)))
-        canonical (canonical-view code theme (.-expanded options))
-        c (new Container)]
-    (.addChild c (raw-text title))
-    (.addChild c (hrule theme))
-    (.addChild c (raw-text canonical))
-    c))
-
-(defn- hrule [theme]
-  (let [render (fn [width]
-                 (let [line (apply str (repeat (max 1 width) "─"))]
-                   #js [(.fg theme "dim" line)]))]
-    #js {:render render}))
-
-(defn- clj-render-result [result options theme]
-  (let [Container (.-Container (pi-root))
-        raw (result-text result)
-        text (try
-               (canonical-view raw theme (.-expanded options))
-               (catch :default _ raw))
-        c (new Container)]
-    (.addChild c (hrule theme))
-    (.addChild c (raw-text text))
-    c))
-
 (defn- register! [pi definition]
   (.registerTool pi (clj->js definition)))
 
@@ -511,8 +417,8 @@ Index of the last persisted handoff document, searched in the trailing
                  :label label
                  :description description
                  :parameters (devops-parameters)
-                 :renderCall clj-render-call
-                 :renderResult clj-render-result
+                 :renderCall ui/clj-render-call
+                 :renderResult ui/clj-render-result
                  :execute (role-execute role)}))
 
 (defn- register-worker! [pi]
@@ -520,8 +426,8 @@ Index of the last persisted handoff document, searched in the trailing
                  :label "Clojure Sandbox (Swarm Worker)"
                  :description "All capabilities return js/Promise (no await). Always (require '[promesa.core :as p]) and use p/let, p/do, p/loop/p/recur, p/catch, p/all; never hand-roll .then/.catch chains. Holder gets call; Worker does not. Require other namespaces at the top level as needed."
                  :parameters (devops-parameters)
-                 :renderCall clj-render-call
-                 :renderResult clj-render-result
+                 :renderCall ui/clj-render-call
+                 :renderResult ui/clj-render-result
                  :execute (safe-execute worker-execute)}))
 
 (defn register-all! [pi]
@@ -529,13 +435,15 @@ Index of the last persisted handoff document, searched in the trailing
                  :label "Clojure Sandbox (Plan DevOps)"
                  :description "All capabilities return js/Promise (no await). Always (require '[promesa.core :as p]) and use p/let, p/do, p/loop/p/recur, p/catch, p/all; never hand-roll .then/.catch chains or custom combinators. Require other namespaces at the top level as needed; writes may run concurrently and are serialized by the write gate."
                  :parameters (devops-parameters)
-                 :renderCall clj-render-call
-                 :renderResult clj-render-result
+                 :renderCall ui/clj-render-call
+                 :renderResult ui/clj-render-result
                  :execute (safe-execute execute)})
   (register! pi {:name "wait"
                  :label "Wait"
                  :description "Collect the next completed sandbox program."
                  :parameters (wait-parameters)
+                 :renderCall ui/wait-render-call
+                 :renderResult ui/wait-render-result
                  :execute (safe-execute wait-execute)})
   (register-role! pi :plan "clj_plan" "Clojure Sandbox (Plan)" "Read-only planning sandbox: cat, read, where, whereAll, park, unpark. No write or call.")
   (register-role! pi :review "clj_review" "Clojure Sandbox (Reviewer)" "Read-only reviewer sandbox: cat, read, stat, ls, glob, where, whereAll, unpark. No write, call, or park.")
@@ -1279,6 +1187,8 @@ Append one diagnostic line off the request path. The queue is serial, so a
                    :label "Handoff"
                    :description "Compress the current conversation into a handoff that lets a successor continue. Let the content determine the form: choose sections, headings, and length from what the successor actually needs. Do not apply a fixed template, add ceremonial sections, or pad for symmetry; omit anything that does not change the successor's next decision. markdown uses [AAA⯮BBB] refs: from the unique AAA to the unique BBB; non-unique or unresolvable refs stay literal; spans already emitted by earlier refs are not repeated. Returns a placeholder immediately; the next context hook decodes the document against the messages before this call and replaces the whole conversation with the result."
                    :parameters (handoff-parameters)
+                   :renderCall ui/handoff-render-call
+                   :renderResult ui/handoff-render-result
                    :execute (safe-execute handoff-execute)})))
 
 (defn activate-session! [pi]

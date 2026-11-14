@@ -5,15 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as nbb from "nbb";
-import { createFileSubmissionReader, writeSubmissionOnce } from "../src/swarm/auditors.mjs";
 
 beforeAll(async () => {
 	nbb.addClassPath(fileURLToPath(new URL("../src/", import.meta.url)));
 	for (const name of ["report", "audit"]) {
 		const source = readFileSync(new URL(`../src/herd/stages/${name}.cljs`, import.meta.url), "utf8");
-		const unwrapped = await nbb.loadString(
-			`(require '[herd.ufss :as u]) (u/unwrap ${JSON.stringify(source)})`,
-		);
+		const unwrapped = await nbb.loadString(`(require '[herd.ufss :as u]) (u/unwrap ${JSON.stringify(source)})`);
 		await nbb.loadString(unwrapped);
 	}
 });
@@ -43,9 +40,7 @@ function aggregateExpr({ threshold = 80, submissions = submission } = {}) {
 }
 
 async function run(scenario, options = {}) {
-	const body = scenario
-		.replaceAll("__ROOT__", JSON.stringify(root))
-		.replaceAll("__AGG__", aggregateExpr(options));
+	const body = scenario.replaceAll("__ROOT__", JSON.stringify(root)).replaceAll("__AGG__", aggregateExpr(options));
 	const text = await nbb.loadString(`
 (require '[herd.stages.scores :as scores])
 (defn ^:async scenario [] ${body})
@@ -172,47 +167,23 @@ const cljsSubmission = `{:case_id "CASE-A" :user_score 80 :developer_score 90
                         :report_markdown "在真实界面观察到的结果。"}`;
 
 describe("CLJS attach_case_audit persistence", () => {
-	it("writes a durable EDN submission that the mjs reader accepts", async () => {
+	it("writes and reads back a durable EDN submission", async () => {
 		const outcome = await run(`
-		  (js/JSON.stringify
-		    (clj->js (await (herd.stages.audit/write-submission-once!
-		                      __ROOT__ "demo" "CASE-A" ${cljsSubmission} nil))))`);
+		  (let [written (await (herd.stages.audit/write-submission-once!
+		                         __ROOT__ "demo" "CASE-A" ${cljsSubmission} nil))
+		        read-back (await (herd.stages.audit/read-submission
+		                           __ROOT__ "demo" "CASE-A" nil))]
+		    (js/JSON.stringify (clj->js {:written written :read read-back})))`);
 
-		expect(outcome.ok).toBe(true);
-		expect(outcome.path).toBe(join(root, ".herd", "missions", "demo", "audit", "CASE-A.submit.edn"));
-		const read = await createFileSubmissionReader({ root, slug: "demo" })({ caseId: "CASE-A" });
-		expect(read.ok).toBe(true);
-		expect(read.submission).toEqual({
+		expect(outcome.written.ok).toBe(true);
+		expect(outcome.written.path).toBe(join(root, ".herd", "missions", "demo", "audit", "CASE-A.submit.edn"));
+		expect(outcome.read.ok).toBe(true);
+		expect(outcome.read.submission).toEqual({
 			case_id: "CASE-A",
 			user_score: 80,
 			developer_score: 90,
 			report_markdown: "在真实界面观察到的结果。",
 		});
-	});
-
-	it("reads a submission written by the mjs writer", async () => {
-		const written = await writeSubmissionOnce({
-			root,
-			slug: "demo",
-			caseId: "CASE-B",
-			submission: {
-				case_id: "CASE-B",
-				user_score: 70,
-				developer_score: 88,
-				report_markdown: "mjs 写入的报告。",
-			},
-		});
-		expect(written.ok).toBe(true);
-
-		const outcome = await run(`
-		  (js/JSON.stringify
-		    (clj->js (await (herd.stages.audit/read-submission __ROOT__ "demo" "CASE-B" nil))))`);
-
-		expect(outcome.ok).toBe(true);
-		expect(outcome.submission.case_id).toBe("CASE-B");
-		expect(outcome.submission.user_score).toBe(70);
-		expect(outcome.submission.developer_score).toBe(88);
-		expect(outcome.submission.report_markdown).toBe("mjs 写入的报告。");
 	});
 
 	it("keeps the first submission byte-for-byte on a duplicate", async () => {
