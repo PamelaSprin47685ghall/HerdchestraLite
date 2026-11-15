@@ -29,10 +29,28 @@ async function scenario() {
 	const root = mkdtempSync(join(tmpdir(), "cljs-gates-host-"));
 	const text = await nbb.loadString(`
 (require '[herd.gates-host :as gates-host]
-         '[herd.stages.store :as store])
+         '[herd.stages.store :as store]
+         '["node:fs" :as fs]
+         '["node:path" :as path])
+(defn journal-ctx [root id]
+  (let [file (path/join root "sessions" (str id ".jsonl"))]
+    #js {:cwd root
+         :sessionManager
+         #js {:getSessionId (fn [] id)
+              :getSessionFile (fn [] file)
+              :appendCustomEntry
+              (fn [custom-type data]
+                (fs/mkdirSync (path/dirname file) #js {:recursive true})
+                (fs/appendFileSync file
+                  (str (js/JSON.stringify
+                         #js {:type "custom"
+                              :customType custom-type
+                              :data data})
+                       "\\n")))}}))
 (defn ^:async scenario []
   (let [created (await (store/create-mission! ${JSON.stringify(root)}
-                           {:slug "demo" :mission-id "M1" :now ${JSON.stringify(NOW)}}))
+                           {:slug "demo" :mission-id "M1" :now ${JSON.stringify(NOW)}
+                            :ctx (journal-ctx ${JSON.stringify(root)} "demo")}))
         defs (atom [])
         pi #js {:registerTool (fn [definition] (swap! defs conj definition))}
         service (gates-host/register! pi {:root ${JSON.stringify(root)}

@@ -20,7 +20,7 @@
   (let [contract (:contract result)
         audit (:audit result)]
     (str "# S5 手工验收报告：" (:mission-id contract) "\n\n"
-         "- 用例集：`.herd/missions/" slug """
+         "- 用例集：`herd/" slug """
 /s2-cases.edn`
 
 """
@@ -215,7 +215,7 @@
                  {})
         (let [markdown (compose-report result slug)
               written (try
-                        [:ok (await (atomic/write-file-atomic! (str root "/plans/" slug)
+                        [:ok (await (atomic/write-file-atomic! (str root "/herd/" slug)
                                                                "s5-report.md"
                                                                markdown))]
                         (catch :default error

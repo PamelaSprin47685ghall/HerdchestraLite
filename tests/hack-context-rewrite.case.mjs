@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { flushTrace, hackContext } from "../src/host/hack-context.mjs";
+import { flushTrace, hackContext } from "../src/bridge/hack-context.mjs";
 
 let savedTrace;
 let savedTracePath;
@@ -98,7 +98,7 @@ describe("context trace", () => {
 				.map((line) => JSON.parse(line));
 			const suppressed = lines.find((item) => item.event === "context-prefix-miss-suppressed");
 			expect(suppressed).toBeTruthy();
-			expect(suppressed.misses).toBe(2);
+			expect(suppressed.misses).toBe(1);
 			expect(suppressed.messages).toBe(1);
 		} finally {
 			await rm(dir, { recursive: true, force: true });

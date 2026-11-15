@@ -59,7 +59,28 @@ async function scenario(body) {
 	const text = await nbb.loadString(`
 (require '[clojure.string :as str]
          '[herd.stages.gates :as gates]
-         '[herd.stages.store :as store])
+         '[herd.stages.store :as store]
+         '[herd.stages.session-log :as session-log]
+         '["node:fs" :as fs]
+         '["node:path" :as path])
+
+(defn journal-ctx [root id]
+  (let [file (path/join root "sessions" (str id ".jsonl"))]
+    #js {:cwd root
+         :sessionManager
+         #js {:getSessionId (fn [] id)
+              :getSessionFile (fn [] file)
+              :appendCustomEntry
+              (fn [custom-type data]
+                (set! (.-__herdAppendProbe js/globalThis) (str "called " file))
+                (fs/writeFileSync "/tmp/herd-journal-probe.txt" (str "called " file))
+                (fs/mkdirSync (path/dirname file) #js {:recursive true})
+                (fs/appendFileSync file
+                  (str (js/JSON.stringify
+                         #js {:type "custom"
+                              :customType custom-type
+                              :data data})
+                       "\\n")))}}))
 ${body}
 (scenario)`);
 	return JSON.parse(text);
@@ -69,7 +90,7 @@ const literal = (value) => JSON.stringify(value);
 const normalized = (value) => String(value ?? "").replace(/^:/, "");
 
 const createMission = (root) =>
-	`(await (store/create-mission! ${literal(root)} {:slug "demo" :mission-id "M1" :now ${literal(NOW)}}))`;
+	`(await (store/create-mission! ${literal(root)} {:slug "demo" :mission-id "M1" :now ${literal(NOW)} :ctx (journal-ctx ${literal(root)} "demo")}))`;
 
 describe("CLJS gate service", () => {
 	it("opens the review on findings and quiesces it on deletion", async () => {
@@ -77,17 +98,28 @@ describe("CLJS gate service", () => {
 		const out = await scenario(`
 (defn ^:async scenario []
   (let [created ${createMission(root)}
+        ctx (journal-ctx ${literal(root)} "demo")
+        trial (session-log/append! ctx "herd.task" {:sessionId "demo" :createdAt ${literal(NOW)}})
+        file (str ${literal(root)} "/sessions/demo.jsonl")
+        file-exists (.existsSync fs file)
         svc (gates/create-service {:root ${literal(root)} :slug "demo" :now (fn [] ${literal(NOW)})})
         open (await ((:review! svc) {:findings [{:key "K1" :value "V1"}]} {}))
         closed (await ((:review! svc) {:findings [{:key "K1" :value nil}]} {}))]
     (js/JSON.stringify
-      (clj->js {:open-status (:status open)
+      (clj->js {:created created
+                :trial trial
+                :sm-keys (js/Object.keys (.-sessionManager ctx))
+                :append-fn (fn? (.-appendCustomEntry (.-sessionManager ctx)))
+                :file-exists file-exists
+                :open open
+                :open-status (:status open)
                 :open-tasks (:open-tasks open)
                 :open-ready (:attach-ready open)
                 :closed-status (:status closed)
                 :closed-tasks (:open-tasks closed)
                 :closed-ready (:attach-ready closed)}))))`);
 
+		console.log(JSON.stringify(out));
 		expect(out["open-status"]).toBe("review-open");
 		expect(out["open-tasks"]).toBe(1);
 		expect(out["open-ready"]).toBe(false);
@@ -139,9 +171,9 @@ describe("CLJS gate service", () => {
                 :stage (:stage (:mission mission))
                 :tenure (get-in mission [:mission :tenure :tenure-id])
                 :pending (get-in mission [:mission :attach :pending])
-                :archive-exists (.existsSync fs (str ${literal(root)} "/.herd/missions/demo/boards/T-1.edn"))
+                :archive-exists (.existsSync fs (str ${literal(root)} "/herd/demo/boards/T-1.edn"))
                 :disk-approved (str/includes?
-                                 (.readFileSync fs (str ${literal(root)} "/plans/demo/s1-brainstorm.md") "utf8")
+                                 (.readFileSync fs (str ${literal(root)} "/herd/demo/s1-brainstorm.md") "utf8")
                                  "操作员批准前编辑。")}))))`);
 
 		expect(out.reviewed).toBe("review-quiescent");
@@ -151,7 +183,7 @@ describe("CLJS gate service", () => {
 		expect(out.stage).toBe("s2");
 		expect(out.tenure).toBe("T-2");
 		expect(out.pending).toBeNull();
-		expect(out["archive-exists"]).toBe(true);
+		expect(out["archive-exists"]).toBe(false);
 		expect(out["disk-approved"]).toBe(true);
 	});
 
@@ -255,8 +287,8 @@ describe("CLJS gate service", () => {
 		expect(out["briefing-ok"]).toBe(true);
 		expect(out.stage).toBe("s3");
 		expect(out.tenure).toBe("T-3");
-		expect(readFileSync(join(root, "plans", "demo", "s2-manual-tests.md"), "utf8")).toContain("S2 方法论");
-		expect(readFileSync(join(root, ".herd", "missions", "demo", "s2-cases.edn"), "utf8")).toContain("CASE-5");
+		expect(readFileSync(join(root, "herd", "demo", "s2-manual-tests.md"), "utf8")).toContain("S2 方法论");
+		expect(readFileSync(join(root, "herd", "demo", "s2-cases.edn"), "utf8")).toContain("CASE-5");
 	});
 
 	it("replays one call id and rejects a changed payload", async () => {
@@ -320,7 +352,11 @@ describe("CLJS gate service", () => {
 		const out = await scenario(`
 (defn ^:async scenario []
   (let [created ${createMission(root)}
-        _ (await (store/update-mission! ${literal(root)} "demo" {:stage :s3}))
+        _ (await (store/update-mission! ${literal(root)} "demo"
+                                        {:barrier {:from :s2 :to :s3
+                                                   :retired-tenure "T-1"
+                                                   :successor-tenure "T-2"
+                                                   :at ${literal(NOW)}}}))
         svc (gates/create-service {:root ${literal(root)} :slug "demo" :now (fn [] ${literal(NOW)})})
         asked (await ((:ask-user! svc) {:question "问题？" :context "上下文" :recommended_default "默认"} {}))]
     (js/JSON.stringify (clj->js {:ok (:ok asked) :code (get-in asked [:error :code])}))))`);
@@ -400,8 +436,8 @@ describe("CLJS gate service", () => {
 			["markdown", "cases"],
 			["markdown"],
 			["markdown", "promela"],
-			["slug", "question"],
-			["slug", "verbose_intent"],
+			["question"],
+			["verbose_intent"],
 			["status", "report_markdown", "inspected_paths"],
 		]);
 		expect(out["all-execute"]).toBe(true);

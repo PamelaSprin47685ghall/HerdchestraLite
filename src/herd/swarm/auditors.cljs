@@ -19,7 +19,7 @@
 
 ;; K-path S5 audit scheduling.
 ;;
-;; The CASE dataset is `.herd/missions/<slug>/s2-cases.edn`; the S2 parsers
+;; The CASE dataset is `herd/<slug>/s2-cases.edn`; the S2 parsers
 ;; own the schema. Every auditor receives exactly one CASE record. Audit
 ;; isolation uses a per-CASE `/tmp` copy and a deterministic tmux session name.
 ;; Auditor isolation is a guardrail, not a security boundary: the tool surface
@@ -66,12 +66,12 @@
   (path/join (or root ".") (paths/s2-cases-path slug)))
 
 (defn contract-paths [slug]
-  [(str "plans/" slug "/s1-brainstorm.md")
-   (str "plans/" slug "/s2-manual-tests.md")
-   (str "plans/" slug "/s3-dev-guide.md")
-   (str "plans/" slug "/s4-coordination.md")
-   (str "plans/" slug "/s4-coordination.pml")
-   (str ".herd/missions/" slug "/s2-cases.edn")])
+  [(str "herd/" slug "/s1-brainstorm.md")
+   (str "herd/" slug "/s2-manual-tests.md")
+   (str "herd/" slug "/s3-dev-guide.md")
+   (str "herd/" slug "/s4-coordination.md")
+   (str "herd/" slug "/s4-coordination.pml")
+   (str "herd/" slug "/s2-cases.edn")])
 
 (defn validate-dataset
   """
@@ -297,7 +297,7 @@ Automatic tests, CI, builds, coverage, and paperwork are not acceptance evidence
      :cwd (:cwd isolation)
      :artifacts-dir (or (:artifacts-dir isolation)
                         (:artifacts-dir deps)
-                        (path/join (:root deps) ".herd" "missions" slug "audit" "artifacts"
+                        (path/join (:root deps) "herd" slug "artifacts"
                                    (:case_id case-spec)))
      :signal (:signal context)
      :tmux-session (:session-name isolation)
@@ -748,7 +748,7 @@ Start all K auditors concurrently from already validated case specs.
 ;; ---------------------------------------------------------------------------
 ;; Audit batch state (S5 idempotency)
 ;;
-;; `.herd/missions/<slug>/audit/batch.edn` records the current batch:
+;; The in-memory batch record holds the current batch:
 ;;   {:batch-id "audit-demo-1a2b3c4d"
 ;;    :started-at <epoch-ms>
 ;;    :finished-at <epoch-ms>
@@ -770,8 +770,13 @@ Start all K auditors concurrently from already validated case specs.
 (def ^:private batch-verdicts #{:PASS :FAIL :INCOMPLETE})
 (def ^:private batch-history-limit 5)
 
-(defn batch-state-path [root slug]
-  (path/join root ".herd" "missions" slug "audit" "batch.edn"))
+(defonce ^:private batch-records (atom {}))
+
+(defn- batch-key [root slug]
+  [(or root "") (or slug "")])
+
+(defn reset-batch-state! [root slug]
+  (swap! batch-records dissoc (batch-key root slug)))
 
 (defn- valid-batch-record? [value]
   (and (map? value)
@@ -784,60 +789,29 @@ Start all K auditors concurrently from already validated case specs.
        (or (nil? (:history value)) (sequential? (:history value)))))
 
 (defn ^:async read-batch-state!
-  """
-Read the current batch record. A missing file is a clean slate; an
-   unreadable or invalid record is corrupt and MUST fail closed.
-"""
+  "Read the current in-memory batch record. A missing record is a clean slate; an invalid record is corrupt and MUST fail closed."
   [root slug]
-  (let [target (batch-state-path root slug)]
-    (try
-      (let [value (ufss/read (await (.readFile fs target "utf8")))]
-        (if (valid-batch-record? value)
-          {:ok true :record value :path target}
-          {:ok false
-           :code :AUDIT_BATCH_STATE_CORRUPT
-           :state :corrupt
-           :message (str "the audit batch state is not a valid record: " target)
-           :path target}))
-      (catch :default error
-        (if (= "ENOENT" (.-code error))
-          {:ok true :record nil :path target}
-          {:ok false
-           :code :AUDIT_BATCH_STATE_CORRUPT
-           :state :corrupt
-           :message (str "the audit batch state cannot be read: "
-                         (or (ex-message error) (str error)))
-           :path target
-           :cause (str error)})))))
+  (let [record (get @batch-records (batch-key root slug))]
+    (cond
+      (nil? record)
+      {:ok true :record nil :memory true}
+
+      (valid-batch-record? record)
+      {:ok true :record record :memory true}
+
+      :else
+      {:ok false
+       :code :AUDIT_BATCH_STATE_CORRUPT
+       :state :corrupt
+       :message "the in-memory audit batch state is not a valid record"})))
 
 (defn ^:async write-batch-state! [root slug record]
-  (let [target (batch-state-path root slug)]
-    (try
-      (await (atomic/write-edn-atomic! target record))
-      {:ok true :path target}
-      (catch :default error
-        {:ok false
-         :code :AUDIT_BATCH_STATE_WRITE_FAILED
-         :message (str "the audit batch state cannot be written: " (str error))
-         :path target
-         :cause (str error)}))))
+  (swap! batch-records assoc (batch-key root slug) record)
+  {:ok true :memory true})
 
-(defn- ^:async clear-case-submissions!
-  """
-Remove the named `<CASE>.submit.edn` files before a fresh batch. The
-   submission files carry no batch marker, so a new batch (including a REPAIR
-   retry) needs them gone before its auditors can submit. Each removal names
-   exactly one file.
-"""
-  [root slug case-ids]
-  (let [directory (path/join root ".herd" "missions" slug "audit")]
-    (await (js/Promise.all
-             (into-array
-               (mapv (fn [case-id]
-                       (-> (.rm fs (path/join directory (str case-id ".submit.edn"))
-                                #js {:force true})
-                           (.catch (fn [_] nil))))
-                     case-ids))))))
+(defn- ^:async clear-case-submissions! [root slug _case-ids]
+  (audit/reset-submissions! root slug)
+  {:ok true :memory true})
 
 (defn- ^:async collect-submissions! [root slug case-ids]
   (vec
@@ -905,7 +879,7 @@ Remove the named `<CASE>.submit.edn` files before a fresh batch. The
 (defn ^:async run-audit-batch!
   """
 Run or resume the S5 K-path audit batch. Entry is idempotent through
-   `.herd/missions/<slug>/audit/batch.edn`.
+   the in-memory batch record.
 """
   ([deps] (run-audit-batch! deps {}))
   ([deps options]
@@ -1058,7 +1032,7 @@ Run or resume the S5 K-path audit batch. Entry is idempotent through
             (if (:ok written)
               {:ok true
                :case-id (:case_id params)
-               :path (:path written)
+               :memory true
                :call-id call-id
                :note "one durable submission per CASE per audit batch"}
               written)))))))

@@ -4,11 +4,14 @@ import { access, appendFile, mkdir, realpath, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { hackContext } from "./host/hack-context.mjs";
+import { createCommandHost } from "./bridge/command-host.mjs";
+import { hackContext } from "./bridge/hack-context.mjs";
 import { detectCapabilities, host as hostModule } from "./host/imports.mjs";
 import * as lockDaemon from "./host/lock-daemon.mjs";
-import { getNativeRunner, installRunnerCapture } from "./host/native-runner.mjs";
+import { getNativeRunner, installRunnerCapture } from "./bridge/native-runner.mjs";
 import { spawnAgent } from "./host/subprocess.mjs";
+
+globalThis.__herdCreateCommandHost = createCommandHost;
 
 const BOARD_TOOLS = Object.freeze([
 	"board_split",

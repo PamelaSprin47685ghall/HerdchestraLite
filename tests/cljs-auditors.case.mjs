@@ -41,11 +41,11 @@ beforeEach(() => {
 		"s4-coordination.md",
 		"s4-coordination.pml",
 	]) {
-		mkdirSync(join(workspace, "plans", "demo"), { recursive: true });
-		writeFileSync(join(workspace, "plans", "demo", name), `document ${name}`);
+		mkdirSync(join(workspace, "herd", "demo"), { recursive: true });
+		writeFileSync(join(workspace, "herd", "demo", name), `document ${name}`);
 	}
-	mkdirSync(join(workspace, ".herd", "missions", "demo"), { recursive: true });
-	writeFileSync(join(workspace, ".herd", "missions", "demo", "s2-cases.edn"), "[]");
+	mkdirSync(join(workspace, "herd", "demo"), { recursive: true });
+	writeFileSync(join(workspace, "herd", "demo", "s2-cases.edn"), "[]");
 });
 
 afterEach(() => {
@@ -141,7 +141,7 @@ const PRELUDE = `
   (let [case-id (:case-id request)]
     (await (submit! case-id 90 85))
     (await (atomic/write-file-atomic!
-             (str root "/plans/demo")
+             (str root "/herd/demo")
              "s1-brainstorm.md"
              "mutated by an auditor"))
     {:ok true}))
@@ -207,7 +207,7 @@ describe("CLJS K-path audit scheduling", () => {
 		expect(out["case-ids"]).toEqual(["CASE-A", "CASE-B", "CASE-C", "CASE-D", "CASE-E"]);
 		expect(out["row-order"]).toEqual(["CASE-A", "CASE-B", "CASE-C", "CASE-D", "CASE-E"]);
 		expect(out["report-ok"]).toBe(true);
-		expect(out["report-path"]).toBe(join(workspace, "plans", "demo", "s5-report.md"));
+		expect(out["report-path"]).toBe(join(workspace, "herd", "demo", "s5-report.md"));
 		expect(out.approval.token).toBe("tok");
 		expect(out["request-count"]).toBe(1);
 		expect(out["request-case-count"]).toBe(5);
@@ -255,7 +255,7 @@ describe("CLJS K-path audit scheduling", () => {
 		expect(out["task-count"]).toBe(1);
 		expect(out["wake-epoch"]).toBeGreaterThan(0);
 		expect(out.report).toBeNull();
-		expect(existsSync(join(workspace, "plans", "demo", "s5-report.md"))).toBe(false);
+		expect(existsSync(join(workspace, "herd", "demo", "s5-report.md"))).toBe(false);
 	});
 
 	it("rejects duplicate, unknown, out-of-range and missing submissions", async () => {
@@ -278,14 +278,14 @@ describe("CLJS K-path audit scheduling", () => {
                          deps {:case_id "CASE-A" :user_score 90 :developer_score 85
                                :report_markdown ""} nil "call-5"))]
     ${JSON_OUT`{:first-ok (:ok first)
-                 :first-path (:path first)
+                 :first-memory (:memory first)
                  :duplicate-code (:code duplicate)
                  :unknown-code (:code unknown)
                  :range-code (:code out-of-range)
                  :missing-code (:code missing)}`}))`);
 
 		expect(out["first-ok"]).toBe(true);
-		expect(out["first-path"]).toBe(join(workspace, ".herd", "missions", "demo", "audit", "CASE-A.submit.edn"));
+		expect(out["first-memory"]).toBe(true);
 		expect(out["duplicate-code"]).toBe("AUDIT_DUPLICATE_CASE");
 		expect(out["unknown-code"]).toBe("AUDIT_UNKNOWN_CASE");
 		expect(out["range-code"]).toBe("AUDIT_INVALID_SCORE");
@@ -357,7 +357,7 @@ describe("CLJS K-path audit scheduling", () => {
 		expect(out.code).toBe("AUDIT_WORKSPACE_MUTATED");
 		expect(out["workspace-mutated"]).toBeNull();
 		expect(out.report).toBeNull();
-		expect(existsSync(join(workspace, "plans", "demo", "s5-report.md"))).toBe(false);
+		expect(existsSync(join(workspace, "herd", "demo", "s5-report.md"))).toBe(false);
 	});
 
 	it("registers attach_case_audit with the snake_case schema", async () => {
@@ -513,13 +513,11 @@ describe("CLJS K-path audit scheduling", () => {
 		expect(out.starts).toBe(10);
 	});
 
-	it("fails closed on corrupt batch state and leaves the file untouched", async () => {
-		const target = join(workspace, ".herd", "missions", "demo", "audit", "batch.edn");
-		mkdirSync(dirname(target), { recursive: true });
-		writeFileSync(target, "{:batch-id 42}");
+	it("fails closed on corrupt in-memory batch state and writes no file", async () => {
 		const out = await scenario(`
 (defn ^:async scenario []
   (let [starts (atom 0)
+        _ (await (auditors/write-batch-state! root "demo" {:batch-id 42}))
         deps (make-deps
                {:subagent (fn [_request] (swap! starts inc) {:ok true})})
         result (await (auditors/run-audit-batch! deps {}))]
@@ -532,7 +530,7 @@ describe("CLJS K-path audit scheduling", () => {
 		expect(out.state).toBe("corrupt");
 		expect(out.code).toBe("AUDIT_BATCH_STATE_CORRUPT");
 		expect(out.starts).toBe(0);
-		expect(readFileSync(target, "utf8")).toBe("{:batch-id 42}");
+		expect(existsSync(join(workspace, "herd", "demo", "audit", "batch.edn"))).toBe(false);
 	});
 
 	it("records a timed-out CASE as pending without blocking the batch", async () => {
@@ -598,13 +596,13 @@ describe("CLJS K-path audit scheduling", () => {
 (defn ^:async scenario []
   (let [stamp {:mtime-ms 111 :size 10}
         before {:ok true
-                :files [{:path "plans/demo/s1-brainstorm.md"
+                :files [{:path "herd/demo/s1-brainstorm.md"
                          :sha256 "aaa" :stamp stamp :missing false}]}
         after {:ok true
-               :files [{:path "plans/demo/s1-brainstorm.md"
+               :files [{:path "herd/demo/s1-brainstorm.md"
                         :sha256 "bbb" :stamp stamp :missing false}]}
         resized {:ok true
-                 :files [{:path "plans/demo/s1-brainstorm.md"
+                 :files [{:path "herd/demo/s1-brainstorm.md"
                           :sha256 "bbb" :stamp (assoc stamp :size 11) :missing false}]}]
     ${JSON_OUT`{:same-stamp (auditors/snapshot-equal? before after)
                  :resized (auditors/snapshot-equal? before resized)}`}))`);

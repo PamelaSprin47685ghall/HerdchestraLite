@@ -23,27 +23,27 @@
      :errors [{:code :INVALID_ARGUMENT :message "unsupported attach stage"}]}))
 
 (defn- ^:async write-document! [root slug stage validated request]
-  (let [plans-dir (path/join root "plans" slug)]
+  (let [plans-dir (path/join root "herd" slug)]
     (case stage
       :s2
       (do
         (await (atomic/write-file-atomic! plans-dir "s2-manual-tests.md" (:markdown request)))
         (await (atomic/write-edn-atomic! (path/join root (paths/s2-cases-path slug))
                                          (:cases validated)))
-        {:markdown (str "plans/" slug "/s2-manual-tests.md")
+        {:markdown (str "herd/" slug "/s2-manual-tests.md")
          :cases (paths/s2-cases-path slug)})
 
       :s3
       (do
         (await (atomic/write-file-atomic! plans-dir "s3-dev-guide.md" (:markdown request)))
-        {:markdown (str "plans/" slug "/s3-dev-guide.md")})
+        {:markdown (str "herd/" slug "/s3-dev-guide.md")})
 
       :s4
       (do
         (await (atomic/write-file-atomic! plans-dir "s4-coordination.md" (:markdown request)))
         (await (atomic/write-file-atomic! plans-dir "s4-coordination.pml" (:promela request)))
-        {:markdown (str "plans/" slug "/s4-coordination.md")
-         :promela (str "plans/" slug "/s4-coordination.pml")}))))
+        {:markdown (str "herd/" slug "/s4-coordination.md")
+         :promela (str "herd/" slug "/s4-coordination.pml")}))))
 (defn ^:async commit-attach! [root slug tool request]
   (when-not (stage-for-tool tool)
     (throw (ex-info "S1 attach requires the confirmation panel"
@@ -74,7 +74,6 @@
                                                                :tool tool
                                                                :stage stage
                                                                :now (:now request)})]
-                (await (store/archive-board! root slug (:tenure-id mission) board))
                 (await (store/write-board! root slug (:board successor)))
                 (let [patch {:stage (:stage successor)
                              :tenure (:tenure successor)

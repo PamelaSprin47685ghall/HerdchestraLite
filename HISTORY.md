@@ -298,3 +298,12 @@ clean-break 不删除、不改写以下既有资料：
 
 - **旧实现痛点**：`sandbox.cljs`（`.herd/locks/clj-core.cross-process.lock`）与 `swarm/store.cljs`（`s5-board.lock`）使用 `wx` 锁文件 + 指数退避/5ms 轮询 + `pid` 存活检测，存在 `stale-lock` 遗留漏洞、同进程并发自踩超时与高频磁盘轮询。
 - **clean-break 方案**：新增 `src/host/lock-daemon.mjs`（`node:net` 跨平台流式 IPC：Linux 抽象 socket `\0herd-lock-*`、Windows Named Pipe `\\.\pipe\herd-lock-*`、macOS/其他 POSIX `tmpdir` 短路径 `.sock`；按需拉起、空闲 30s 自退、连接即持锁、`SIGKILL` 由内核关闭 fd 秒级唤醒下一位、零轮询、无 `stale-lock`）；同步移除 `sandbox.cljs` 与 `swarm/store.cljs` 全部 `wx` 文件锁/轮询/PID 判活逻辑，并重写 `tests/cljs-lock-contention.test.mjs` 与更新 `AGENTS.md`。
+
+## 2026-11-15 身份、存储与抹平层修订
+
+- 任务身份改为宿主 session id；任何工具 schema 不再声明 `slug`；一个 session 0/1 任务，默认 devops，空 `/herd` 切换模式，退出不销毁任务。
+- 控制事实迁移到会话日志 custom entry：`herd.task`、`herd.mode`、`herd.seed`、`herd.barrier`、`herd.pending`、`herd.approval`；阶段由最后一条 barrier 推导，tenure = barrier 条数 + 1。
+- 产品路径迁到 `herd/{sessionId}/`；`.herd/missions`、`focus.edn`、`mission.edn`、`plans/<slug>`、`boards/`、`audit/` 退役。
+- `handoff` 改为追加宿主 compaction entry，不调用 `rewriteSession`；context 钩子 append-only。
+- `src/bridge/` 拆出 `hack-context`、`native-runner`、`command-host`；`src/herd/` 业务不直接依赖宿主实现。
+- 服务台/工单内核已在 `src/herd/station.cljs` 落地（12 项不变量测试），尚未接入 board 工具；`command-host` 已在 `src/bridge/command-host.mjs` 落地，尚未接入 `/herd`。custom-entry 权威化仍在推进。

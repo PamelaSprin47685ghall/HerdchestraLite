@@ -57,7 +57,7 @@ describe("CLJS board store and two-phase apply", () => {
                      :actor "A" :request-id "r2" :turn-id "add"}))
         board (await (store/read-board handle))
         fs (js/require "node:fs")
-        base (str ${JSON.stringify(root)} "/.herd/missions/demo/")
+        base (str ${JSON.stringify(root)} "/herd/demo/")
         events-text (.readFileSync fs (str base "events.jsonl") "utf8")
         checkpoint-text (.readFileSync fs (str base "checkpoint.edn") "utf8")]
     (js/JSON.stringify
@@ -90,7 +90,7 @@ describe("CLJS board store and two-phase apply", () => {
                                         :request-id "same" :turn-id "boot"}))
         board (await (store/read-board handle))
         fs (js/require "node:fs")
-        events-text (.readFileSync fs ${JSON.stringify(join(root, ".herd/missions/demo/events.jsonl"))} "utf8")]
+        events-text (.readFileSync fs ${JSON.stringify(join(root, "herd/demo/events.jsonl"))} "utf8")]
     (js/JSON.stringify
       (clj->js {:first (:ok r1) :replayed (:replayed r2)
                 :version (:board-version board)
@@ -115,7 +115,7 @@ describe("CLJS board store and two-phase apply", () => {
                     :command {:type "register_actor" :agentId "A" :slotId "S1"}
                     :request-id "r1" :turn-id "boot"}))
         fs (js/require "node:fs")
-        base (str ${JSON.stringify(root)} "/.herd/missions/demo/")
+        base (str ${JSON.stringify(root)} "/herd/demo/")
         _ (.unlinkSync fs (str base "board.edn"))
         r2 (await (apply/apply-board!
                     {:board handle
@@ -129,7 +129,7 @@ describe("CLJS board store and two-phase apply", () => {
 
 	it("never overwrites a corrupt board during initialize", async () => {
 		const root = ROOT();
-		const corruptPath = join(root, ".herd/missions/demo/board.edn");
+		const corruptPath = join(root, "herd/demo/board.edn");
 		mkdirSync(dirname(corruptPath), { recursive: true });
 		writeFileSync(corruptPath, "{:board-version 1 :tasks oops");
 		const before = readFileSync(corruptPath, "utf8");

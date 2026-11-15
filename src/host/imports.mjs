@@ -40,7 +40,7 @@ export {
 	restoreRunnerCapture,
 	runnerCaptureStatus,
 	runnerForContext,
-} from "./native-runner.mjs";
+} from "../bridge/native-runner.mjs";
 
 const { AgentSession, Container, Markdown, Settings, Spacer, Text, VERSION, runSubprocess, runSubagentFollowUpTurn } =
 	codingAgent;

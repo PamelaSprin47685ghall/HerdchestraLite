@@ -53,8 +53,8 @@
   (let [value (or (:root options) (:root deps))]
     (when (text? value) (string/trim value))))
 
-(defn- resolve-slug [deps options params]
-  (let [value (or (:slug params) (:slug options) (:slug deps))]
+(defn- resolve-slug [deps options]
+  (let [value (or (:slug options) (:slug deps))]
     (when (and (string? value) (re-matches slug-pattern value)) value)))
 
 (defn- now-of [deps]
@@ -134,7 +134,7 @@
   (let [role (or (:role options) (:role deps))
         denied (role-denied role review-roles)
         root (resolve-root deps options)
-        slug (resolve-slug deps options nil)
+        slug (resolve-slug deps options)
         call-id (:call-id options)
         summary (:summary_markdown params)]
     (cond
@@ -251,7 +251,6 @@
      :tool tool
      :documents documents
      :barrier barrier
-     :archive (:board-archive barrier)
      :successor successor
      :next-stage next-stage
      :disclosed-stage next-stage
@@ -301,20 +300,22 @@
                                                    :tool :attach_brainstorm
                                                    :stage :s1
                                                    :now (now-of deps)})
-        archive (await (store/archive-board! root slug
-                                             (or (get-in mission [:tenure :tenure-id])
-                                                 (:tenure-id mission))
-                                             board))
         board-written (await (store/write-board! root slug (:board successor)))
+        approval {:kind "attach"
+                  :stage "s1"
+                  :decision "approve"
+                  :callId (:call-id pending)
+                  :digest (:digest pending)
+                  :at (now-of deps)}
         updated (await (store/update-mission!
                          root slug
-                         (successor-patch successor barrier :attach_brainstorm)))]
+                         (assoc (successor-patch successor barrier :attach_brainstorm)
+                                :approval approval)))]
     (if-not (:ok updated)
       updated
       (attached-result slug :attach_brainstorm :s1 barrier
                        (:mission updated)
-                       {:markdown (str "plans/" slug "/s1-brainstorm.md")
-                        :archive (:path archive)
+                       {:markdown (str "herd/" slug "/s1-brainstorm.md")
                         :board (:path board-written)
                         :approved-markdown approved-markdown}))))
 
@@ -324,7 +325,7 @@
       (failure :INVALID_ARGUMENT "s1 validation failed"
                {:stage :s1 :errors (:errors validation)})
       (let [written (await (atomic/write-file-atomic!
-                             (str root "/plans/" slug)
+                             (str root "/herd/" slug)
                              "s1-brainstorm.md"
                              markdown))
             sha (sha256 markdown)
@@ -364,12 +365,25 @@
                       (complete-s1-approval! deps root slug mission board pending approved)))
 
                   :revise
-                  (let [updated (await (store/update-mission!
+                  (let [_ (await (store/write-board!
+                                   root slug
+                                   (assoc (or board (tenure/empty-board
+                                                      (or (get-in mission [:tenure :tenure-id])
+                                                          (:tenure-id mission))))
+                                          :attach-ready false)))
+                        updated (await (store/update-mission!
                                          root slug
                                          {:attach (assoc (or (:attach mission) {})
                                                          :ready false
                                                          :expected-attach :attach_brainstorm
-                                                         :pending nil)}))]
+                                                         :pending nil)
+                                          :approval {:kind "attach"
+                                                     :stage "s1"
+                                                     :decision "revise"
+                                                     :callId call-id
+                                                     :digest digest
+                                                     :feedback (or (:feedback decision) "")
+                                                     :at (now-of deps)}}))]
                     (if-not (:ok updated)
                       updated
                       {:ok true
@@ -384,7 +398,14 @@
                   :deny
                   (let [updated (await (store/update-mission! root slug
                                                               {:attach (assoc (or (:attach mission) {})
-                                                                              :pending nil)}))]
+                                                                              :pending nil)
+                                                               :approval {:kind "attach"
+                                                                          :stage "s1"
+                                                                          :decision "deny"
+                                                                          :callId call-id
+                                                                          :digest digest
+                                                                          :feedback (or (:feedback decision) "")
+                                                                          :at (now-of deps)}}))]
                     (if-not (:ok updated)
                       updated
                       {:ok true
@@ -426,7 +447,13 @@
                              root slug
                              {:attach {:ready false
                                        :expected-attach (tenure/attach-tool-for-stage next-stage)
-                                       :pending nil}}))]
+                                       :pending nil}
+                              :approval {:kind "attach"
+                                         :stage (name stage)
+                                         :decision "approve"
+                                         :callId call-id
+                                         :digest digest
+                                         :at (now-of deps)}}))]
         (if-not (:ok cleared)
           cleared
           (attached-result slug tool stage (:barrier committed)
@@ -437,7 +464,7 @@
         denied (role-denied role attach-roles)
         stage (get attach-stages tool)
         root (resolve-root deps options)
-        slug (resolve-slug deps options params)
+        slug (resolve-slug deps options)
         markdown (:markdown params)]
     (cond
       denied denied
@@ -531,7 +558,7 @@
   (let [role (or (:role options) (:role deps))
         denied (role-denied role ask-roles)
         root (resolve-root deps options)
-        slug (resolve-slug deps options params)
+        slug (resolve-slug deps options)
         question (:question params)]
     (cond
       denied denied
@@ -582,7 +609,7 @@
   (let [role (or (:role options) (:role deps))
         denied (role-denied role devops-roles)
         root (resolve-root deps options)
-        slug (resolve-slug deps options params)
+        slug (resolve-slug deps options)
         intent (:verbose_intent params)]
     (cond
       denied denied
@@ -633,7 +660,7 @@
   (let [role (or (:role options) (:role deps))
         denied (role-denied role devops-report-roles)
         root (resolve-root deps options)
-        slug (resolve-slug deps options params)
+        slug (resolve-slug deps options)
         status (:status params)
         report-markdown (:report_markdown params)
         inspected (:inspected_paths params)]
@@ -730,7 +757,14 @@
                                        {:attach (assoc (or (:attach mission) {})
                                                        :ready false
                                                        :expected-attach :attach_brainstorm
-                                                       :pending nil)}))]
+                                                       :pending nil)
+                                        :approval {:kind "attach"
+                                                   :stage "s1"
+                                                   :decision "revise"
+                                                   :callId (:callId pending)
+                                                   :digest (:digest pending)
+                                                   :feedback (or (:feedback normalized) "")
+                                                   :at (now-of deps)}}))]
                   (if-not (:ok updated)
                     updated
                     {:ok true :status :revision-requested :stage :s1 :slug slug
@@ -739,7 +773,14 @@
                 :deny
                 (let [updated (await (store/update-mission! root slug
                                                             {:attach (assoc (or (:attach mission) {})
-                                                                            :pending nil)}))]
+                                                                            :pending nil)
+                                                             :approval {:kind "attach"
+                                                                        :stage "s1"
+                                                                        :decision "deny"
+                                                                        :callId (:callId pending)
+                                                                        :digest (:digest pending)
+                                                                        :feedback (or (:feedback normalized) "")
+                                                                        :at (now-of deps)}}))]
                   (if-not (:ok updated)
                     updated
                     {:ok true :status :denied :stage :s1 :slug slug
@@ -837,25 +878,19 @@
                         :expected {:type "string" :minLength 1}
                         :rubric {:type "string" :minLength 1}}}})
 
-(defn- slug-schema []
-  {:type "string" :minLength 1 :maxLength 64
-   :pattern "^[a-z0-9][a-z0-9-]{0,63}$"})
-
 (defn- ask-user-parameters []
   {:type "object"
    :additionalProperties false
-   :required ["slug" "question"]
-   :properties {:slug (slug-schema)
-                :question {:type "string" :minLength 1}
+   :required ["question"]
+   :properties {:question {:type "string" :minLength 1}
                 :context {:type "string" :minLength 1}
                 :recommended_default {:type "string" :minLength 1}}})
 
 (defn- devops-parameters []
   {:type "object"
    :additionalProperties false
-   :required ["slug" "verbose_intent"]
-   :properties {:slug (slug-schema)
-                :verbose_intent {:type "string" :minLength 1}}})
+   :required ["verbose_intent"]
+   :properties {:verbose_intent {:type "string" :minLength 1}}})
 
 (defn- devops-report-parameters []
   {:type "object"

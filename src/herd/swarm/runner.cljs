@@ -32,7 +32,7 @@
 (def ^:private reviewer-prompt-text """
 [ROLE: CENTRALIZED REVIEWER — PHASE A CLEAN-BREAK JUDGE]
 You start on a clean Context Barrier with zero loyalty to your predecessor's sunk cost.
-- Inspect the frozen-by-convention `plans/<slug>/s1..s4-*.md` deliverables, the injected CASE records from `.herd/missions/<slug>/s2-cases.edn`, and the real single main workspace using read-only `clj_review`. There is no worktree. Paperwork, task counts, and passing unit tests prove nothing.
+- Inspect the frozen-by-convention `herd/<slug>/s1..s4-*.md` deliverables, the injected CASE records from `herd/<slug>/s2-cases.edn`, and the real single main workspace using read-only `clj_review`. There is no worktree. Paperwork, task counts, and passing unit tests prove nothing.
 - Call `review({ summary_markdown, findings })`:
   - Non-empty `findings: [{ key, value }]`: suspends Reviewer, materializes each item as a root task on the single board, and wakes all `@task` workers (Phase B).
   - Empty `findings: []`: confirms this tenure genuinely satisfies its S1–S4 requirements and single-workspace quiescence; the system then enters K-path audit.
@@ -71,8 +71,8 @@ No central manager will pick tasks for you. Coordinate solely through the shared
   (subs (str (new-uuid deps)) 0 8))
 
 (defn- mission-context
-  "Return the mission map injected by deps. Production callers read
-   `mission.edn` through `herd.stages.store/read-mission`; tests inject a map."
+  "Return the mission map injected by deps. Production callers derive it
+   from the session log through `herd.stages.store/read-mission`; tests inject a map."
   [deps]
   (:mission deps))
 
@@ -106,12 +106,12 @@ No central manager will pick tasks for you. Coordinate solely through the shared
   (or (:slug mission) (:slug deps)))
 
 (defn- contract-paths [slug]
-  [(str "plans/" slug "/s1-brainstorm.md")
-   (str "plans/" slug "/s2-manual-tests.md")
-   (str "plans/" slug "/s3-dev-guide.md")
-   (str "plans/" slug "/s4-coordination.md")
-   (str "plans/" slug "/s4-coordination.pml")
-   (str ".herd/missions/" slug "/s2-cases.edn")])
+  [(str "herd/" slug "/s1-brainstorm.md")
+   (str "herd/" slug "/s2-manual-tests.md")
+   (str "herd/" slug "/s3-dev-guide.md")
+   (str "herd/" slug "/s4-coordination.md")
+   (str "herd/" slug "/s4-coordination.pml")
+   (str "herd/" slug "/s2-cases.edn")])
 
 (defn- board-snapshot [board]
   {:board-version (:board-version board)
@@ -131,7 +131,7 @@ No central manager will pick tasks for you. Coordinate solely through the shared
        (boolean (:initial? context)) ")\n"
        "- Contract paths (frozen by convention; read-only):\n"
        (string/join "\n" (map #(str "  - " %) (:contract-paths context)))
-       "\n- Canonical CASE dataset: " (str ".herd/missions/" (:slug context) "/s2-cases.edn")
+       "\n- Canonical CASE dataset: " (str "herd/" (:slug context) "/s2-cases.edn")
        "\n- Workspace: " (or (:cwd context) "(cwd unavailable)") "\n"
        "- Board snapshot (context, not an assignment):\n"
        (edn/canonical (or (:board-snapshot context) {}))
@@ -165,7 +165,7 @@ No central manager will pick tasks for you. Coordinate solely through the shared
 
 (defn- artifacts-directory [deps slug tenure-id name]
   (let [root (or (:root deps) ".")]
-    (str root "/.herd/missions/" slug "/artifacts/" tenure-id "/" name)))
+    (str root "/herd/" slug "/artifacts/" tenure-id "/" name)))
 
 (defn reviewer-request [deps mission board options]
   (let [slug (mission-slug deps mission)
@@ -706,7 +706,6 @@ No central manager will pick tasks for you. Coordinate solely through the shared
                :to :s5
                :retired-tenure retired
                :successor-tenure next-id
-               :board-archive (tenure/archive-board-path slug retired)
                :review-summary (:review-summary board)
                :written-at timestamp}
      :successor-board (-> (model/initial-board {:mode :swarm})
@@ -749,8 +748,7 @@ No central manager will pick tasks for you. Coordinate solely through the shared
         (failure :INVALID_ARGUMENT
                  "relay needs root and slug to archive the tenure"
                  {:field (if (text? root) :slug :root)})
-        (let [archived (await (stages-store/archive-board! root slug (:retired-tenure barrier) board))
-              patch {:stage :s5
+        (let [patch {:stage :s5
                      :tenure (:tenure successor-mission)
                      :tenure-id (:tenure-id successor-mission)
                      :tenure-seq (:tenure-seq successor-mission)
@@ -764,7 +762,6 @@ No central manager will pick tasks for you. Coordinate solely through the shared
               (if-not (:ok replaced)
                 replaced
                 {:ok true
-                 :archived archived
                  :mission (:mission updated)
                  :successor-board successor-board}))))))))
 

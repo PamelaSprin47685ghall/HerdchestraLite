@@ -73,7 +73,7 @@ describe("CLJS s5 report", () => {
 		expect(outcome.verdict).toBe("PASS");
 		expect(outcome.outcome.ok).toBe(true);
 		expect(outcome.outcome.completed).toBe(false);
-		expect(outcome.outcome.path).toBe(join(root, "plans", "demo", "s5-report.md"));
+		expect(outcome.outcome.path).toBe(join(root, "herd", "demo", "s5-report.md"));
 		const markdown = readFileSync(outcome.outcome.path, "utf8");
 		expect(markdown).toContain("| CASE-A | docs/a.md | 90 | 85 | 85 | 80 | PASS |");
 		expect(outcome.outcome.sha256).toBe(createHash("sha256").update(markdown, "utf8").digest("hex"));
@@ -95,7 +95,7 @@ describe("CLJS s5 report", () => {
 
 		expect(outcome.ok).toBe(false);
 		expect(normalized(outcome.code)).toBe("APPROVAL_REQUIRED");
-		expect(existsSync(join(root, "plans", "demo", "s5-report.md"))).toBe(true);
+		expect(existsSync(join(root, "herd", "demo", "s5-report.md"))).toBe(true);
 	});
 
 	it("blocks approval when the recheck throws", async () => {
@@ -151,7 +151,7 @@ describe("CLJS s5 report", () => {
 
 		expect(outcome.ok).toBe(false);
 		expect(normalized(outcome.code)).toBe("APPROVAL_REQUIRED");
-		expect(existsSync(join(root, "plans", "demo", "s5-report.md"))).toBe(false);
+		expect(existsSync(join(root, "herd", "demo", "s5-report.md"))).toBe(false);
 	});
 
 	it("rejects an invalid slug before writing", async () => {
@@ -179,7 +179,7 @@ describe("CLJS attach_case_audit persistence", () => {
 		    (js/JSON.stringify (clj->js {:written written :read read-back})))`);
 
 		expect(outcome.written.ok).toBe(true);
-		expect(outcome.written.path).toBe(join(root, ".herd", "missions", "demo", "audit", "CASE-A.submit.edn"));
+		expect(outcome.written.memory).toBe(true);
 		expect(outcome.read.ok).toBe(true);
 		expect(outcome.read.submission).toEqual({
 			case_id: "CASE-A",
@@ -195,16 +195,14 @@ describe("CLJS attach_case_audit persistence", () => {
 		    (clj->js (await (herd.stages.audit/write-submission-once!
 		                      __ROOT__ "demo" "CASE-A" ${cljsSubmission} nil))))`);
 		expect(first.ok).toBe(true);
-		const before = readFileSync(first.path, "utf8");
-
-		const second = await run(`
+				const second = await run(`
 		  (js/JSON.stringify
 		    (clj->js (await (herd.stages.audit/write-submission-once!
 		                      __ROOT__ "demo" "CASE-A" ${cljsSubmission} nil))))`);
 
 		expect(second.ok).toBe(false);
 		expect(normalized(second.code)).toBe("AUDIT_DUPLICATE_CASE");
-		expect(readFileSync(first.path, "utf8")).toBe(before);
+		expect(first.memory).toBe(true);
 	});
 
 	it("rejects a submission that names another CASE", async () => {

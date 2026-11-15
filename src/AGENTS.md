@@ -13,13 +13,19 @@
 1. `src/clj-main.mjs`：唯一清单入口与宿主适配层。启动 nbb 与 formatter，尝试加载 `@oh-my-pi/pi-tui` 与 `host/language-detect.mjs`，设置 `globalThis.__herdHost.runSubagent`、`globalThis.__herdNative` 与 `globalThis.__herdPluginSrc`，加载 `src/herd/bootstrap.cljs`，最后用 `hackContext` 安装 `herd.main/context-handler`。它只提供宿主能力，不实现阶段、看板或审计语义。
 2. `src/herd/bootstrap.cljs`：从 classpath 与 `globalThis.__herdPluginSrc` 定位 `src/herd/*.cljs`，加载 `herd/main.cljs`。
 3. `src/herd/main.cljs`：CLJ 工具面（`clj_devops`、`wait`、`handoff`）、系统提示词注入、handoff 消费、usage/status、`HERD_TRACE` 热路径计时与 hooks；加载时调用 `system/install!`。
-4. `src/herd/system.cljs`：完整装配接线。注册八个门禁工具（`review`、`attach_brainstorm`、`attach_manual_tests`、`attach_dev_guide`、`attach_coordination`、`ask_user`、`devops`、`submit_devops_report`）、11 个 `board_*` 与 `attach_case_audit`；提供 `/herd <seed>` 命令、mission 与 `.herd/focus.edn`、阶段/角色工具面、Nudge、S1 面板端口、S5 runner/审计端口与 health 记录。
+4. `src/herd/system.cljs`：完整装配接线。注册八个门禁工具（`review`、`attach_brainstorm`、`attach_manual_tests`、`attach_dev_guide`、`attach_coordination`、`ask_user`、`devops`、`submit_devops_report`）、11 个 `board_*` 与 `attach_case_audit`；提供 `/herd` 模式开关、会话日志 custom entry 与 `herd/{sessionId}/` 产物、阶段/角色工具面、Nudge、S1 面板端口、S5 runner/审计端口与 health 记录。
 5. `src/herd/swarm/runner.cljs`、`src/herd/swarm/auditors.cljs`：单工作区 S5 Reviewer ⇄ Swarm 接力与 K 路审计，已由 `system.cljs` 接线。
 
 JS 边界层（`src/` 下仅保留以下活跃 `.mjs` 文件，旧 `main.mjs`、`bootstrap-main.mjs`、`tui/`、`prompts/`、`stages/`、`swarm/`、`clj-sandbox/`、`sandbox/` 及旧 `util/{atomic-write,file-lock,broker}.mjs`、`host/{health,model-seed,hack-system-prompt,session-key}.mjs` 均已删除）：
 
-- `src/host/*.mjs` 是宿主适配层：`hack-context`、`imports`、`lock-daemon`、`native-runner`、`subprocess`、`language-detect` 由 `src/clj-main.mjs` 直接使用。
+- `src/bridge/*.mjs` 是抹平层：`hack-context`、`native-runner`、`command-host`；`src/host/*.mjs` 保留 `imports`、`lock-daemon`、`subprocess`、`language-detect`。`src/clj-main.mjs` 只装配二者。
 - `src/util/errors.mjs` 为宿主子代理边界提供错误码与 EDN 错误渲染（由 `src/host/subprocess.mjs` 使用）。
+
+## 1.1 S5 迁移状态（2026-11-15）
+
+已完成：工具 schema 去 `slug`；`/herd` 改模式开关并删除 `unique-slug!`、命令补全 slug、`parse-auditor-context`；路径迁到 `herd/{sessionId}/`；删除 `focus.edn` 与 `boards/` 归档；审计提交与批次状态内存化；`handoff` 改为追加 compaction；`hack-context`、`native-runner` 迁入 `src/bridge/`。
+
+`mission.edn` 已不再写入；`herd.task`/`herd.mode`/`herd.seed`/`herd.barrier`/`herd.pending`/`herd.approval` 是权威 custom entry，阶段与 tenure 由 barrier 推导。`rewriteSession` 已删除，context 只追加。`src/herd/station.cljs` 是独立的不变量内核（12 个测试），生产 board 适配仍由 `swarm/apply` 的两阶段事务承担；`/herd` 已优先经 `src/bridge/command-host.mjs` 的 `handleTui`，无全局工厂时回退直连。
 
 `src/herd/main.cljs` 的 `before-agent-start` 负责系统提示词注入：`herd.prompts/common-rules-text` 包含 `# Repo-aware Rules`、11 段 `COMMON_CORE_RULES`、`SANDBOX_PROMISE_NOTE` 与 `UFSS_PROMPT_NOTE`；用 `<!-- herdchestra:system-prompt v1 -->` 受管区替换旧块，支持 string 与 string[] prompt，检测到标题已存在则替换（幂等），异常时 fail-open 返回宿主原提示词。`herd.system/briefing-for` 在使命会话中追加当前阶段的 S1–S5 简报；子代理不注入。语言纪律仍由出站 `context` 尾注注入。
 
@@ -35,7 +41,8 @@ omp 在进程内缓存已加载的 ESM 模块，系统提示词在会话启动�
 
 ```text
 clj-main
-  ├── host/{hack-context,imports,lock-daemon,native-runner,subprocess,language-detect}
+  ├── bridge/{hack-context,native-runner}
+  ├── host/{imports,lock-daemon,subprocess,language-detect}
   └── herd/bootstrap ── herd/main
                           ├── herd/{handoff,prompts,repl,system,ufss,ui}
                           └── herd/system
@@ -107,16 +114,16 @@ herd/swarm/store ── herd/swarm/{edn,model}
 - 宿主在 shell 注入 `BUN_OPTIONS=--preload /home/kunweiz/.config/omp/zstd-preload.js`，导致 Bun 1.4.4 把 `bun test` 误解析为脚本名。开发者测试须带 `env -u BUN_OPTIONS`；沙箱 `call`（`src/herd/sandbox.cljs`）已自动剥离 `BUN_OPTIONS`/`NODE_OPTIONS`/`BASH_ENV`/`ENV`/`PROMPT_COMMAND`。
 - 不指定 `--model` 时本机默认模型可能触发 `model_not_available_for_integrator`，真实验收须显式指定可用主模型与 `@task` 模型。
 
-### 5.2 唯一受控宿主补丁：`src/host/native-runner.mjs`
+### 5.2 唯一受控宿主补丁：`src/bridge/native-runner.mjs`
 
 - **目的与实现**：宿主公开 `ExtensionAPI`/`ExtensionContext` 不暴露 Runner，唯独 `ExtensionRunner.prototype.invokeNativeTool` 可执行官方 `read`/`write`。`native-runner.mjs`（由 `host/imports.mjs` 重导出）懒加载 `@oh-my-pi/pi-coding-agent/extensibility/extensions/runner` 并包装 `ExtensionRunner.prototype.createContext`，记入 `WeakMap<ctx, runner>` 与最近 runner；编译宿主将扩展内字面量动态 import 重写为 `omp-legacy-pi-bundled:` 单例注册表，因此补丁准确命中宿主自身 `ExtensionRunner`。
 - **失败与限制**：捕获失败或 `--no-tools` 禁用内置工具时返回 `:HOST_API_MISMATCH`（禁止回退 `node:fs`）；`callerContext` 不可得导致 `write` 的 LSP 批量刷新元数据不完整；worker 桥未把 `AbortSignal` 传入 `invokeNativeTool`。
-- **回滚**：移除 `src/clj-main.mjs` 的 `installRunnerCapture()` 调用与 `src/host/native-runner.mjs`，沙箱将自然 fail-closed。
+- **回滚**：移除 `src/clj-main.mjs` 的 `installRunnerCapture()` 调用与 `src/bridge/native-runner.mjs`，沙箱将自然 fail-closed。
 
 ### 5.3 `omp` Hooks、`sessionManager` 与 `runSubprocess`
 
 - `before_agent_start`：`event.systemPrompt` 在真实宿主为 `string[]`（须同时兼容 `string`）；`ctx.signal` 为 `undefined`（取消信号取 `execute` 第 3 参数、`runSubprocess` signal 与 `AbortController` 树）；`ctx.agent` 在 18.x 存在（`{kind, id, name, depth}`），17.x/16.x 未保证。
-- `context` 钩子与深拷贝：`context` 事件的 `ctx.sessionManager` 可能缺失，持久化状态在 `session_start` 捕获。真实宿主在调 `context` 前会深拷贝消息对象（`!==`），因此 `src/host/hack-context.mjs` 先按引用再按末尾 `deepEqual` 定位持久化前缀；`appendCompaction` / `appendResetBoundary` 写下的边界后只能追加、不可 `rewriteSession`。
+- `context` 钩子与深拷贝：`context` 事件的 `ctx.sessionManager` 可能缺失，持久化状态在 `session_start` 捕获。真实宿主在调 `context` 前会深拷贝消息对象（`!==`），因此 `src/bridge/hack-context.mjs` 先按引用再按末尾 `deepEqual` 定位持久化前缀；`appendCompaction` / `appendResetBoundary` 写下的边界后只能追加、不可 `rewriteSession`。
 - `runSubprocess`：`agent` 须传完整 `AgentDefinition`；`artifactsDir` 是子会话 transcript 落盘唯一开关；`sessionFile` 在 18.16+ 写入 `SessionHeader.parentSession`（17.3.5 忽略）；`parentAgentId` 与 `parentToolCallId` 随选项透传。
 
 ### 5.4 `nbb`、`pi-tui` 与 `highlight.js`

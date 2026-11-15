@@ -64,6 +64,8 @@ const S1_MARKDOWN = [
 
 const PRELUDE = `
 (require '[clojure.string :as str]
+         '["node:fs" :as node-fs]
+         '["node:path" :as node-path]
          '[herd.stages.audit :as audit]
          '[herd.stages.store :as store]
          '[herd.stages.tenure :as tenure]
@@ -92,41 +94,73 @@ const PRELUDE = `
          :__hooks hooks
          :__active active}))
 
+(defn journal-file [root id]
+  (node-path/join root ".sessions" (str id ".jsonl")))
+
+(defn journal-manager [root id]
+  #js {:getSessionId (fn [] id)
+       :getSessionFile (fn [] (journal-file root id))
+       :appendCustomEntry
+       (fn [custom-type data]
+         (let [file (journal-file root id)]
+           (node-fs/mkdirSync (node-path/dirname file) #js {:recursive true})
+           (node-fs/appendFileSync
+             file
+             (str (js/JSON.stringify
+                    #js {:type "custom" :customType custom-type :data data})
+                  "\\n"))))})
+
 (defn main-ctx [root id]
   #js {:cwd root
        :hasUI false
        :mode "print"
-       :sessionManager #js {:getSessionId (fn [] id)}})
+       :sessionManager (journal-manager root id)})
 
 (defn sub-ctx [root id]
   #js {:cwd root
        :agent #js {:id id :kind "sub"}
-       :sessionManager #js {:getSessionId (fn [] (str "sub-" id))}})
+       :sessionManager (journal-manager root (str "sub-" id))})
 
 (defn tool-info [result]
   (let [value (if (map? result) result (js->clj result :keywordize-keys true))]
     {:is-error (boolean (:isError value))
      :text (or (get-in value [:content 0 :text]) "")}))
 
+(defn test-slug [seed]
+  (let [base (-> (str/lower-case (str seed))
+                 (str/replace #"[^a-z0-9]+" "-")
+                 (str/replace #"^-+" "")
+                 (str/replace #"-+$" ""))]
+    (if (pos? (count base)) base "session-1")))
+
 (defn ^:async create-mission! [root seed]
-  (let [pi (make-pi)
+  (let [id (test-slug seed)
+        pi (make-pi)
         _ (system/reset-state!)
         _ (system/install! pi {:root root})
         handler (.-handler (get @(.-__commands pi) "herd"))
-        ctx (main-ctx root "session-1")]
+        ctx (main-ctx root id)]
     (await (handler seed ctx))
     [pi ctx]))
 
 (defn ^:async s5-fixture! [root term]
-  (let [slug "s5-probe"
+  (let [slug "session-1"
+        ctx (main-ctx root slug)
         _ (await (store/create-mission! root {:slug slug
                                               :seed "S5 probe"
+                                              :ctx ctx
                                               :now "2026-11-14T00:00:00.000Z"
                                               :tenure {:tenure-id "T-1"
                                                        :index 1
                                                        :started-at "2026-11-14T00:00:00.000Z"
                                                        :ended-at nil}}))
-        _ (await (store/update-mission! root slug {:stage :s5}))
+        _ (await (store/update-mission!
+                   root slug
+                   {:barrier {:from :s4
+                              :to :s5
+                              :retired-tenure "T-1"
+                              :successor-tenure "T-2"
+                              :at "2026-11-14T00:00:00.000Z"}}))
         board (-> (swarm-model/initial-board {:mode :swarm})
                   (assoc :tenure-id "T-1"
                          :tenure {:term term :phase :swarm}
@@ -188,7 +222,7 @@ describe("CLJS full assembly wiring", () => {
 		expect(out.commands).toEqual(["herd"]);
 	});
 
-	it("creates a focused S1 mission and restores focus from disk", async () => {
+	it("creates a session-bound S1 task and restores it on restart without adopting other sessions", async () => {
 		const root = await freshRoot();
 		const out = await scenario(`
 (defn ^:async scenario []
@@ -198,13 +232,12 @@ describe("CLJS full assembly wiring", () => {
         read (await (store/read-mission root slug))
         board (await (store/read-board root slug))
         fs (js/require "node:fs/promises")
-        focus-text (await (.readFile fs (str root "/.herd/focus.edn") "utf8"))
-        focus (ufss/read focus-text)
-        entry (get focus "session:session-1")
+        focus-exists (try (await (.access fs (str root "/.herd/focus.edn"))) true (catch :default _ false))
         _ (system/reset-state!)
         pi2 (make-pi)
         _ (system/install! pi2 {:root root})
-        restored (await (system/ensure-focus! (main-ctx root "session-1") root))]
+        restored (await (system/ensure-focus! (main-ctx root "build-the-parser") root))
+        other (await (system/ensure-focus! (main-ctx root "session-2") root))]
     (js/JSON.stringify
       (clj->js {:ok (:ok read)
                 :stage (:stage (:mission read))
@@ -212,21 +245,20 @@ describe("CLJS full assembly wiring", () => {
                 :control-version (:control-version (:mission read))
                 :tenure (get-in read [:mission :tenure :tenure-id])
                 :board-empty (empty? (:tasks board))
-                :focus-slug (:slug entry)
-                :focus-tenure (:tenure-id entry)
-                :restored restored}))))`);
+                :focus-exists focus-exists
+                :restored restored
+                :other other}))))`);
 		expect(out.ok).toBe(true);
 		expect(out.stage).toBe("s1");
 		expect(out.seed).toBe("Build the parser");
-		expect(out["control-version"]).toBe(1);
 		expect(out.tenure).toBe("T-1");
 		expect(out["board-empty"]).toBe(true);
-		expect(out["focus-slug"]).toBe("build-the-parser");
-		expect(out["focus-tenure"]).toBe("T-1");
+		expect(out["focus-exists"]).toBe(false);
 		expect(out.restored).toBe("build-the-parser");
+		expect(out.other).toBeNull();
 	});
 
-	it("refuses an unfocused session when several missions exist", async () => {
+	it("refuses every session that has no binding of its own", async () => {
 		const root = await freshRoot();
 		const out = await scenario(`
 (defn ^:async scenario []
@@ -245,7 +277,7 @@ describe("CLJS full assembly wiring", () => {
       (clj->js {:is-error (:is-error (tool-info result))
                 :text text
                 :focused (await (system/ensure-focus! (main-ctx root "session-2") root))
-                :focused-first (await (system/ensure-focus! (main-ctx root "session-1") root))}))))`);
+                :focused-first (await (system/ensure-focus! (main-ctx root "first-mission") root))}))))`);
 		expect(out["is-error"]).toBe(true);
 		expect(out.text).toContain(":session-slug-missing");
 		expect(out.focused).toBeNull();
@@ -262,7 +294,7 @@ describe("CLJS full assembly wiring", () => {
         sub (sub-ctx root "A1")
         denied (await ((.-execute review) "call-1" #js {} nil nil sub))
         health (.-__herdHealth js/globalThis)
-        _ (await (system/before-agent-start! #js {:prompt "[HERD_ROLE: Reviewer]\\nreview"} sub))
+        _ (await (system/before-agent-start! #js {:prompt "[HERD_ROLE: Reviewer]\\nMission slug: role-probe\\nreview"} sub))
         accepted (await ((.-execute review) "call-2" #js {} nil nil sub))
         audit (get @(.-__tools pi) "attach_case_audit")
         main-denied (await ((.-execute audit) "call-3"
@@ -270,13 +302,13 @@ describe("CLJS full assembly wiring", () => {
                                  :developer_score 80 :report_markdown "证据"}
                             nil nil (main-ctx root "session-1")))
         worker (sub-ctx root "A2")
-        _ (await (system/before-agent-start! #js {:prompt "[HERD_ROLE: Manual Auditor]\\naudit"} worker))
+        _ (await (system/before-agent-start! #js {:prompt "[HERD_ROLE: Manual Auditor]\\nMission slug: role-probe\\naudit"} worker))
         submitted (await ((.-execute audit) "call-4"
                           #js {:case_id "CASE-1" :user_score 90
                                :developer_score 80 :report_markdown "证据"}
                           nil nil worker))
         fs (js/require "node:fs/promises")
-        audit-file (str root "/.herd/missions/role-probe/audit/CASE-1.submit.edn")
+        audit-file (str root "/herd/role-probe/audit/CASE-1.submit.edn")
         audit-exists (await (-> (.access fs audit-file)
                                    (.then (fn [_] true))
                                    (.catch (fn [_] false))))]
@@ -299,7 +331,7 @@ describe("CLJS full assembly wiring", () => {
 		expect(out["main-denied-text"]).toContain(":CAPABILITY_DENIED");
 		expect(out["submitted-error"]).toBe(false);
 		expect(out["submitted-text"]).toContain(":audit-submitted");
-		expect(out["audit-exists"]).toBe(true);
+		expect(out["audit-exists"]).toBe(false);
 	});
 
 	it("opens the S1 panel with the on-disk path and approves into S2", async () => {
@@ -323,7 +355,7 @@ describe("CLJS full assembly wiring", () => {
         _ (await ((.-execute review) "review-1" #js {} nil nil ctx))
         result (await ((.-execute attach) "attach-1"
                        #js {:markdown ${literal(S1_MARKDOWN)}} nil nil ctx))
-        read (await (store/read-mission root "panel-approve"))]
+        read (await (store/read-mission root "session-1"))]
     (js/JSON.stringify
       (clj->js {:is-error (:is-error (tool-info result))
                 :text (:text (tool-info result))
@@ -358,19 +390,20 @@ describe("CLJS full assembly wiring", () => {
         _ (await ((.-execute review) "review-1" #js {} nil nil ctx))
         revised (await ((.-execute attach) "attach-1"
                         #js {:markdown ${literal(S1_MARKDOWN)}} nil nil ctx))
-        after-revise (await (store/read-mission root "panel-states"))
+        after-revise (await (store/read-mission root "session-1"))
+        _ (await ((.-execute review) "review-2" #js {} nil nil ctx))
         _ (reset! decision "deny")
         denied (await ((.-execute attach) "attach-2"
                        #js {:markdown ${literal(S1_MARKDOWN)}} nil nil ctx))
-        after-deny (await (store/read-mission root "panel-states"))
+        after-deny (await (store/read-mission root "session-1"))
         _ (reset! decision "pending")
         pending (await ((.-execute attach) "attach-3"
                         #js {:markdown ${literal(S1_MARKDOWN)}} nil nil ctx))
-        after-pending (await (store/read-mission root "panel-states"))
+        after-pending (await (store/read-mission root "session-1"))
         _ (reset! decision "approve")
         resumed (await ((.-execute attach) "attach-4"
                         #js {:markdown ${literal(S1_MARKDOWN)}} nil nil ctx))
-        after-resume (await (store/read-mission root "panel-states"))]
+        after-resume (await (store/read-mission root "session-1"))]
     (js/JSON.stringify
       (clj->js {:revise-text (:text (tool-info revised))
                 :revise-stage (:stage (:mission after-revise))
@@ -484,13 +517,22 @@ describe("CLJS full assembly wiring", () => {
         _ (tool-end #js {:toolName "ask_user" :isError false} ctx)
         _ (await (agent-end #js {:messages #js []} ctx))
         after-ask (count @scheduled)
-        read (await (store/read-mission root "nudge-exits"))
-        mission (:mission read)
-        _ (await (store/update-mission! root "nudge-exits"
-                                        {:stage :completed
-                                         :approval {:revision (:revision mission)
-                                                    :report-sha256 "abc"
+        read (await (store/read-mission root "session-1"))
+        sha "${"a".repeat(64)}"
+        fs (js/require "node:fs/promises")
+        _ (await (.mkdir fs (str root "/herd/session-1") #js {:recursive true}))
+        _ (await (.writeFile fs (str root "/herd/session-1/s5-report.md")
+                             (str "---\nreport_sha256: " sha "\n---\n") "utf8"))
+        _ (await (store/update-mission! root "session-1"
+                                        {:barrier {:from :s4
+                                                   :to :s5
+                                                   :retired-tenure "T-1"
+                                                   :successor-tenure "T-2"
+                                                   :at "2026-11-14T00:00:00.000Z"}
+                                         :approval {:revision 0
+                                                    :report-sha256 sha
                                                     :token "t"}}))
+        _ (await (system/ensure-focus! ctx root))
         _ (await (system/before-agent-start! #js {:prompt ""} ctx))
         _ (await (agent-end #js {:messages #js []} ctx))]
     (js/JSON.stringify (clj->js {:after-ask after-ask :after-complete (count @scheduled)}))))`);
@@ -569,7 +611,7 @@ describe("CLJS full assembly wiring", () => {
 		expect(out["health-status"]).toBe("degraded");
 	});
 
-	it("builds a timestamp slug for a seed without ASCII words and lists known missions", async () => {
+	it("creates a session-bound task and returns no slug completions", async () => {
 		const root = await freshRoot();
 		const out = await scenario(`
 (defn ^:async scenario []
@@ -583,17 +625,16 @@ describe("CLJS full assembly wiring", () => {
         ctx (main-ctx root "session-1")
         _ (await (handler "让代码更好" ctx))
         fs (js/require "node:fs")
-        missions (vec (.readdirSync fs (str root "/.herd/missions")))
+        missions (vec (.readdirSync fs (str root "/herd")))
         slug (first missions)
         completions (vec (js->clj (completions-fn "mission-") :keywordize-keys true))]
     (js/JSON.stringify (clj->js {:slug slug
-                                 :shape (boolean (re-matches #"^mission-\\d{8}-\\d{6}$" slug))
+                                 :session-bound (= slug "session-1")
                                  :completions completions
                                  :command-ok (fn? handler)}))))`);
 		expect(out["command-ok"]).toBe(true);
-		expect(out.shape).toBe(true);
-		expect(out.completions.length).toBe(1);
-		expect(out.completions[0].value).toBe(out.slug);
+		expect(out["session-bound"]).toBe(true);
+		expect(out.completions.length).toBe(0);
 	});
 
 	it("instantiates root tasks and wakes slots for non-empty S5 Reviewer findings", async () => {
@@ -610,7 +651,7 @@ describe("CLJS full assembly wiring", () => {
                                            {:ok true :agent-id "agent-1"})})
         slug (await (s5-fixture! root 0))
         sub (sub-ctx root "R1")
-        _ (await (system/before-agent-start! #js {:prompt "[HERD_ROLE: Reviewer]\\nreview"} sub))
+        _ (await (system/before-agent-start! #js {:prompt "[HERD_ROLE: Reviewer]\\nMission slug: session-1\\nreview"} sub))
         review (get @(.-__tools pi) "review")
         result (await ((.-execute review) "call-1"
                        #js {:summary_markdown "S5 审查完成"
@@ -645,7 +686,7 @@ describe("CLJS full assembly wiring", () => {
                                            {:ok true :answer "继续"})})
         slug (await (s5-fixture! root 0))
         sub (sub-ctx root "R2")
-        _ (await (system/before-agent-start! #js {:prompt "[HERD_ROLE: Reviewer]\\nreview"} sub))
+        _ (await (system/before-agent-start! #js {:prompt "[HERD_ROLE: Reviewer]\\nMission slug: session-1\\nreview"} sub))
         review (get @(.-__tools pi) "review")
         result (await ((.-execute review) "call-1" #js {} nil nil sub))
         board (await (swarm-store/read-board (swarm-store/open-board root slug)))
@@ -667,6 +708,8 @@ describe("CLJS full assembly wiring", () => {
 (defn ^:async scenario []
   (let [root ${literal(root)}
         batches (atom [])
+        sha "${"a".repeat(64)}"
+        fs (js/require "node:fs/promises")
         pi (make-pi)
         _ (system/reset-state!)
         _ (system/install! pi {:root root
@@ -674,16 +717,25 @@ describe("CLJS full assembly wiring", () => {
                                                   (swap! batches conj
                                                          {:slug (:slug deps)
                                                           :has-board (some? (:board options))})
-                                                  (js/Promise.resolve
-                                                    {:ok true
-                                                     :verdict :PASS
-                                                     :state :closed
-                                                     :approval {:revision 0
-                                                                :token "audit"
-                                                                :report-sha256 "sha"}}))})
+                                                  (let [slug (:slug deps)
+                                                        dir (str root "/herd/" slug)
+                                                        report (str dir "/s5-report.md")]
+                                                    (-> (.mkdir fs dir #js {:recursive true})
+                                                        (.then (fn [_]
+                                                                 (.writeFile
+                                                                   fs report
+                                                                   (str "---\nreport_sha256: " sha "\n---\n")
+                                                                   "utf8")))
+                                                        (.then (fn [_]
+                                                                 {:ok true
+                                                                  :verdict :PASS
+                                                                  :state :closed
+                                                                  :approval {:revision 0
+                                                                             :token "audit"
+                                                                             :report-sha256 sha}})))))})
         slug (await (s5-fixture! root 1))
         sub (sub-ctx root "R3")
-        _ (await (system/before-agent-start! #js {:prompt "[HERD_ROLE: Reviewer]\\nreview"} sub))
+        _ (await (system/before-agent-start! #js {:prompt "[HERD_ROLE: Reviewer]\\nMission slug: session-1\\nreview"} sub))
         review (get @(.-__tools pi) "review")
         first-result (await ((.-execute review) "call-1" #js {} nil nil sub))
         second-result (await ((.-execute review) "call-2" #js {} nil nil sub))
@@ -870,7 +922,7 @@ describe("CLJS full assembly wiring", () => {
   (let [root ${literal(root)}
         fs (js/require "node:fs/promises")
         slug (await (s5-fixture! root 1))
-        plans-dir (str root "/plans/" slug)
+        plans-dir (str root "/herd/" slug)
         _ (await (.mkdir fs plans-dir #js {:recursive true}))
         _ (doseq [name ["s1-brainstorm.md" "s2-manual-tests.md" "s3-dev-guide.md"
                         "s4-coordination.md" "s4-coordination.pml"]]
@@ -885,7 +937,7 @@ describe("CLJS full assembly wiring", () => {
                   :steps ["执行并发路径"] :expected "并发结果" :rubric "0..100"}
                  {:case_id "CASE-E" :path "恢复" :threshold 80
                   :steps ["执行恢复路径"] :expected "恢复结果" :rubric "0..100"}]
-        _ (await (.writeFile fs (str root "/.herd/missions/" slug "/s2-cases.edn")
+        _ (await (.writeFile fs (str root "/herd/" slug "/s2-cases.edn")
                              (ufss/canonical dataset) "utf8"))
         calls (atom 0)
         pi (make-pi)
@@ -928,7 +980,7 @@ describe("CLJS full assembly wiring", () => {
                                     :report-sha256 (:report-sha256 request)
                                     :token "tok"}})}}})
         sub (sub-ctx root "R4")
-        _ (await (system/before-agent-start! #js {:prompt "[HERD_ROLE: Reviewer]\\nreview"} sub))
+        _ (await (system/before-agent-start! #js {:prompt "[HERD_ROLE: Reviewer]\\nMission slug: session-1\\nreview"} sub))
         review (get @(.-__tools pi) "review")
         first (await ((.-execute review) "call-1" #js {} nil nil sub))
         first-calls @calls
@@ -936,12 +988,11 @@ describe("CLJS full assembly wiring", () => {
                                  (.then (fn [_] true))
                                  (.catch (fn [_] false))))
         read (await (store/read-mission root slug))
-        batch-path (str root "/.herd/missions/" slug "/audit/batch.edn")
+        batch-result (await (auditors/read-batch-state! root slug))
+        batch-path (str root "/herd/" slug "/audit/batch.edn")
         batch-exists (await (-> (.access fs batch-path)
                                  (.then (fn [_] true))
                                  (.catch (fn [_] false))))
-        batch (when batch-exists
-                (ufss/read (await (.readFile fs batch-path "utf8"))))
         second (await ((.-execute review) "call-2" #js {} nil nil sub))
         reused (await (auditors/run-audit-batch! {:root root :slug slug
                                                   :mission (:mission read)}
@@ -956,7 +1007,8 @@ describe("CLJS full assembly wiring", () => {
                 :stage (:stage (:mission read))
                 :approval (get-in read [:mission :approval :token])
                 :batch-exists batch-exists
-                :batch-state (or (:state batch) (get batch "state"))
+                :batch-memory (:memory batch-result)
+                :batch-state (get-in batch-result [:record :state])
                 :second-error (:is-error second-info)
                 :second-text (:text second-info)
                 :second-calls @calls
@@ -983,7 +1035,7 @@ describe("CLJS full assembly wiring", () => {
   (let [root ${literal(root)}
         fs (js/require "node:fs/promises")
         slug (await (s5-fixture! root 1))
-        plans-dir (str root "/plans/" slug)
+        plans-dir (str root "/herd/" slug)
         _ (await (.mkdir fs plans-dir #js {:recursive true}))
         _ (doseq [name ["s1-brainstorm.md" "s2-manual-tests.md" "s3-dev-guide.md"
                         "s4-coordination.md" "s4-coordination.pml"]]
@@ -998,7 +1050,7 @@ describe("CLJS full assembly wiring", () => {
                   :steps ["执行并发路径"] :expected "并发结果" :rubric "0..100"}
                  {:case_id "CASE-E" :path "恢复" :threshold 80
                   :steps ["执行恢复路径"] :expected "恢复结果" :rubric "0..100"}]
-        _ (await (.writeFile fs (str root "/.herd/missions/" slug "/s2-cases.edn")
+        _ (await (.writeFile fs (str root "/herd/" slug "/s2-cases.edn")
                              (ufss/canonical dataset) "utf8"))
         pi (make-pi)
         _ (system/reset-state!)
@@ -1034,17 +1086,16 @@ describe("CLJS full assembly wiring", () => {
                                                    (:paths request))
                                       :digest "snapshot"})}})
         sub (sub-ctx root "R5")
-        _ (await (system/before-agent-start! #js {:prompt "[HERD_ROLE: Reviewer]\\nreview"} sub))
+        _ (await (system/before-agent-start! #js {:prompt "[HERD_ROLE: Reviewer]\\nMission slug: session-1\\nreview"} sub))
         review (get @(.-__tools pi) "review")
         result (await ((.-execute review) "call-1" #js {} nil nil sub))
         board (await (swarm-store/read-board (swarm-store/open-board root slug)))
         read (await (store/read-mission root slug))
-        batch-path (str root "/.herd/missions/" slug "/audit/batch.edn")
+        batch-result (await (auditors/read-batch-state! root slug))
+        batch-path (str root "/herd/" slug "/audit/batch.edn")
         batch-exists (await (-> (.access fs batch-path)
                                  (.then (fn [_] true))
                                  (.catch (fn [_] false))))
-        batch (when batch-exists
-                (ufss/read (await (.readFile fs batch-path "utf8"))))
         info (tool-info result)]
     (js/JSON.stringify
       (clj->js {:is-error (:is-error info)
@@ -1053,7 +1104,8 @@ describe("CLJS full assembly wiring", () => {
                 :tasks (count (:tasks board))
                 :wake (get-in board [:wake :epoch])
                 :batch-exists batch-exists
-                :batch-state (or (:state batch) (get batch "state"))}))))`);
+                :batch-memory (:memory batch-result)
+                :batch-state (get-in batch-result [:record :state])}))))`);
 		expect(out["is-error"]).toBe(true);
 		expect(out.text).toContain(":AUDIT_FAIL");
 		expect(out.stage).toBe("s5");

@@ -10,6 +10,7 @@
    [herd.stages.disclosures :as disclosures]
    [herd.stages.gates :as gates]
    [herd.stages.paths :as stage-paths]
+   [herd.stages.session-log :as session-log]
    [herd.stages.store :as store]
    [herd.stages.tenure :as tenure]
    [herd.swarm.auditors :as auditors]
@@ -27,6 +28,9 @@
 
 (def ^:private role-token-pattern
   #"^\[HERD_ROLE: ([A-Za-z][A-Za-z0-9 _-]*?)(?: nonce=[A-Za-z0-9_-]{8,128})?\]$")
+
+(def ^:private mission-slug-pattern
+  #"(?i)(?:mission\s+slug:|slug:)\s*([A-Za-z0-9._-]{1,128})")
 
 (def ^:private role-names
   #{"Plan" "Coordinator" "Plan DevOps" "Reviewer" "Swarm Worker" "Swarm Holder"
@@ -69,7 +73,6 @@
          :reviewers {}
          :installed false
          :installed-count 0
-         :missions-cache []
          :health []}))
 
 (defonce installed-pis (js/WeakSet.))
@@ -77,8 +80,6 @@
 (defonce registered-command-pis (js/WeakSet.))
 (defonce registered-hook-pis (js/WeakSet.))
 (defonce registered-tool-names (js/WeakMap.))
-
-(defonce focus-tail (atom (js/Promise.resolve nil)))
 
 (defn- text? [value]
   (and (string? value) (pos? (count (str/trim value)))))
@@ -101,7 +102,6 @@
                  :reviewers {}
                  :installed false
                  :installed-count 0
-                 :missions-cache []
                  :health []})
   nil)
 
@@ -200,6 +200,17 @@
           (str "cwd:" (path/resolve cwd))
           "main"))))
 
+(defn- path-safe-session-id? [value]
+  (and (string? value) (re-matches #"^[A-Za-z0-9._-]{1,128}$" value)))
+
+(defn session-id [ctx]
+  (try
+    (let [manager (session-manager ctx)
+          id (when (and manager (fn? (.-getSessionId manager)))
+               (.getSessionId manager))]
+      (when (path-safe-session-id? id) id))
+    (catch :default _ nil)))
+
 (defn role-of-ctx [ctx]
   (get-in @state [:sessions (session-key ctx) :role-token :role]))
 
@@ -237,6 +248,9 @@
       (contains? role-names (nth match 1)) {:role (nth match 1) :raw line}
       :else {:role nil :raw line})))
 
+(defn- injected-slug [prompt]
+  (some-> (re-find mission-slug-pattern (or prompt "")) second))
+
 (defn- ctx-for-slug [slug]
   (or (->> (:sessions @state)
            (keep (fn [[_ session]]
@@ -253,60 +267,15 @@
            first)
       (:last-ctx @state)))
 
-(defn- focus-path [root]
-  (path/join root ".herd" "focus.edn"))
-
-(defn- mission-directory [root]
-  (path/join root ".herd" "missions"))
-
-(defn- ^:async read-focus [root]
-  (try
-    (let [text (await (.readFile fs (focus-path root) "utf8"))
-          value (ufss/read text)]
-      (if (map? value) value {}))
-    (catch :default error
-      (when-not (= "ENOENT" (.-code error))
-        (record-health! {:entry "system.focus"
-                         :status "degraded"
-                         :reason "focus.edn is unreadable"
-                         :error (str error)}))
-      {})))
-
-(defn- ^:async update-focus-step! [root f]
-  (let [current (await (read-focus root))
-        next (f current)]
-    (await (atomic/write-edn-atomic! (focus-path root) next))
-    next))
-
-(defn- ^:async update-focus! [root f]
-  (await (enqueue! focus-tail (fn [] (update-focus-step! root f)))))
-
-(defn- ^:async remember-focus! [root key slug tenure-id]
-  (try
-    (await (update-focus! root (fn [current] (assoc current key {:slug slug :tenure-id tenure-id}))))
-    (catch :default error
-      (record-health! {:entry "system.focus"
-                       :status "degraded"
-                       :reason "focus write failed"
-                       :error (str error)}))))
-
-(defn- ^:async list-mission-slugs [root]
-  (try
-    (let [entries (await (.readdir fs (mission-directory root) #js {:withFileTypes true}))]
-      (->> (array-seq entries)
-           (keep (fn [entry] (when (.isDirectory entry) (.-name entry))))
-           (filter (fn [slug] (and (string? slug) (re-matches slug-pattern slug))))
-           (sort)
-           vec))
-    (catch :default _ [])))
-
-(defn- ^:async refresh-missions-cache! [root]
-  (let [slugs (await (list-mission-slugs root))]
-    (swap! state assoc :missions-cache slugs)
-    slugs))
+(defn- journal-ctx-of [slug]
+  (some (fn [[_ session]]
+          (when (and (= slug (:slug session))
+                     (not (subagent? (:ctx session))))
+            (:ctx session)))
+        (:sessions @state)))
 
 (defn- ^:async refresh-mission! [ctx root slug]
-  (let [read (await (store/read-mission root slug))]
+  (let [read (await (store/read-mission root slug ctx))]
     (if (:ok read)
       (let [mission (:mission read)
             stage (tenure/normalize-stage (:stage mission))]
@@ -316,59 +285,42 @@
       (do
         (record-health! {:entry "system.mission"
                          :status "degraded"
-                         :reason "mission is unreadable"
+                         :reason "mission projection is unreadable"
                          :slug slug
+                         :code (get-in read [:error :code])
                          :error (get-in read [:error :message])})
         nil))))
 
-(defn- ^:async focus-from-disk! [ctx root key]
-  (let [focus (await (read-focus root))
-        direct (get-in focus [key :slug])
-        slugs (vec (distinct (keep (fn [[_ entry]] (when (map? entry) (:slug entry)))
-                                   focus)))
-        candidate (cond
-                    (text? direct) direct
-                    (and (subagent? ctx) (= 1 (count slugs))) (first slugs)
-                    :else nil)]
-    (when (and (string? candidate) (pos? (count candidate)))
-      (let [read (await (store/read-mission root candidate))]
-        (if (:ok read)
-          candidate
-          (do
-            (record-health! {:entry "system.focus"
-                             :status "degraded"
-                             :reason "focus points at a missing mission"
-                             :slug candidate})
-            (await (update-focus! root dissoc key))
-            nil))))))
-
-(defn- ^:async auto-focus-single! [ctx root key]
-  (let [slugs (await (list-mission-slugs root))]
-    (if (= 1 (count slugs))
-      (let [slug (first slugs)
-            read (await (store/read-mission root slug))]
-        (when (:ok read)
-          (when-not (subagent? ctx)
-            (await (remember-focus! root key slug
-                                    (get-in read [:mission :tenure :tenure-id]))))
-          slug))
-      nil)))
-
 (defn ^:async ensure-focus! [ctx root]
   (let [key (session-key ctx)
-        memory (get-in @state [:sessions key :slug])
-        slug (or (when (text? memory) memory)
-                 (await (focus-from-disk! ctx root key))
-                 (await (auto-focus-single! ctx root key)))]
-    (when (and (string? slug) (pos? (count slug)))
-      (let [mission (await (refresh-mission! ctx root slug))]
-        (if mission
-          (do
-            (swap! state assoc-in [:sessions key :slug] slug)
-            slug)
-          (do
-            (swap! state update-in [:sessions key] dissoc :slug)
-            nil))))))
+        read (await (session-log/read-entries ctx))
+        entries (if (:ok read) (:entries read) [])
+        logged (session-log/task-id entries)
+        recorded-mode (or (session-log/mode-of entries)
+                          (get-in @state [:sessions key :mode])
+                          :devops)
+        injected (get-in @state [:sessions key :slug])
+        slug (or (when (text? logged) logged)
+                 (when (subagent? ctx) injected))]
+    (when-not (:ok read)
+      (record-health! {:entry "system.session-log"
+                       :status "degraded"
+                       :reason "the session log is unreadable; refusing to derive a task"
+                       :code (get-in read [:error :code])
+                       :error (get-in read [:error :message])}))
+    (swap! state assoc-in [:sessions key :mode] recorded-mode)
+    (if (and (string? slug) (pos? (count slug)))
+      (do
+        (swap! state assoc-in [:sessions key :slug] slug)
+        (let [mission (await (refresh-mission! ctx root slug))]
+          (if mission
+            slug
+            (do
+              (swap! state update-in [:sessions key] dissoc :slug)
+              nil))))
+      (do
+        (swap! state update-in [:sessions key] dissoc :slug)
+        nil))))
 
 (defn ^:async role-of [ctx root slug]
   (let [key (session-key ctx)
@@ -377,7 +329,7 @@
       cached
       (let [mission (or (get-in @state [:sessions key :mission])
                         (when (text? slug)
-                          (:mission (await (store/read-mission root slug)))))]
+                          (:mission (await (store/read-mission root slug ctx)))))]
         (if (= :s5 (tenure/normalize-stage (:stage mission)))
           "Coordinator"
           "Plan")))))
@@ -490,7 +442,10 @@
                  (dissoc :gate-cache))))
     (if (subagent? ctx)
       (do
-        (let [token (role-token* (event-prompt event))]
+        (let [token (role-token* (event-prompt event))
+              slug (injected-slug (event-prompt event))]
+          (when (and (text? slug) (path-safe-session-id? slug))
+            (swap! state assoc-in [:sessions key :slug] slug))
           (cond
             (and token (:role token))
             (swap! state assoc-in [:sessions key :role-token] {:role (:role token)})
@@ -524,8 +479,7 @@
       (when (and (persistent-session? ctx) (:pi @state))
         (let [slug (await (ensure-focus! ctx root))]
           (when slug
-            (await (apply-surface! (:pi @state) ctx)))))
-      (await (refresh-missions-cache! root)))
+            (await (apply-surface! (:pi @state) ctx))))))
     nil))
 
 (defn- clear-nudge-timer! []
@@ -958,8 +912,8 @@
     (= tool :submit_devops_report) ((:submit-devops-report! service) request options)
     :else (gate-failure :INVALID_ARGUMENT "unknown gate tool" {:tool tool})))
 
-(defn- ^:async pending-attach-of [root slug]
-  (let [read (await (store/read-mission root slug))]
+(defn- ^:async pending-attach-of [root slug ctx]
+  (let [read (await (store/read-mission root slug ctx))]
     (when (:ok read) (get-in read [:mission :attach :pending]))))
 
 (defn- awaiting-receipt [slug reason]
@@ -989,7 +943,7 @@
   (let [root (:root options)
         slug (:slug options)
         pending (when (and (text? root) (text? slug))
-                  (await (pending-attach-of root slug)))]
+                  (await (pending-attach-of root slug ctx)))]
     (if (map? pending)
       (let [args {:root root
                   :slug slug
@@ -1036,7 +990,7 @@
         mission (if cache-hit?
                   (:mission cached)
                   (when (text? slug)
-                    (let [read (await (store/read-mission root slug))]
+                    (let [read (await (store/read-mission root slug ctx))]
                       (when (:ok read) (:mission read)))))
         stage (tenure/normalize-stage (:stage mission))
         completed? (or (= :completed (:stage mission))
@@ -1134,7 +1088,7 @@
 (defn- ^:async read-document [root slug args]
   (let [pending (:pending args)
         stored (:path pending)
-        relative (str "plans/" slug "/s1-brainstorm.md")
+        relative (str "herd/" slug "/s1-brainstorm.md")
         target (cond
                  (and (string? stored) (path/isAbsolute stored)) stored
                  (string? stored) (path/join root stored)
@@ -1820,21 +1774,12 @@
                 :developer_score {:type "number" :minimum 0 :maximum 100}
                 :report_markdown {:type "string" :minLength 1}}})
 
-(defn- parse-auditor-context [prompt]
-  (when (string? prompt)
-    (let [ws (second (re-find #"(?m)^Main workspace:\s*(.+)$" prompt))
-          slug (second (re-find #"\(slug:\s*([a-z0-9][a-z0-9-]{0,63})\)" prompt))]
-      (when (and (text? ws) (text? slug))
-        {:root (str/trim ws) :slug (str/trim slug)}))))
-
 (defn- ^:async audit-execute! [params ctx _call-id]
   (let [request (js->clj (or params #js {}) :keywordize-keys true)
         ctx-root (resolve-root ctx)
         ctx-slug (await (ensure-focus! ctx ctx-root))
-        parsed (when (nil? ctx-slug)
-                 (parse-auditor-context (get-in @state [:sessions (session-key ctx) :prompt])))
-        root (or (:root parsed) ctx-root)
-        slug (or (:slug parsed) ctx-slug)
+        root ctx-root
+        slug ctx-slug
         role (await (role-of ctx root slug))]
     (cond
       (not (subagent? ctx))
@@ -1901,35 +1846,6 @@
                        :reason "host extension API lacks registerTool"})
       false)))
 
-(defn- timestamp-slug []
-  (let [date (js/Date.)
-        pad (fn [value] (if (< value 10) (str "0" value) (str value)))]
-    (str "mission-"
-         (.getFullYear date)
-         (pad (inc (.getMonth date)))
-         (pad (.getDate date))
-         "-"
-         (pad (.getHours date))
-         (pad (.getMinutes date))
-         (pad (.getSeconds date)))))
-
-(defn- slug-for [seed]
-  (let [words (re-seq #"[A-Za-z0-9]+" (str seed))
-        base (-> (str/join "-" (map str/lower-case words))
-                 (str/replace #"^-+" "")
-                 (str/replace #"-+$" ""))
-        trimmed (if (> (count base) 40) (subs base 0 40) base)]
-    (if (pos? (count trimmed)) trimmed (timestamp-slug))))
-
-(defn- ^:async unique-slug! [root base]
-  (loop [candidate base counter 2]
-    (let [read (await (store/read-mission root candidate))]
-      (if-not (:ok read)
-        candidate
-        (if (> counter 20)
-          (str base "-" (js/Date.now))
-          (recur (str base "-" counter) (inc counter)))))))
-
 (defn- notify! [ctx text]
   (try
     (let [ui (when ctx (.-ui ctx))]
@@ -1941,57 +1857,78 @@
 (defn- ^:async herd-command! [pi args ctx]
   (try
     (let [seed (str/trim (if (string? args) args (str (or args ""))))
-          root (resolve-root ctx)]
-      (if (empty? seed)
-        (notify! ctx "用法：/herd <seed>")
-        (let [slug (await (unique-slug! root (slug-for seed)))
-              now (now-iso)
-              created (await (store/create-mission!
-                               root
-                               {:slug slug
-                                :seed seed
-                                :now now
-                                :tenure {:tenure-id "T-1"
-                                         :index 1
-                                         :started-at now
-                                         :ended-at nil}}))]
-          (if-not (:ok created)
-            (notify! ctx (str "创建使命失败：" (or (get-in created [:error :message]) "unknown")))
-            (let [tenure-id (get-in created [:mission :tenure :tenure-id])
-                  _ (await (store/update-mission! root slug {:control-version 1}))
-                  _ (await (store/write-board! root slug (tenure/empty-board tenure-id)))
-                  key (session-key ctx)
-                  read (await (store/read-mission root slug))
-                  mission (if (:ok read) (:mission read) (:mission created))
-                  _ (swap! state update-in [:sessions key]
-                           assoc :root root :slug slug :mission mission
-                           :stage (tenure/normalize-stage (:stage mission))
-                           :turn-tools #{} :successful-tools #{})
-                  _ (await (remember-focus! root key slug tenure-id))
-                  _ (await (refresh-missions-cache! root))
-                  _ (await (apply-surface! pi ctx))]
-              (when (fn? (.-sendUserMessage pi))
-                (try
-                  (.sendUserMessage pi seed #js {:expandPromptTemplates false})
-                  (catch :default error
-                    (record-health! {:entry "system.herd"
-                                     :status "degraded"
-                                     :reason "sendUserMessage failed"
-                                     :error (str error)}))))
-              (notify! ctx (str "使命 " slug " 已创建并聚焦，进入 S1。")))))))
+          root (resolve-root ctx)
+          key (session-key ctx)
+          current (get-in @state [:sessions key :slug])
+          mode (get-in @state [:sessions key :mode])]
+      (cond
+        (nil? current)
+        (let [id (session-id ctx)]
+          (if-not id
+            (notify! ctx "无法取得宿主 session id，任务未创建。")
+            (let [now (now-iso)
+                  created (await (store/create-mission!
+                                   root
+                                   {:slug id
+                                    :mission-id id
+                                    :seed (when (pos? (count seed)) seed)
+                                    :ctx ctx
+                                    :now now
+                                    :tenure {:tenure-id "T-1"
+                                             :index 1
+                                             :started-at now
+                                             :ended-at nil}}))]
+              (if-not (:ok created)
+                (notify! ctx (str "创建任务失败：" (or (get-in created [:error :message]) "unknown")))
+                (let [tenure-id (get-in created [:mission :tenure :tenure-id])
+                      _ (await (store/write-board! root id (tenure/empty-board tenure-id)))
+                      read (await (store/read-mission root id ctx))
+                      mission (if (:ok read) (:mission read) (:mission created))]
+                  (swap! state update-in [:sessions key]
+                         assoc :root root :slug id :mode :herd :mission mission
+                         :stage (tenure/normalize-stage (:stage mission))
+                         :turn-tools #{} :successful-tools {})
+                  (await (apply-surface! pi ctx))
+                  (when (and (fn? (.-sendUserMessage pi)) (pos? (count seed)))
+                    (try
+                      (.sendUserMessage pi seed #js {:expandPromptTemplates false})
+                      (catch :default error
+                        (record-health! {:entry "system.herd"
+                                         :status "degraded"
+                                         :reason "sendUserMessage failed"
+                                         :error (str error)}))))
+                  (notify! ctx (str "任务 " id " 已创建，进入 S1。")))))))
+
+        (= mode :devops)
+        (let [written (session-log/append! ctx "herd.mode"
+                                           {:mode "herd" :at (now-iso)})]
+          (if (:ok written)
+            (do
+              (swap! state assoc-in [:sessions key :mode] :herd)
+              (await (apply-surface! pi ctx))
+              (notify! ctx "已切回 herd 模式。"))
+            (notify! ctx (str "模式切换失败："
+                              (or (get-in written [:error :message]) "unknown")))))
+
+        :else
+        (let [written (session-log/append! ctx "herd.mode"
+                                           {:mode "devops" :at (now-iso)})]
+          (if (:ok written)
+            (do
+              (swap! state assoc-in [:sessions key :mode] :devops)
+              (await (apply-surface! pi ctx))
+              (notify! ctx "已切到 devops 模式；任务保留。"))
+            (notify! ctx (str "模式切换失败："
+                              (or (get-in written [:error :message]) "unknown")))))))
     (catch :default error
       (record-health! {:entry "system.herd"
                        :status "degraded"
                        :reason "the /herd command failed"
                        :error (str error)})
-      (notify! ctx (str "创建使命失败：" (or (ex-message error) (str error)))))))
+      (notify! ctx (str "/herd 失败：" (or (ex-message error) (str error)))))))
 
-(defn- completion-entries [prefix]
-  (let [p (if (string? prefix) prefix "")]
-    (->> (get @state :missions-cache [])
-         (filter (fn [slug] (str/starts-with? slug p)))
-         (mapv (fn [slug]
-                 #js {:value slug :label slug :description "已知使命"})))))
+(defn- completion-entries [_prefix]
+  [])
 
 (defn- register-command! [pi]
   (cond
@@ -2000,11 +1937,22 @@
 
     (fn? (.-registerCommand pi))
     (do
-      (.registerCommand pi "herd"
-                        #js {:description "Start and focus a Herdchestra Lite mission from a seed."
-                             :handler (fn [args ctx] (herd-command! pi args ctx))
-                             :getArgumentCompletions (fn [prefix]
-                                                       (clj->js (completion-entries prefix)))})
+      (let [handler (fn [args ctx]
+                      (if-let [factory (.-__herdCreateCommandHost js/globalThis)]
+                        (let [host (factory
+                                     #js {:dispatch
+                                          (fn [request]
+                                            (herd-command!
+                                              pi
+                                              (.-args (.-input request))
+                                              (.-runtime request)))})]
+                          (.handleTui host "herd" #js {:args args} ctx))
+                        (herd-command! pi args ctx)))]
+        (.registerCommand pi "herd"
+                          #js {:description "Toggle herd/devops mode; the first /herd creates this session's only task."
+                               :handler handler
+                               :getArgumentCompletions (fn [prefix]
+                                                         (clj->js (completion-entries prefix)))}))
       (.add registered-command-pis pi)
       true)
 
@@ -2046,6 +1994,7 @@
     (let [options (or options {})]
       (try
         (swap! state assoc :pi pi :options options)
+        (store/configure-session-log! {:ctx-of journal-ctx-of})
         (if (and (register-tools! pi)
                  (register-command! pi)
                  (register-hooks! pi))
@@ -2053,8 +2002,6 @@
             (.add installed-pis pi)
             (swap! state update :installed-count (fnil inc 0))
             (swap! state assoc :installed true)
-            (ignore-rejection (refresh-missions-cache!
-                                (or (:root options) (path/resolve (js/process.cwd)))))
             true)
           false)
         (catch :default error

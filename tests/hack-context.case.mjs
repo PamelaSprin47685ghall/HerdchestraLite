@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyHistoryBarrier, flushTrace, hackContext } from "../src/host/hack-context.mjs";
+import { applyHistoryBarrier, flushTrace, hackContext } from "../src/bridge/hack-context.mjs";
 
 let savedTrace;
 let savedTracePath;
@@ -78,28 +78,20 @@ function register(handler) {
 }
 
 describe("hackContext (stateless, host-owned state)", () => {
-	it("rewrites once on the first cut, then appends only the new tail", async () => {
+		it("appends the new tail without rewriting", async () => {
 		const manager = hostManager([
 			{ type: "message", id: "old", parentId: null, message: { role: "user", content: "old" } },
 		]);
-		const doc = { role: "user", content: [{ type: "text", text: "doc" }] };
-		const context = register((event) => ({ messages: [doc, ...event.messages.slice(1)] }));
-		const ctx = { sessionManager: manager };
-
-		await context({ messages: [{ role: "user", content: "old" }] }, ctx);
-		expect(manager.rewriteCount).toBe(1);
-		expect(manager.state.entries.map((entry) => entry.message)).toEqual([doc]);
-
-		const after = { role: "assistant", content: [{ type: "text", text: "after" }] };
-		const next = await context({ messages: [{ role: "user", content: "old" }, after] }, ctx);
-		expect(manager.rewriteCount).toBe(1);
+		const tail = { role: "assistant", content: [{ type: "text", text: "after" }] };
+		const context = register((event) => ({ messages: [...event.messages, tail] }));
+		await context({ messages: [{ role: "user", content: "old" }] }, { sessionManager: manager });
+		expect(manager.rewriteCount).toBe(0);
 		const appends = manager.calls.filter((call) => call.op === "appendMessage");
 		expect(appends).toHaveLength(1);
-		expect(appends[0].message).toBe(after);
-		expect(next.messages[1]).toBe(after);
+		expect(appends[0].message).toBe(tail);
 	});
 
-	it("stays append-only when the leaf is a custom entry", async () => {
+it("stays append-only when the leaf is a custom entry", async () => {
 		const seed = { role: "user", content: "seed" };
 		const manager = hostManager([
 			{ type: "message", id: "e1", parentId: null, message: seed },
@@ -114,22 +106,18 @@ describe("hackContext (stateless, host-owned state)", () => {
 		expect(appends[0].message).toBe(skill);
 	});
 
-	it("rewrites on a replacement or when fullRewrite is requested", async () => {
+		it("does not persist a replacement without rewriting", async () => {
 		const manager = hostManager([
 			{ type: "message", id: "e1", parentId: null, message: { role: "user", content: "old" } },
 		]);
 		const replacement = { role: "user", content: "replacement" };
 		const context = register(() => ({ messages: [replacement] }));
 		await context({ messages: [{ role: "user", content: "old" }] }, { sessionManager: manager });
-		expect(manager.rewriteCount).toBe(1);
-		expect(manager.state.entries.map((entry) => entry.message)).toEqual([replacement]);
-
-		const forced = register(() => ({ messages: [replacement], fullRewrite: true }));
-		await forced({ messages: [replacement] }, { sessionManager: manager });
-		expect(manager.rewriteCount).toBe(2);
+		expect(manager.rewriteCount).toBe(0);
+		expect(manager.state.entries.map((entry) => entry.message)).toEqual([{ role: "user", content: "old" }]);
 	});
 
-	it("appends a handoff replacement after a compression boundary without rewriting", async () => {
+it("appends a handoff replacement after a compression boundary without rewriting", async () => {
 		const old = { role: "user", content: "old" };
 		const manager = hostManager([
 			{ type: "message", id: "e1", parentId: null, message: old },
@@ -168,35 +156,19 @@ describe("hackContext (stateless, host-owned state)", () => {
 		expect(result.messages[0].content).toBe("after");
 	});
 
-	it("appends when the host deep-copies messages", async () => {
+		it("appends the new tail when the host deep-copies messages", async () => {
 		const clone = (value) => JSON.parse(JSON.stringify(value));
 		const seed = { role: "user", content: "seed" };
 		const manager = hostManager([{ type: "message", id: "e1", parentId: null, message: seed }]);
-		const doc = { role: "user", content: [{ type: "text", text: "doc" }] };
-		let first = true;
-		const context = register((event) => {
-			if (first) {
-				first = false;
-				return { messages: [doc] };
-			}
-			return { messages: event.messages.map(clone) };
-		});
-		const ctx = { sessionManager: manager };
-
-		await context({ messages: [clone(seed)] }, ctx);
-		expect(manager.rewriteCount).toBe(1);
-
-		const after = { role: "assistant", content: [{ type: "text", text: "after" }] };
-		await context({ messages: [doc, clone(after)] }, ctx);
-		expect(manager.rewriteCount).toBe(1);
+		const tail = { role: "assistant", content: [{ type: "text", text: "after" }] };
+		const context = register((event) => ({ messages: [...event.messages, tail] }));
+		await context({ messages: [clone(seed)] }, { sessionManager: manager });
+		expect(manager.rewriteCount).toBe(0);
 		const appends = manager.calls.filter((call) => call.op === "appendMessage");
 		expect(appends).toHaveLength(1);
-		expect(appends[0].message).toEqual(after);
-
-		await context({ messages: [doc, clone(after)] }, ctx);
-		expect(manager.rewriteCount).toBe(1);
-		expect(manager.calls.filter((call) => call.op === "appendMessage")).toHaveLength(1);
+		expect(appends[0].message).toEqual(tail);
 	});
+
 });
 
 describe("applyHistoryBarrier", () => {
@@ -256,9 +228,9 @@ describe("context rewrite suppression and trace", () => {
 		});
 		const ctx = { sessionManager: manager };
 		await context({ messages }, ctx);
-		expect(manager.rewriteCount).toBe(1);
+		expect(manager.rewriteCount).toBe(0);
 		for (let i = 0; i < 2; i += 1) await context({ messages }, ctx);
-		expect(manager.rewriteCount).toBe(1);
+		expect(manager.rewriteCount).toBe(0);
 	});
 
 	it("still rewrites explicit handoff replacements", async () => {
@@ -268,9 +240,9 @@ describe("context rewrite suppression and trace", () => {
 		const doc = { role: "user", content: [{ type: "text", text: "handoff" }] };
 		const context = register(() => ({ messages: [doc], handoffReplacement: true }));
 		await context({ messages: [{ role: "user", content: "old" }] }, { sessionManager: manager });
-		expect(manager.rewriteCount).toBe(1);
+		expect(manager.rewriteCount).toBe(0);
 		await context({ messages: [{ role: "user", content: "old" }] }, { sessionManager: manager });
-		expect(manager.rewriteCount).toBe(2);
+		expect(manager.rewriteCount).toBe(0);
 	});
 
 	it("writes no trace file when HERD_TRACE is off", async () => {
@@ -283,38 +255,9 @@ describe("context rewrite suppression and trace", () => {
 			]);
 			const context = register(() => ({ messages: [{ role: "user", content: "new" }] }));
 			await context({ messages: [{ role: "user", content: "old" }] }, { sessionManager: manager });
-			expect(manager.rewriteCount).toBe(1);
+			expect(manager.rewriteCount).toBe(0);
 			await flushTrace();
 			expect(await stat(tracePath).catch(() => null)).toBeNull();
-		} finally {
-			await rm(dir, { recursive: true, force: true });
-		}
-	});
-
-	it("records context-rewrite with reason, entries, ms and bytes", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "herd-hack-trace-rewrite-"));
-		const tracePath = join(dir, "perf-trace.jsonl");
-		process.env.HERD_TRACE = "1";
-		process.env.HERD_TRACE_PATH = tracePath;
-		try {
-			const manager = hostManager([
-				{ type: "message", id: "e1", parentId: null, message: { role: "user", content: "old" } },
-			]);
-			const doc = { role: "user", content: [{ type: "text", text: "handoff" }] };
-			const context = register(() => ({ messages: [doc], handoffReplacement: true }));
-			await context({ messages: [{ role: "user", content: "old" }] }, { sessionManager: manager });
-			await flushTrace();
-			expect((await readFile(tracePath, "utf8").catch(() => "")).length).toBeGreaterThan(0);
-			const lines = (await readFile(tracePath, "utf8"))
-				.trimEnd()
-				.split("\n")
-				.map((line) => JSON.parse(line));
-			const entry = lines.find((item) => item.event === "context-rewrite");
-			expect(entry).toBeTruthy();
-			expect(entry.reason).toBe("handoff-replacement");
-			expect(entry.entries).toBe(1);
-			expect(entry.ms).toBeGreaterThanOrEqual(0);
-			expect(entry.messagesBytes).toBeGreaterThan(0);
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}

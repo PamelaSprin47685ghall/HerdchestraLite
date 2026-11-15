@@ -117,27 +117,6 @@ function entryTimestamp(message) {
 	return new Date().toISOString();
 }
 
-function buildEntries(messages, state) {
-	const runtime = state?.header?.runtime ??
-		state?.entries?.find((entry) => entry?.runtime)?.runtime ?? { version: "unknown" };
-	const entries = [];
-	let parentId = null;
-	for (const message of messages) {
-		const id = newEntryId();
-		entries.push({
-			type: "message",
-			id,
-			parentId,
-			timestamp: entryTimestamp(message),
-			runtime,
-			message,
-		});
-		parentId = id;
-	}
-	return entries;
-}
-
-/** True for an entry the host injected as a compression boundary. */
 function isCompressionBoundary(entry) {
 	return entry && (entry.type === "compaction" || entry.type === "reset_boundary");
 }
@@ -210,73 +189,6 @@ function lastPersistedMessageEntry(sessionManager) {
  *
  * @param {any} sessionManager
  * @param {unknown[]} messages
- * @returns {Record<string, unknown>}
- */
-export async function rewriteSession(sessionManager, messages, reason = "unknown") {
-	if (
-		!sessionManager ||
-		typeof sessionManager.captureState !== "function" ||
-		typeof sessionManager.restoreState !== "function" ||
-		typeof sessionManager.rewriteEntries !== "function"
-	) {
-		return { persisted: false, rewritten: false, reason: "no-rewrite-api" };
-	}
-	if (!Array.isArray(messages) || messages.length === 0) {
-		return { persisted: false, rewritten: false, reason: "empty-messages" };
-	}
-	const started = traceEnabled() ? clockNow() : 0;
-	try {
-		const state = sessionManager.captureState();
-		const entries = buildEntries(messages, state);
-		sessionManager.restoreState({ ...state, entries });
-		if (typeof sessionManager.branch === "function") {
-			sessionManager.branch(entries[entries.length - 1].id);
-		}
-		// The host owns persistence; never await its Promise on the context path.
-		const written = sessionManager.rewriteEntries();
-		if (written && typeof written.catch === "function") written.catch(() => {});
-		logHandoff({
-			event: "rewrite",
-			reason,
-			entries: entries.length,
-			leaf: entries[entries.length - 1].id,
-		});
-		if (started) {
-			let bytes = -1;
-			try {
-				bytes = Buffer.byteLength(JSON.stringify(messages), "utf8");
-			} catch {
-				bytes = -1;
-			}
-			recordTrace({
-				at: clockNow(),
-				event: "context-rewrite",
-				reason,
-				entries: entries.length,
-				ms: Number((clockNow() - started).toFixed(1)),
-				messagesBytes: bytes,
-			});
-		}
-		return {
-			persisted: true,
-			rewritten: true,
-			appended: 0,
-			entries: entries.length,
-			lastId: entries[entries.length - 1].id,
-		};
-	} catch (error) {
-		logHandoff({ event: "rewrite-failed", reason, error: String(error) });
-		return { persisted: false, rewritten: false, reason: "rewrite-failed" };
-	}
-}
-
-/**
- * Append only the messages after the persisted point. The message objects are
- * passed through unchanged so the next request can find the same identity.
- *
- * @param {any} sessionManager
- * @param {unknown[]} after
- * @param {number} prefixLen
  * @returns {Record<string, unknown>}
  */
 export function appendSessionDelta(sessionManager, after, prefixLen) {
@@ -480,56 +392,28 @@ export function hackContext(pi, handler) {
 		const after = result.messages;
 		const manager = ctx?.sessionManager ?? globalThis.__herdSessionManager;
 		let prefixLen = -1;
-		let boundary = false;
 		let synced = "none";
 		if (manager && after.length > 0) {
 			const entry = lastPersistedMessageEntry(manager);
 			const last = entry?.message;
 			prefixLen = result.fullRewrite === true ? -1 : persistedPrefixLength(after, last);
-			if (result.handoffReplacement === true) {
-				boundary = hasCompressionBoundary(manager);
-				if (boundary) {
-					appendSessionDelta(manager, after, 0);
-					logHandoff({ event: "handoff-append-after-boundary", messages: after.length });
-					synced = "append-after-boundary";
-				} else {
-					await rewriteSession(manager, after, "handoff-replacement");
-					synced = "rewrite";
-				}
-			} else if (result.fullRewrite === true) {
-				boundary = hasCompressionBoundary(manager);
-				if (boundary) {
-					appendSessionDelta(manager, after, 0);
-					synced = "append";
-				} else {
-					await rewriteSession(manager, after, "full-rewrite");
-					synced = "rewrite";
-				}
+			if (result.handoffReplacement === true || result.fullRewrite === true) {
+				appendSessionDelta(manager, after, 0);
+				logHandoff({ event: "handoff-append", messages: after.length });
+				synced = "append";
 			} else if (prefixLen < 0) {
 				const ledger = automaticRewriteLedger(manager);
 				ledger.misses += 1;
-				if (ledger.rewrites > 0) {
-					logHandoff({ event: "prefix-miss-suppressed", messages: after.length, misses: ledger.misses });
-					if (started) {
-						recordTrace({
-							at: clockNow(),
-							event: "context-prefix-miss-suppressed",
-							messages: after.length,
-							misses: ledger.misses,
-						});
-					}
-					synced = "suppressed";
-				} else {
-					boundary = hasCompressionBoundary(manager);
-					if (boundary) {
-						logHandoff({ event: "boundary-prefix-miss", messages: after.length });
-						synced = "boundary-miss";
-					} else {
-						const rewritten = await rewriteSession(manager, after, "prefix-miss");
-						if (rewritten?.rewritten === true) ledger.rewrites += 1;
-						synced = "rewrite";
-					}
+				logHandoff({ event: "prefix-miss-suppressed", messages: after.length, misses: ledger.misses });
+				if (started) {
+					recordTrace({
+						at: clockNow(),
+						event: "context-prefix-miss-suppressed",
+						messages: after.length,
+						misses: ledger.misses,
+					});
 				}
+				synced = "suppressed";
 			} else if (prefixLen < after.length) {
 				appendSessionDelta(manager, after, prefixLen);
 				synced = "append";

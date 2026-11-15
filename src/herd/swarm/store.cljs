@@ -272,13 +272,13 @@
    (when-not (and (edn/text? root) (edn/text? slug))
      (throw (ex-info "open-board needs root and slug" {:code :INVALID_ARGUMENT})))
    (let [mode (if (= :plan (:mode options)) :plan :swarm)
-         directory (path/join root ".herd" "missions" slug)
+         directory (path/join root "herd" slug)
          board-path (or (:board-path options) (path/join directory "board.edn"))
          events-path (or (:events-path options) (path/join directory "events.jsonl"))
          checkpoint-path (or (:checkpoint-path options) (path/join directory "checkpoint.edn"))
          lock-path (when (= mode :swarm)
                      (or (:lock-path options)
-                         (path/join root ".herd" "locks" "s5-board.lock")))
+                         nil))
          store (or (:store options)
                    (create-file-store {:board-path board-path
                                        :events-path events-path

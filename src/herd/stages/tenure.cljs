@@ -188,12 +188,6 @@
        :status :attach-ready
        :summary (:review-summary board)})))
 
-(defn archive-board-path [slug tenure-id]
-  (when-not (and (text? slug) (text? tenure-id))
-    (throw (ex-info "archive-board-path: slug and tenure-id must be non-empty strings"
-                    {:code :INVALID_ARGUMENT})))
-  (str ".herd/missions/" (string/trim slug) "/boards/" (string/trim tenure-id) ".edn"))
-
 (defn successor-tenure-id [mission board]
   (str "T-" (inc (sequence-of mission board))))
 
@@ -213,7 +207,6 @@
        :to (next-stage from)
        :retired-tenure tenure-id
        :successor-tenure (successor-tenure-id mission board)
-       :board-archive (archive-board-path (:slug mission) tenure-id)
        :review-summary (:review-summary board)
        :attach-tool (or tool (attach-tool-for-stage from))
        :at (:now request)})))

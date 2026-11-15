@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import * as nbb from "nbb";
-import { hackContext } from "../src/host/hack-context.mjs";
+import { hackContext } from "../src/bridge/hack-context.mjs";
 import { ensureActivated } from "./helpers/nbb-boot.mjs";
 
 let localPi;
@@ -61,117 +61,49 @@ describe("handoff tool", async () => {
 	const handler = () => localPi.hooks.get("context");
 	const queue = (markdown, toolCallId, ctx) =>
 		localPi.tools.get("handoff").execute(toolCallId, { markdown }, null, null, ctx);
+	const makeCtx = () => {
+		const appended = [];
+		const ctx = {
+			agent: { id: "handoff-v10" },
+			sessionManager: {
+				getEntries: () => [{ id: "entry-1" }],
+				appendCompaction: (...args) => {
+					appended.push(args);
+					return "compaction-1";
+				},
+			},
+		};
+		return { ctx, appended };
+	};
 
-	it("queues v9 and cuts to the document", async () => {
-		const ctx = { agent: { id: "handoff-s1" } };
+	it("appends a compaction entry and does not rewrite history", async () => {
+		const { ctx, appended } = makeCtx();
 		const receipt = queue("[u0⯮u0]", "call-h1", ctx);
-		expect(receipt.content[0].text).toContain("handoff-boundary-v9");
+		const text = receipt.content[0].text;
+		expect(text).toContain("handoff-boundary-v10");
+		expect(text).toContain(":committed true");
+		expect(appended).toHaveLength(1);
+		expect(String(appended[0][0])).toContain("u0");
 		const messages = [
 			{ role: "user", content: "u0" },
 			{ role: "assistant", toolCallId: "call-h1", content: "x" },
-			{ role: "toolResult", toolCallId: "call-h1", toolName: "handoff", content: [{ type: "text", text: "queued" }] },
 		];
-		const result = await handler()({ messages }, ctx);
-		expect(result.messages).toHaveLength(2);
-		const text = result.messages[0].content[0].text;
-		expect(text.startsWith("You are the successor of the previous AI.")).toBe(true);
-		expect(text).toContain("u0");
-		const again = await handler()({ messages }, ctx);
-		expect(JSON.stringify(again.messages[0])).toBe(JSON.stringify(result.messages[0]));
+		const result = await handler()({ messages }, { agent: { id: "handoff-v10" } });
+		expect(result.messages).toHaveLength(messages.length + 1);
+		expect(result.messages[0].content).toBe("u0");
+		expect(result.handoffReplacement).toBeUndefined();
 	});
 
-	it("excludes the handoff call and its result from the dictionary", async () => {
-		const ctx = { agent: { id: "handoff-s2" } };
-		queue("[handing off⯮handing off]", "call-h2", ctx);
+	it("does not cut from a persisted document after restart", async () => {
+		const { ctx } = makeCtx();
+		queue("persisted", "call-h2", ctx);
 		const messages = [
-			{ role: "user", content: "u0" },
-			{ role: "assistant", toolCallId: "call-h2", content: "x" },
-			{ role: "toolResult", toolCallId: "call-h2", toolName: "handoff", content: [{ type: "text", text: "queued" }] },
-		];
-		const result = await handler()({ messages }, ctx);
-		expect(result.messages[0].content[0].text).toContain("[handing off⯮handing off]");
-	});
-
-	it("excludes OpenAI-style tool_calls and their result", async () => {
-		const ctx = { agent: { id: "handoff-s4" } };
-		queue("[u0⯮u0]", "call-h4", ctx);
-		const messages = [
-			{ role: "user", content: "u0" },
-			{
-				role: "assistant",
-				content: "call-text",
-				tool_calls: [{ id: "call-h4", type: "function", function: { name: "handoff", arguments: "{}" } }],
-			},
-			{ role: "tool", tool_call_id: "call-h4", name: "handoff", content: "RESULT" },
-		];
-		const result = await handler()({ messages }, ctx);
-		const text = result.messages[0].content[0].text;
-		expect(text).toContain("u0");
-		expect(text).not.toContain("call-text");
-	});
-
-	it("includes prior tool_call arguments in the dictionary", async () => {
-		const ctx = { agent: { id: "handoff-s5" } };
-		queue("[PRIOR⯮PRIOR]", "call-h5", ctx);
-		const messages = [
-			{
-				role: "assistant",
-				content: "",
-				tool_calls: [{ id: "old", type: "function", function: { name: "clj_devops", arguments: '{"k":"PRIOR"}' } }],
-			},
-			{
-				role: "assistant",
-				content: "x",
-				tool_calls: [{ id: "call-h5", type: "function", function: { name: "handoff", arguments: "{}" } }],
-			},
-		];
-		const result = await handler()({ messages }, ctx);
-		const text = result.messages[0].content[0].text;
-		expect(text).toContain("PRIOR");
-		expect(text).not.toContain("[PRIOR⯮PRIOR]");
-	});
-
-	it("keeps the cut sticky and preserves messages after the handoff", async () => {
-		const ctx = { agent: { id: "handoff-s9" } };
-		queue("[u0⯮u0]", "call-h9", ctx);
-		const messages = [
-			{ role: "user", content: "u0" },
-			{ role: "assistant", toolCallId: "call-h9", content: "x" },
-			{ role: "toolResult", toolCallId: "call-h9", toolName: "handoff", content: [{ type: "text", text: "queued" }] },
-		];
-		await handler()({ messages }, ctx);
-		const next = messages.concat([
-			{ role: "assistant", content: [{ type: "text", text: "after" }] },
-			{ role: "user", content: "new" },
-		]);
-		const second = await handler()({ messages: next }, ctx);
-		expect(second.messages).toHaveLength(4);
-		expect(second.messages[1].content[0].text).toBe("after");
-		expect(second.messages[2].content).toBe("new");
-	});
-
-	it("cuts from the persisted document after a restart", async () => {
-		const source = { agent: { id: "handoff-s10a" } };
-		queue("persisted", "call-h10a", source);
-		const sourceMessages = [
 			{ role: "user", content: "old" },
-			{ role: "assistant", toolCallId: "call-h10a", content: "x" },
-			{ role: "toolResult", toolCallId: "call-h10a", toolName: "handoff", content: [{ type: "text", text: "queued" }] },
+			{ role: "assistant", content: "ok" },
 		];
-		const first = await handler()({ messages: sourceMessages }, source);
-		const doc = first.messages[0];
-		const restarted = { agent: { id: "handoff-s10b" } };
-		const after = await handler()(
-			{
-				messages: [
-					{ role: "user", content: "old" },
-					doc,
-					{ role: "assistant", content: [{ type: "text", text: "ok" }] },
-				],
-			},
-			restarted,
-		);
-		expect(after.messages).toHaveLength(3);
-		expect(after.messages[1].content[0].text).toBe("ok");
+		const result = await handler()({ messages }, { agent: { id: "handoff-v10b" } });
+		expect(result.messages).toHaveLength(messages.length + 1);
+		expect(result.messages[0].content).toBe("old");
+		expect(result.messages[1].content).toBe("ok");
 	});
 });

@@ -382,22 +382,30 @@ Index of the last persisted handoff document, searched in the trailing
             {:messages (.slice messages idx)
              :fresh? false})))))
 
-(defn- handoff-execute [tool-call-id params _signal _on-update ctx]
+(defn- handoff-execute [_tool-call-id params _signal _on-update ctx]
   (let [markdown (.-markdown params)]
     (when-not (and (string? markdown) (pos? (count (str/trim markdown))))
       (throw (ex-info "markdown must be a non-empty string"
                       {:code :INVALID_ARGUMENT :field :markdown})))
     (let [full (if (.startsWith markdown handoff-preamble)
                  markdown
-                 (str handoff-preamble newline-char newline-char "---" newline-char newline-char markdown))]
-      (swap! last-handoffs assoc (session-key ctx)
-             {:markdown full :tool-call-id tool-call-id :timestamp (.now js/Date) :text nil :result-index nil})
+                 (str handoff-preamble newline-char newline-char "---" newline-char newline-char markdown))
+          manager (when ctx (.-sessionManager ctx))
+          entries (when (and manager (fn? (.-getEntries manager)))
+                    (array-seq (.getEntries manager)))
+          last-entry (last entries)
+          first-kept (or (when last-entry (.-id last-entry)) "")
+          short (first (str/split-lines full))
+          committed (boolean
+                      (when (and manager (fn? (.-appendCompaction manager)))
+                        (.appendCompaction manager full short first-kept 0 #js {:fromExtension true})))]
       (clj->js
         (tool-result
           (ufss/canonical {:state :handoff-queued
+                           :committed committed
                            :markdown-chars (count full)
-                           :build "handoff-boundary-v9"
-                           :note "hackContext applies the cut to the request and synchronizes the host session manager; append-only turns stay O(delta), replacements rewrite once"}))))))
+                           :build "handoff-boundary-v10"
+                           :note "appended a host compaction entry; no session rewrite"}))))))
 
 (defn- code-schema [] {:type "string"})
 (defn- name-schema [] {:type "string" :minLength 1})
@@ -614,14 +622,11 @@ Index of the last persisted handoff document, searched in the trailing
 
 (defn context-handler [event ctx]
   (let [messages (or (.-messages event) #js [])
-        consumed (consume-handoff! ctx messages)
-        base (or (:messages consumed) messages)
-        rewritten (into-array (map rewrite-vibe-message (array-seq base)))
+        rewritten (into-array (map rewrite-vibe-message (array-seq messages)))
         nudge (or (system/consume-nudge!) "")
         tail #js {:role "user"
                   :content (array #js {:type "text" :text (str (outbound-tail) nudge)})}]
-    (js-obj "messages" (.concat rewritten (array tail))
-            "handoffReplacement" (boolean (:fresh? consumed)))))
+    (js-obj "messages" (.concat rewritten (array tail)))))
 
 (defonce usage-totals (atom {}))
 (defonce last-usage (atom {}))

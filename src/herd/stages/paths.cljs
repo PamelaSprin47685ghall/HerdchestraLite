@@ -34,10 +34,7 @@
     (when-not id
       (throw (ex-info "unknown stage document"
                       {:code :INVALID_ARGUMENT :stage stage})))
-    (str "plans/" slug "/" (get stage-documents id))))
+    (str "herd/" slug "/" (get stage-documents id))))
 
 (defn s2-cases-path [slug]
-  (str ".herd/missions/" slug "/s2-cases.edn"))
-
-(defn mission-path-of [slug]
-  (str ".herd/missions/" slug "/mission.edn"))
+  (str "herd/" slug "/s2-cases.edn"))
