@@ -137,6 +137,21 @@
           (t/to-be result true)
           (t/to-be (count active) 14)
           (t/to-be has-take true))))
+    (t/it "keeps Reviewer read-only with global wait/handoff"
+      (fn []
+        (p/let [root (fresh-root)
+                fake (setup root)
+                sub (sub-ctx root "R1")
+                _ (system/before-agent-start!
+                   #js {:prompt "[HERD_ROLE: Reviewer]\nreview"} sub)
+                _ (swap! system/state update-in [:sessions "R1"] merge {:slug "vibe" :stage :s5})
+                result (system/apply-mission-surface! (:pi fake) sub)
+                _ (settle)
+                active (vec (sort @(:active fake)))]
+          (t/to-be result true)
+          (same active ["clj_review" "handoff" "review" "wait"])
+          (t/to-be (some #{"ask_user"} active) nil)
+          (t/to-be (some #{"write" "edit" "bash"} active) nil))))
     (t/it "keeps the current tool surface when setActiveTools fails"
       (fn []
         (p/let [root (fresh-root)
