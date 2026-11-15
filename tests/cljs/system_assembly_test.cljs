@@ -57,7 +57,7 @@
           (t/to-be (empty? (:tasks board)) true)
           (t/to-be (fs/existsSync (str r "/.herd/focus.edn")) false)
           (t/to-be restored "session-1") (t/to-be other nil) (t/to-be (error? denied) true))))
-    (t/it "schedules the nudge ladder and resets it on progress"
+    (t/it "nudges immediately every turn with no delay ladder"
       (fn []
         (p/let [r (root) scheduled (atom []) delivered (atom 0)
                 pi (install r {:deliver-nudge (fn [_] (swap! delivered inc))
@@ -69,9 +69,7 @@
                 _ (system/before-agent-start! #js {:prompt ""} c) _ (end #js {:messages #js []} c)
                 _ (tool #js {:toolName "board_comment" :isError false} c)
                 _ (system/before-agent-start! #js {:prompt ""} c) _ (end #js {:messages #js []} c)]
-          (t/to-equal (mapv #(system/next-nudge-delay % false) (range 7)) [0 30000 60000 120000 240000 300000 300000])
-          (t/to-be (system/next-nudge-delay 5 true) 0)
-          (t/to-equal @scheduled [0 30000 60000 0]) (t/to-be @delivered 4))))
+          (t/to-equal @scheduled [0 0 0 0]) (t/to-be @delivered 4))))
     (t/it "queues a nudge without a channel and suppresses it after ask_user"
       (fn []
         (p/let [r (root) pi (install r {:set-timeout (fn [f _] (f) 1) :clear-timeout (fn [_])})
@@ -81,17 +79,43 @@
                 _ (system/before-agent-start! #js {:prompt ""} c) _ (tool #js {:toolName "ask_user" :isError false} c)
                 _ (end #js {:messages #js []} c) suppressed (system/consume-nudge!)]
           (t/to-be (some? first) true) (t/to-be second nil) (t/to-be suppressed nil))))
-    (t/it "backs off disconnects and stalls on quota"
+    (t/it "backs off only explicit upstream failures and treats plain aborts as cancellation"
       (fn []
         (p/let [r (root) scheduled (atom []) pi (install r {:set-timeout (fn [_ ms] (swap! scheduled conj ms) 1) :clear-timeout (fn [_]) :deliver-retry (fn [_])})
                 c (ctx r "session-1") _ (system/before-agent-start! #js {:prompt ""} c)
-                end (get @(.-hooks pi) "agent_end") event #js {:messages #js [#js {:role "assistant" :stopReason "aborted"}]}
+                end (get @(.-hooks pi) "agent_end") event #js {:error "network_error" :messages #js [#js {:role "assistant" :stopReason "aborted"}]}
                 _ (end event c) _ (end event c) _ (end event c) delays (vec @scheduled)
                 _ (end #js {:userAborted true :messages #js [#js {:role "assistant" :stopReason "aborted"}]} c)
                 cancelled (get-in @system/state [:upstream :attempts])
-                _ (end event c) _ (end #js {:error "insufficient_quota" :messages #js [#js {:role "assistant" :stopReason "error"}]} c)]
+                before-plain (count @scheduled)
+                _ (end #js {:messages #js [#js {:role "assistant" :stopReason "aborted"}]} c)
+                plain (count @scheduled)
+                _ (end #js {:error "insufficient_quota" :messages #js [#js {:role "assistant" :stopReason "error"}]} c)]
           (t/to-equal delays [5000 10000 20000]) (t/to-be cancelled 0)
+          (t/to-be plain before-plain)
           (t/to-be (get-in @system/state [:upstream :stalled]) true))))
+
+    (t/it "drops queued nudges and retries after cancellation"
+      (fn []
+        (p/let [r (root) queued (atom []) delivered (atom 0) retries (atom 0)
+                pi (install r {:deliver-nudge (fn [_] (swap! delivered inc))
+                               :deliver-retry (fn [_] (swap! retries inc))
+                               :set-timeout (fn [f ms] (swap! queued conj [f ms]) 1)
+                               :clear-timeout (fn [_])})
+                c (ctx r "session-1") _ (start pi r "Cancel")
+                end (get @(.-hooks pi) "agent_end")
+                _ (end #js {:messages #js []} c)
+                nudge-call (first @queued)
+                _ (end #js {:userAborted true :messages #js [#js {:role "assistant" :stopReason "aborted"}]} c)
+                _ ((first nudge-call))
+                after-nudge @delivered
+                _ (end #js {:error "network_error" :messages #js [#js {:role "assistant" :stopReason "aborted"}]} c)
+                retry-call (last @queued)
+                _ (end #js {:userAborted true :messages #js [#js {:role "assistant" :stopReason "aborted"}]} c)
+                _ ((first retry-call))
+                after-retry @retries]
+          (t/to-be after-nudge 0)
+          (t/to-be after-retry 0))))
     (t/it "does not nudge after mission completion"
       (fn []
         (p/let [r (root) scheduled (atom [])

@@ -10,7 +10,7 @@
    [herd.ufss :as ufss]
    [herd.util.atomic-write :as atomic]))
 
-(def ^:private slug-pattern #"^[a-z0-9][a-z0-9-]{0,63}$")
+(def ^:private slug-pattern #"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 (defonce ^:private session-source (atom nil))
 (defonce ^:private known-journals (atom {}))
@@ -185,7 +185,7 @@ Derive the mission projection from the session log plus the current board.
    (read-mission root slug nil))
   ([root slug ctx]
    (let [slug (if (string? slug) (string/trim slug) slug)]
-     (if-not (and (string? slug) (re-matches slug-pattern slug))
+     (if-not (and (string? slug) (mission/valid-slug? slug))
        (failure :INVALID_ARGUMENT
                 "mission slug must be a host session id"
                 {:field :slug :slug slug})
@@ -242,7 +242,7 @@ Create this session's task by appending task/seed/mode entries.
 """
   [root options]
   (let [slug (:slug options)]
-    (if-not (and (string? slug) (re-matches slug-pattern slug))
+    (if-not (and (string? slug) (mission/valid-slug? slug))
       (failure :INVALID_ARGUMENT
                "slug must be a host session id"
                {:field :slug :slug slug})

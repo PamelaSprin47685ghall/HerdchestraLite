@@ -40,7 +40,7 @@
 (def default-audit-timeout-ms (* 30 60 1000))
 (def ^:private audit-batch-prefix "herd-audit")
 (def ^:private case-id-pattern #"^CASE-[A-Za-z0-9_-]+$")
-(def ^:private slug-pattern #"^[a-z0-9][a-z0-9-]{0,63}$")
+(def ^:private slug-pattern #"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 (defn- text? [value]
   (and (string? value) (pos? (count (string/trim value)))))
@@ -107,7 +107,7 @@ Read and validate the CASE dataset. `options.dataset` short-circuits I/O and
   ([root slug options]
    (if (contains? options :dataset)
      (validate-dataset (:dataset options))
-     (if-not (and (text? root) (text? slug) (re-matches slug-pattern slug))
+     (if-not (and (text? root) (text? slug) (and (re-matches slug-pattern slug) (not (string/includes? slug ".."))))
        (failure :INVALID_ARGUMENT
                 "reading s2-cases.edn needs a valid root and slug"
                 {:field (if (text? root) :slug :root)})
@@ -235,7 +235,10 @@ Read and validate the CASE dataset. `options.dataset` short-circuits I/O and
  ONLY]
 
 """
-         "Mission: " (or (:mission-id mission) "unknown") " (slug: " slug ")\nMain workspace: " (or (:root context) "") "\n" """
+         "Mission: " (or (:mission-id mission) "unknown") " (slug: " slug """
+)
+Main workspace: 
+""" (or (:root context) "") "\n" """
 )
 
 
@@ -597,7 +600,7 @@ Start all K auditors concurrently from already validated case specs.
         resume-submissions (vec (or (:resume-submissions options) []))
         resumed-ids (set (map :case_id resume-submissions))]
     (cond
-      (not (and (text? root) (text? slug) (re-matches slug-pattern slug)))
+      (not (and (text? root) (text? slug) (and (re-matches slug-pattern slug) (not (string/includes? slug "..")))))
       (failure :INVALID_ARGUMENT "the audit batch needs a valid root and slug"
                {:field (if (text? root) :slug :root)})
 
@@ -807,7 +810,7 @@ Start all K auditors concurrently from already validated case specs.
   {:ok true :memory true})
 
 (defn- ^:async clear-case-submissions! [root slug _case-ids]
-  (audit/reset-submissions! root slug)
+  (await (audit/clear-submissions! root slug))
   {:ok true :memory true})
 
 (defn- ^:async collect-submissions! [root slug case-ids]
@@ -882,7 +885,7 @@ Run or resume the S5 K-path audit batch. Entry is idempotent through
   ([deps options]
    (let [root (or (:root deps) (:root options))
          slug (or (:slug deps) (:slug options))]
-     (if-not (and (text? root) (text? slug) (re-matches slug-pattern slug))
+     (if-not (and (text? root) (text? slug) (and (re-matches slug-pattern slug) (not (string/includes? slug ".."))))
        (failure :INVALID_ARGUMENT "the audit batch needs a valid root and slug"
                 {:field (if (text? root) :slug :root)})
        (let [current (await (read-batch-state! root slug))]

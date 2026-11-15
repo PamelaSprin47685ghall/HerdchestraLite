@@ -1,6 +1,13 @@
 (ns herd.stages.audit
   (:require
-   [clojure.string :as string]))
+   ["node:crypto" :as crypto]
+   ["node:fs/promises" :as fs]
+   ["node:os" :as os]
+   ["node:path" :as path]
+   [clojure.string :as string]
+   [herd.stages.mission :as mission]
+   [herd.ufss :as ufss]
+   [herd.util.atomic-write :as atomic]))
 
 (def ^:private case-id-pattern #"^CASE-[A-Za-z0-9_-]+$")
 (defonce ^:private submissions (atom {}))
@@ -23,17 +30,50 @@
 (defn- entry-key [root slug case-id]
   [(or root "") (or slug "") case-id])
 
+(defn- submission-dir [root slug]
+  (let [resolved (path/resolve (or root "."))
+        key (.digest (.update (.createHash crypto "sha256") (str resolved "|" (or slug ""))) "hex")]
+    (path/join (.tmpdir os) "herd-audit-submissions" (subs key 0 24))))
+
+(defn- submission-path [root slug case-id]
+  (path/join (submission-dir root slug) (str case-id ".edn")))
+
+(defn- ^:async read-disk-submission [root slug case-id]
+  (try
+    (let [text (await (.readFile fs (submission-path root slug case-id) "utf8"))
+          parsed (ufss/read text)]
+      (when (complete-submission? parsed)
+        (select-keys parsed [:case_id :user_score :developer_score :report_markdown])))
+    (catch :default _ nil)))
+
+(defn ^:async clear-submissions! [root slug]
+  (swap! submissions
+         (fn [current]
+           (into {}
+                 (remove (fn [[[r s _] _]]
+                           (and (= r (or root "")) (= s (or slug "")))))
+                 current)))
+  (when (and (text? root) (mission/valid-slug? slug))
+    (try
+      (await (.rm fs (submission-dir root slug) #js {:recursive true :force true}))
+      (catch :default _ nil)))
+  true)
+
 (defn reset-submissions! [root slug]
   (swap! submissions
          (fn [current]
            (into {}
                  (remove (fn [[[r s _] _]]
-                           (and (= r (or root "")) (= s (or slug ""))))
-                         current)))))
+                           (and (= r (or root "")) (= s (or slug "")))))
+                 current)))
+  (when (and (text? root) (mission/valid-slug? slug))
+    (-> (.rm fs (submission-dir root slug) #js {:recursive true :force true})
+        (.catch (fn [_] nil))))
+  nil)
 
 (defn ^:async write-submission-once! [root slug case-id submission _options]
   (cond
-    (not (and (text? root) (string? slug) (re-matches #"^[a-z0-9][a-z0-9-]{0,63}$" slug)))
+    (not (and (text? root) (mission/valid-slug? slug)))
     {:ok false
      :code :INVALID_ARGUMENT
      :message "submission writer needs a valid root and slug"}
@@ -54,18 +94,22 @@
      :message (str case-id ": submission names another CASE")}
 
     :else
-    (let [key (entry-key root slug case-id)]
-      (if (contains? @submissions key)
+    (let [key (entry-key root slug case-id)
+          existing-disk (await (read-disk-submission root slug case-id))]
+      (if (or (contains? @submissions key) (some? existing-disk))
         {:ok false
          :code :AUDIT_DUPLICATE_CASE
          :message (str case-id ": a submission already exists in this audit batch")}
-        (do
-          (swap! submissions assoc key (select-keys submission [:case_id :user_score :developer_score :report_markdown]))
+        (let [record (select-keys submission [:case_id :user_score :developer_score :report_markdown])]
+          (swap! submissions assoc key record)
+          (try
+            (await (atomic/write-edn-atomic! (submission-path root slug case-id) record))
+            (catch :default _ nil))
           {:ok true :memory true})))))
 
 (defn ^:async read-submission [root slug case-id _options]
   (cond
-    (not (and (text? root) (string? slug) (re-matches #"^[a-z0-9][a-z0-9-]{0,63}$" slug)))
+    (not (and (text? root) (mission/valid-slug? slug)))
     {:ok false
      :error {:code :INVALID_ARGUMENT
              :message "submission reader needs a valid root and slug"
@@ -78,14 +122,16 @@
              :field :case_id}}
 
     :else
-    (if-let [stored (get @submissions (entry-key root slug case-id))]
-      (if (complete-submission? stored)
-        {:ok true :submission stored :memory true}
+    (let [stored (or (get @submissions (entry-key root slug case-id))
+                     (await (read-disk-submission root slug case-id)))]
+      (if stored
+        (if (complete-submission? stored)
+          {:ok true :submission stored :memory true}
+          {:ok false
+           :error {:code :AUDIT_MISSING
+                   :message (str case-id ": in-memory submission is incomplete")
+                   :case-id case-id}})
         {:ok false
          :error {:code :AUDIT_MISSING
-                 :message (str case-id ": in-memory submission is incomplete")
-                 :case-id case-id}})
-      {:ok false
-       :error {:code :AUDIT_MISSING
-               :message (str case-id ": no in-memory submission in this batch")
-               :case-id case-id}})))
+                 :message (str case-id ": no in-memory submission in this batch")
+                 :case-id case-id}}))))

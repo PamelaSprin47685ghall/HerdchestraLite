@@ -32,7 +32,7 @@
 (def ^:private reviewer-prompt-text """
 [ROLE: CENTRALIZED REVIEWER — PHASE A CLEAN-BREAK JUDGE]
 You start on a clean Context Barrier with zero loyalty to your predecessor's sunk cost.
-- Inspect the frozen-by-convention `herd/<slug>/s1..s4-*.md` deliverables, the injected CASE records from `herd/<slug>/s2-cases.edn`, and the real single main workspace using read-only `clj_review`. There is no worktree. Paperwork, task counts, and passing unit tests prove nothing.
+- Inspect the frozen-by-convention `herd/<sessionId>/s1..s4-*.md` deliverables, the injected CASE records from `herd/<sessionId>/s2-cases.edn`, and the real single main workspace using read-only `clj_review`. There is no worktree. Paperwork, task counts, and passing unit tests prove nothing.
 - Call `review({ summary_markdown, findings })`:
   - Non-empty `findings: [{ key, value }]`: suspends Reviewer, materializes each item as a root task on the single board, and wakes all `@task` workers (Phase B).
   - Empty `findings: []`: confirms this tenure genuinely satisfies its S1–S4 requirements and single-workspace quiescence; the system then enters K-path audit.
@@ -71,8 +71,10 @@ No central manager will pick tasks for you. Coordinate solely through the shared
   (subs (str (new-uuid deps)) 0 8))
 
 (defn- mission-context
-  "Return the mission map injected by deps. Production callers derive it
-   from the session log through `herd.stages.store/read-mission`; tests inject a map."
+  """
+Return the mission map injected by deps. Production callers derive it
+   from the session log through `herd.stages.store/read-mission`; tests inject a map.
+"""
   [deps]
   (:mission deps))
 
@@ -124,32 +126,84 @@ No central manager will pick tasks for you. Coordinate solely through the shared
 (defn build-reviewer-prompt [context]
   (str reviewer-prompt-text
        "\n\n" (disclosures/current-briefing :s5)
-       "\n\nSelf-contained tenure context:\n"
-       "- Mission: " (:mission-id context) " (slug: " (:slug context) ")\n"
+       """
+
+
+Self-contained tenure context:
+
+"""
+       "- Mission: " (:mission-id context) " (slug: " (:slug context) """
+)
+
+"""
        "- Seed: " (or (:seed context) "(none recorded)") "\n"
        "- Tenure: " (:tenure-id context) " (term " (:term context) ", initial: "
-       (boolean (:initial? context)) ")\n"
-       "- Contract paths (frozen by convention; read-only):\n"
+       (boolean (:initial? context)) """
+)
+
+"""
+       """
+- Contract paths (frozen by convention; read-only):
+
+"""
        (string/join "\n" (map #(str "  - " %) (:contract-paths context)))
-       "\n- Canonical CASE dataset: " (str "herd/" (:slug context) "/s2-cases.edn")
-       "\n- Workspace: " (or (:cwd context) "(cwd unavailable)") "\n"
-       "- Board snapshot (context, not an assignment):\n"
+       """
+
+- Canonical CASE dataset: 
+""" (str "herd/" (:slug context) "/s2-cases.edn")
+       """
+
+- Workspace: 
+""" (or (:cwd context) "(cwd unavailable)") "\n"
+       """
+- Board snapshot (context, not an assignment):
+
+"""
        (edn/canonical (or (:board-snapshot context) {}))
-       "\n\nFinish by calling `review` exactly once with either non-empty findings "
+       """
+
+
+Finish by calling `review` exactly once with either non-empty findings 
+"""
        "or an empty findings array."))
 
 (defn build-worker-prompt [context]
   (str worker-prompt-text
-       "\n\nSelf-contained slot context:\n"
-       "- Mission: " (:mission-id context) " (slug: " (:slug context) ")\n"
-       "- Tenure: " (:tenure-id context) " (term " (:term context) ")\n"
-       "- Slot: " (:slot-id context) " (agent: " (:agent-id context) ")\n"
+       """
+
+
+Self-contained slot context:
+
+"""
+       "- Mission: " (:mission-id context) " (slug: " (:slug context) """
+)
+
+"""
+       "- Tenure: " (:tenure-id context) " (term " (:term context) """
+)
+
+"""
+       "- Slot: " (:slot-id context) " (agent: " (:agent-id context) """
+)
+
+"""
        "- Workspace: " (or (:cwd context) "(cwd unavailable)") "\n"
-       "- Contract paths (read-only):\n"
+       """
+- Contract paths (read-only):
+
+"""
        (string/join "\n" (map #(str "  - " %) (:contract-paths context)))
-       "\n- Board snapshot (context, not an assignment):\n"
+       """
+
+- Board snapshot (context, not an assignment):
+
+"""
        (edn/canonical (or (:board-snapshot context) {}))
-       "\n\nWork only through the board tools and the write gate; never stop for a human."))
+       """
+
+
+Work only through the board tools and the write gate; never stop for a human.
+"""))
 
 (defn- subagent-port [deps]
   (let [port (:subagent deps)]
@@ -457,9 +511,9 @@ No central manager will pick tasks for you. Coordinate solely through the shared
               {:ok false :code (:code (first @errors)) :errors @errors}
               (let [added (when (seq @new-specs)
                             (await (add-root-tasks! deps @new-specs
-                                    {:request-id (str request-id-base "-add")
-                                     :turn-id (or (:turn-id options) "runner:findings")
-                                     :actor (or (:actor options) "Coordinator")})))]
+                                     {:request-id (str request-id-base "-add")
+                                      :turn-id (or (:turn-id options) "runner:findings")
+                                      :actor (or (:actor options) "Coordinator")})))]
                 (if (and added (not (:ok added)))
                   added
                   (let [all-task-ids (into (vec @task-ids)
@@ -609,9 +663,9 @@ No central manager will pick tasks for you. Coordinate solely through the shared
 
                :else
                (await (relay! deps {:board board
-                                     :mission mission
-                                     :quiescence checked
-                                     :now (:now options)}))))))))))
+                                    :mission mission
+                                    :quiescence checked
+                                    :now (:now options)}))))))))))
 
 (defn ^:async mark-initial-ask! [deps]
   (update-board!
@@ -622,7 +676,8 @@ No central manager will pick tasks for you. Coordinate solely through the shared
                  "the initial empty-ledger question was already used"
                  {:tenure-id (:tenure-id current)})
         (let [next-board (-> current
-                             (assoc-in [:tenure :initial-ask-used] true)
+                             (-> (assoc-in [:tenure :initial-ask-used] true)
+                                 (assoc-in [:tenure :initial-question-asked?] true))
                              (update :board-version inc))
               timestamp (now-iso deps)]
           {:ok true
@@ -949,17 +1004,17 @@ No central manager will pick tasks for you. Coordinate solely through the shared
     (if (empty? ready)
       {:ok true :woken [] :still-parked (vec waiting) :wake-epoch epoch}
       (let [results (await (js/Promise.all
-                            (into-array
-                              (mapv (fn [entry]
-                                      (let [request {:slot-id (:slot-id entry)
-                                                     :agent-id (:agent-id entry)
-                                                     :role "Swarm Worker"
-                                                     :reason :board-wake}]
-                                        (cond
-                                          (fn? (:wake-slot! deps)) ((:wake-slot! deps) request)
-                                          (subagent-port deps) ((subagent-port deps) request)
-                                          :else {:ok false :code :HOST_API_MISMATCH})))
-                                    ready))))]
+                             (into-array
+                               (mapv (fn [entry]
+                                       (let [request {:slot-id (:slot-id entry)
+                                                      :agent-id (:agent-id entry)
+                                                      :role "Swarm Worker"
+                                                      :reason :board-wake}]
+                                         (cond
+                                           (fn? (:wake-slot! deps)) ((:wake-slot! deps) request)
+                                           (subagent-port deps) ((subagent-port deps) request)
+                                           :else {:ok false :code :HOST_API_MISMATCH})))
+                                     ready))))]
         {:ok true
          :woken (mapv (fn [entry] (:slot-id entry)) ready)
          :started (vec results)
@@ -967,9 +1022,11 @@ No central manager will pick tasks for you. Coordinate solely through the shared
          :wake-epoch epoch}))))
 
 (defn install!
-  "Install the S5 orchestration contract for the entry point. The entry point
+  """
+Install the S5 orchestration contract for the entry point. The entry point
    wires these functions behind its own tools; this namespace registers no
-   model-facing tool."
+   model-facing tool.
+"""
   [deps]
   {:startReviewer (fn [options] (start-reviewer! deps options))
    :reviewerFindings (fn [findings options]

@@ -25,4 +25,4 @@
           (t/to-be (str/includes? entry-cljs "(require 'herd.errors 'herd.host 'bridge.command-host 'bridge.hack-context 'herd.main)") true)
           (t/to-be (str/includes? host-cljs "fact (fn [name & [mark-missing]]") true)
           (t/to-be (str/includes? host-cljs "ctx-ui (when ctx") true)
-          (t/to-be (str/includes? bootstrap "\"native_runner\" \"entry\"") true))))))
+          (t/to-be (str/includes? bootstrap "\"entry\" \"system\"") true))))))

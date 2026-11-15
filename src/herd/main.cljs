@@ -2,11 +2,14 @@
   (:require
    ["node:fs/promises" :as fs]
    [bridge.command-host :as command-host]
+   [bridge.hack-context :as hack-context]
+   [bridge.native-tools :as native-tools]
    [clojure.string :as str]
    [herd.clock :as clock]
    [herd.prompts :as prompts]
    [herd.repl :as repl]
    [herd.system :as system]
+   [herd.tool-hide :as tool-hide]
    [herd.ufss :as ufss]
    [herd.ui :as ui]))
 
@@ -112,50 +115,42 @@
 
 (defn- execute-role [role tool-call-id params _signal _on-update ctx]
   (validate-agent-state! params)
-  (let [request-digest (digest params)]
-    (if-let [cached (and tool-call-id (@receipts tool-call-id))]
-      (if (= request-digest (:digest cached))
-        (clj->js (receipt-response cached))
-        (clj->js (tool-error (replay-mismatch))))
-      (let [state (.-agent_state params)
-            transition? (claim-state-transition! (session-key ctx) state)
-            name (.-name params)
-            code (.-code params)]
-        (-> (repl/run name code (sandbox-deadline code) role)
-            (.then (fn [result]
-                     (let [raw (ufss/canonical result)
-                           with-comment (if transition? (prepend-state-comment state raw) raw)
-                           text (append-workers-reminder with-comment params)]
-                       (when tool-call-id
-                         (swap! receipts assoc tool-call-id
-                                {:digest request-digest :text text :error? false}))
-                       (clj->js (tool-result text)))))
-            (.catch (fn [error]
-                      (let [raw (error-text error)
-                            with-comment (if transition? (prepend-state-comment state raw) raw)
-                            text (append-workers-reminder with-comment params)]
-                        (when tool-call-id
-                          (swap! receipts assoc tool-call-id
-                                 {:digest request-digest :text text :error? true}))
-                        (clj->js {:isError true
-                                  :content [(text-block text)]})))))))))
+  (let [request-digest (digest params)
+        execute (fn []
+                  (if-let [cached (and tool-call-id (@receipts tool-call-id))]
+                    (if (= request-digest (:digest cached))
+                      (clj->js (receipt-response cached))
+                      (clj->js (tool-error (replay-mismatch))))
+                    (let [state (.-agent_state params)
+                          transition? (claim-state-transition! (session-key ctx) state)
+                          name (.-name params)
+                          code (.-code params)]
+                      (-> (repl/run name code (sandbox-deadline code) role)
+                          (.then (fn [result]
+                                   (let [raw (ufss/canonical result)
+                                         with-comment (if transition? (prepend-state-comment state raw) raw)
+                                         text (append-workers-reminder with-comment params)]
+                                     (when tool-call-id
+                                       (swap! receipts assoc tool-call-id
+                                              {:digest request-digest :text text :error? false}))
+                                     (clj->js (tool-result text)))))
+                          (.catch (fn [error]
+                                    (let [raw (error-text error)
+                                          with-comment (if transition? (prepend-state-comment state raw) raw)
+                                          text (append-workers-reminder with-comment params)]
+                                      (when tool-call-id
+                                        (swap! receipts assoc tool-call-id
+                                               {:digest request-digest :text text :error? true}))
+                                      (clj->js {:isError true
+                                                :content [(text-block text)]}))))))))]
+    (native-tools/with-context ctx execute)))
+
 (defn- execute [tool-call-id params signal on-update ctx]
   (execute-role :devops tool-call-id params signal on-update ctx))
 
-(defn- host-text [result]
-  (cond
-    (string? result) result
-    (and result (.-content result))
-    (->> (array-seq (.-content result))
-         (keep (fn [block] (when (= "text" (.-type block)) (.-text block))))
-         (clojure.string/join ""))
-    :else (str result)))
-
-(defn- host-wait []
-  (let [native (.-__herdNative js/globalThis)
-        runner (when native ((.-getRunner native)))]
-    (when (and runner (.hasNativeTool runner "wait"))
-      (.invokeNativeTool runner "wait" #js {} #js {}))))
+(defn- host-wait [ctx]
+  (when (native-tools/available? "wait" ctx)
+    (native-tools/wait! ctx)))
 
 (defn- wait-execute [_tool-call-id params _signal _on-update ctx]
   (let [work (.-otherwise_independent_work params)]
@@ -165,14 +160,14 @@
     (-> (repl/wait-for-result (sandbox-deadline work))
         (.then (fn [result]
                  (if (= :idle (:state result))
-                   (if-let [host (host-wait)]
+                   (if-let [host (host-wait ctx)]
                      (-> host
                          (.then (fn [host-result]
                                   (clj->js
                                     (tool-result
                                       (append-workers-reminder
                                         (ufss/canonical {:state :host-wait
-                                                         :message (host-text host-result)})
+                                                         :message (native-tools/text-of host-result)})
                                         params)))))
                          (.catch (fn [error]
                                    (clj->js
@@ -289,7 +284,7 @@
                   (execute-role role id params signal update ctx))))
 
 (defn- worker-execute [id params signal update ctx]
-  (execute-role (if (= "Swarm Holder" (system/role-of-ctx ctx)) :holder :worker)
+  (execute-role (if (system/holder-ctx? ctx) :holder :worker)
                 id params signal update ctx))
 
 (defn- register-role! [pi role name label description]
@@ -339,7 +334,9 @@
 (def ^:private herd-tools ["clj_devops" "wait" "handoff"])
 
 (def ^:private host-tool-blacklist
-  #{"read" "write" "edit" "apply_patch" "ast_edit" "ast_grep"
+  ;; read/write stay active so the sandbox can delegate to the host native
+  ;; tools; direct model calls are blocked by the tool_call hook.
+  #{"edit" "apply_patch" "ast_edit" "ast_grep"
     "bash" "exec" "eval" "glob" "grep" "find"})
 
 (defn- apply-tool-surface! [ctx]
@@ -404,6 +401,23 @@
     (array? prompt) (array-inject prompt)
     :else prompt))
 
+(defn- prompt-with-briefing [prompt briefing]
+  (if-not (and briefing (pos? (count briefing)))
+    prompt
+    (cond
+      (string? prompt)
+      (if (str/includes? prompt briefing)
+        prompt
+        (str prompt newline-char newline-char briefing))
+
+      (array? prompt)
+      (if (some (fn [b] (and (string? b) (str/includes? b briefing)))
+                (array-seq prompt))
+        prompt
+        (.concat prompt (array briefing)))
+
+      :else prompt)))
+
 (defn- before-agent-start [event ctx]
   (-> (system/before-agent-start! event ctx)
       (.then
@@ -412,9 +426,7 @@
             (apply-tool-surface! ctx)
             (let [prompt (prompt-with-rules (.-systemPrompt event))
                   briefing (system/briefing-for ctx)
-                  text (if (and briefing (not (str/includes? prompt briefing)))
-                         (str prompt newline-char newline-char briefing)
-                         prompt)]
+                  text (prompt-with-briefing prompt briefing)]
               #js {:systemPrompt text})
             (catch :default _
               #js {:systemPrompt (.-systemPrompt event)}))))
@@ -459,13 +471,40 @@
           copy)))
     message))
 
+(defn- barrier-parent-id [manager]
+  (when manager
+    (try
+      (or (when (fn? (.-getBranch manager))
+            (let [branch (.getBranch manager)]
+              (when (and (array? branch) (pos? (.-length branch)))
+                (.-id (aget branch 0)))))
+          (when (fn? (.-getLeafId manager))
+            (.getLeafId manager)))
+      (catch :default _ nil))))
+
 (defn context-handler [event ctx]
   (let [messages (or (.-messages event) #js [])
         rewritten (into-array (map rewrite-vibe-message (array-seq messages)))
         nudge (or (system/consume-nudge!) "")
         tail #js {:role "user"
-                  :content (array #js {:type "text" :text (str (outbound-tail) nudge)})}]
-    (js-obj "messages" (.concat rewritten (array tail)))))
+                  :content (array #js {:type "text" :text (str (outbound-tail) nudge)})}
+        barrier (system/consume-pending-barrier! ctx)]
+    (if-not barrier
+      (js-obj "messages" (.concat rewritten (array tail)))
+      (let [barrier-text (str (when (and (string? (:seed barrier)) (pos? (count (:seed barrier))))
+                                (str """
+User original objective:
+
+""" (:seed barrier) "\n\n"))
+                              (:briefing barrier))
+            barrier-msg #js {:role "user"
+                             :content (array #js {:type "text" :text barrier-text})}
+            manager (when ctx (.-sessionManager ctx))
+            parent-id (barrier-parent-id manager)]
+        (when (and manager parent-id)
+          (hack-context/apply-history-barrier manager #js {:parentId parent-id :briefing nil}))
+        (js-obj "messages" (array barrier-msg tail)
+                "handoffReplacement" true)))))
 
 (defonce usage-totals (atom {}))
 (defonce last-usage (atom {}))
@@ -1033,10 +1072,11 @@ Append one diagnostic line off the request path. The queue is serial, so a
 
 (defn- probe-request [event ctx]
   (show-usage! ctx)
-  (let [payload (or (.-payload event) event)]
+  (let [payload (or (.-payload event) event)
+        filtered (tool-hide/hide payload)]
     (when (probe-enabled?)
-      (record-probe! payload))
-    payload))
+      (record-probe! filtered))
+    filtered))
 (defonce activated-pis (js/WeakSet.))
 
 (defn install-hooks!

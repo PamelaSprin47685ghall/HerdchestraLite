@@ -33,18 +33,15 @@
             (.catch reject)))
       delay-ms))))
 
-(defn- native-runner [delay-ms]
-  #js {:getRunner
-       (fn []
-         #js {:hasNativeTool (fn [name] (or (= name "read") (= name "write")))
-              :invokeNativeTool
-              (fn [name params]
-                (if (= name "read")
-                  (native-read params)
-                  (native-write params delay-ms)))})})
+(defn- native-tools [delay-ms]
+  #js {:available (fn [_name _context] true)
+       :invoke (fn [name params _options _context]
+                 (if (= name "read")
+                   (native-read params)
+                   (native-write params delay-ms)))})
 
 (defn- set-native! [delay-ms]
-  (set! (.-__herdNative js/globalThis) (native-runner delay-ms)))
+  (set! (.-__herdNativeTools js/globalThis) (native-tools delay-ms)))
 
 (defn- write-result [file content]
   (-> (sandbox/write {:path file :content content})

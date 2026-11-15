@@ -2,7 +2,12 @@
   (:require
    [clojure.string :as string]))
 
-(def ^:private slug-pattern #"^[a-z0-9][a-z0-9-]{0,63}$")
+(def ^:private slug-pattern #"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+(defn valid-slug? [value]
+  (and (string? value)
+       (boolean (re-matches slug-pattern value))
+       (not (string/includes? value ".."))))
 
 (def ^:private mission-stages
   #{:s1 :s2 :s3 :s4 :s5 :completed})
@@ -101,7 +106,7 @@ Validate one herd custom entry against schema v1.
     (failure :INVALID_ARGUMENT "mission has no mission-id" {:field :mission-id})
 
     (not (and (string? (:slug mission))
-              (re-matches slug-pattern (:slug mission))))
+              (valid-slug? (:slug mission))))
     (failure :INVALID_ARGUMENT "mission has an invalid slug" {:field :slug})
 
     (nil? (stage-of (:stage mission)))

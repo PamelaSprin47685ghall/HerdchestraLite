@@ -1,7 +1,7 @@
 (ns herd.entry
   (:require
+   [bridge.native-tools :as native-tools]
    [clojure.string :as str]
-   [herd.native-runner :as native-runner]
    [promesa.core :as p]))
 
 (def ^:private board-tools
@@ -22,8 +22,7 @@
 (defonce trace-tail (atom (js/Promise.resolve nil)))
 (def ^:private trace-limit (* 1024 1024))
 (def ^:private trace-default-path ".herd/perf-trace.jsonl")
-(def ^:private newline "
-")
+(def ^:private newline "\n")
 
 (defn- js-type [value]
   (cond
@@ -151,9 +150,7 @@
                          (set! (.-__herdSubagentBindings js/globalThis) created)
                          created))
           uuid ((.-randomUUID (node-require "node:crypto")))
-          nonce (str/replace uuid "-" "")
-          runner (when-let [native (.-__herdNative js/globalThis)]
-                   ((.-getRunner native)))]
+          nonce (str/replace uuid "-" "")]
       (cond
         (not (contains? role-tools role))
         #js {:ok false :code ":CAPABILITY_DENIED" :error (str "unsupported Herdchestra subagent role: " role)}
@@ -164,40 +161,110 @@
         (nil? task-id)
         #js {:ok false :code ":HOST_API_MISMATCH" :error "the parent session task id is unavailable"}
 
-        (nil? runner)
-        #js {:ok false :code ":HOST_API_MISMATCH" :error "the native task runner is unavailable"}
-
         (zero? (count prompt))
         #js {:ok false :code ":INVALID_ARGUMENT" :error "runSubagent requires a non-empty prompt"}
 
         :else
         (do
           (aset bindings nonce task-id)
-          (let [task-prompt (str "[HERD_ROLE: " role " nonce=" nonce "]\n" prompt)
-                params #js {:prompt task-prompt
-                            :description (str "Herdchestra " role)
+          (let [fsp (node-require "node:fs/promises")
+                os (node-require "node:os")
+                path (node-require "node:path")
+                binding-dir (.join path (.tmpdir os) "herd-subagent-bindings")
+                binding-file (.join path binding-dir (str nonce ".json"))
+                bound-agent-id (or (aget request "agentId") (aget request "agent-id"))
+                bound-slot-id (or (aget request "slotId") (aget request "slot-id"))
+                binding-json (js/JSON.stringify #js {:taskId task-id
+                                                     :role role
+                                                     :agentId bound-agent-id
+                                                     :slotId bound-slot-id})
+                task-prompt (str "[HERD_ROLE: " role " nonce=" nonce """
+]
+
+""" prompt)
+                params #js {:task task-prompt
+                            :name (or (aget request "name") (str "Herdchestra " role))
                             :agent "task"}]
             (when (some? model) (aset params "model" model))
-            (let [outcome (await (.invokeNativeTool runner "task" params #js {}))
-                  text (cond
-                         (string? outcome) outcome
-                         (and (object-like? outcome) (string? (.-result outcome))) (.-result outcome)
-                         (and (object-like? outcome) (string? (.-text outcome))) (.-text outcome)
-                         (and (object-like? outcome) (string? (.-output outcome))) (.-output outcome)
-                         :else (js/JSON.stringify (or outcome "")))]
-              #js {:ok true
-                   :role role
-                   :agentId (when (object-like? outcome) (.-agentId outcome))
-                   :resultMarkdown text
-                   :artifactsDir nil
-                   :sessionFile nil
-                   :error nil
-                   :code nil
-                   :resolvedModel model})))))
+            (try
+              (await (.mkdir fsp binding-dir #js {:recursive true}))
+              (await (.writeFile fsp binding-file binding-json "utf8"))
+              (catch :default _ nil))
+            (let [cleanup! (fn []
+                             (-> (.rm fsp binding-file #js {:force true})
+                                 (.catch (fn [_] nil))))]
+              (try
+                (let [ctx (or (native-tools/current-context) @latest-ctx)
+                      options #js {}
+                      signal (or (aget request "signal")
+                                 (get request :signal)
+                                 (and (some? ctx) (.-signal ctx)))]
+                  (when (some? signal)
+                    (aset options "signal" signal))
+                  (let [task-outcome (await (native-tools/task! params options ctx))
+                        task-details (when (object-like? task-outcome) (.-details task-outcome))
+                        job-info (when task-details (aget task-details "async"))
+                        job-id (when job-info (aget job-info "jobId"))
+                        origin (if (and job-id (= "running" (aget job-info "state")))
+                                 (or (await (native-tools/wait-for-job! job-id ctx)) task-outcome)
+                                 task-outcome)
+                        details (when (object-like? origin) (.-details origin))
+                        results (when details (.-results details))
+                        first-result (when (and results (pos? (.-length results))) (aget results 0))
+                        progress (when details (.-progress details))
+                        first-progress (when (and progress (pos? (.-length progress))) (aget progress 0))
+                        jobs (when (and details (not results)) (.-jobs details))
+                        first-job (when (and jobs (pos? (.-length jobs))) (aget jobs 0))
+                        text (or (when first-result (.-output first-result))
+                                 (let [value (native-tools/text-of origin)] (when (seq value) value))
+                                 (string? origin) origin
+                                 (and (object-like? origin) (string? (.-result origin))) (.-result origin)
+                                 (and (object-like? origin) (string? (.-text origin))) (.-text origin)
+                                 (and (object-like? origin) (string? (.-output origin))) (.-output origin)
+                                 (js/JSON.stringify (or origin "")))
+                        agent-id (or (when first-result (.-id first-result))
+                                     (when first-job (.-agentId first-job))
+                                     (when (object-like? origin) (.-agentId origin)))
+                        session-file (or (when first-progress (.-sessionFile first-progress))
+                                         (when first-job (.-sessionFile first-job))
+                                         (when details (.-sessionFile details)))
+                        artifacts-dir (or (when details (.-artifactsDir details))
+                                          (aget request "artifactsDir")
+                                          (aget request "artifacts-dir"))
+                        err (or (when first-result (.-error first-result))
+                                (when (and (object-like? origin) (.-isError origin))
+                                  (or (.-error origin) text))
+                                (when (and (object-like? task-outcome) (.-isError task-outcome))
+                                  (or (.-error task-outcome) text)))]
+                    (let [out #js {:ok (nil? err)
+                                   :role role
+                                   :agentId agent-id
+                                   :resultMarkdown text
+                                   :artifactsDir artifacts-dir
+                                   :sessionFile session-file
+                                   :error err
+                                   :code nil
+                                   :resolvedModel model}]
+                      (await (cleanup!))
+                      out)))
+                (catch :default sub-err
+                  (await (cleanup!))
+                  (throw sub-err))))))))
     (catch :default error
-      #js {:ok false
-           :code (or (.-code error) ":AGENT_SPAWN_FAILED")
-           :error (message-of error)})))
+      (let [stack (when (instance? js/Error error) (.-stack error))]
+        (try
+          (let [fs (node-require "node:fs")]
+            (.appendFileSync fs "/tmp/herd-spawn-error.log"
+                             (str (message-of error) "\n" stack """
+
+---
+
+""")))
+          (catch :default _ nil))
+        #js {:ok false
+             :code (or (.-code error) ":AGENT_SPAWN_FAILED")
+             :error (message-of error)
+             :stack stack}))))
 
 (defn- ^:async boot-body []
   (let [nbb (nbb-module)
@@ -245,7 +312,7 @@
                         (.catch (fn [error]
                                   (set! (.-promise state) nil)
                                   (trace-boot-event "boot-error" #js {:total (ms-since started)
-                                                                       :error (message-of error)})
+                                                                      :error (message-of error)})
                                   (throw error))))]
         (set! (.-promise state) promise)
         (await promise)))))
@@ -256,17 +323,12 @@
         state (boot-state)
         reused (some? (.-promise state))]
     (set! (.-__pi js/globalThis) extension-api)
-    (set! (.-__herdHost js/globalThis) #js {:runSubagent run-subagent})
-    (when-not (.-__herdRunnerCaptureInstalled js/globalThis)
-      (set! (.-__herdRunnerCaptureInstalled js/globalThis) true)
-      (try
-        (await (native-runner/install-capture!))
-        (set! (.-__herdNative js/globalThis) #js {:getRunner native-runner/get-native-runner})
-        (catch :default _ (set! (.-__herdNative js/globalThis) nil))))
+    (set! (.-__herdHost js/globalThis)
+          #js {:runSubagent (fn [request] (run-subagent request))})
     (when trace
       (trace-boot-event "activate-start" #js {:registered (.has (.-contextPis state) extension-api)
-                                                :reusedBoot reused
-                                                :boots (.-boots state)}))
+                                              :reusedBoot reused
+                                              :boots (.-boots state)}))
     (let [state (await (boot))]
       (when (fn? (.-activateSession state))
         (await ((.-activateSession state) extension-api)))
@@ -275,12 +337,12 @@
           (.add pis extension-api)
           (set! (.-contextRegistrations state) (inc (.-contextRegistrations state)))
           ((.-hackContext state) extension-api
-                                  (fn [event ctx]
-                                    (when (some? ctx) (reset! latest-ctx ctx))
-                                    ((.-handler state) event ctx)))))
+           (fn [event ctx]
+             (when (some? ctx) (reset! latest-ctx ctx))
+             ((.-handler state) event ctx)))))
       (when trace
         (trace-boot-event "activate-end" #js {:ms (ms-since started)
-                                                :registered (.has (.-contextPis state) extension-api)
-                                                :reusedBoot reused
-                                                :boots (.-boots state)
-                                                :contextRegistrations (.-contextRegistrations state)})))))
+                                              :registered (.has (.-contextPis state) extension-api)
+                                              :reusedBoot reused
+                                              :boots (.-boots state)
+                                              :contextRegistrations (.-contextRegistrations state)})))))

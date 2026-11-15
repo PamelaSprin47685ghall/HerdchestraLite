@@ -62,7 +62,7 @@
    "stages/scores" "stages/audit" "stages/report" "stages/gates" "gates_host"
    "swarm/edn" "swarm/model" "swarm/ledger" "swarm/actors" "swarm/tasks"
    "swarm/commands" "swarm/token" "swarm/kernel" "swarm/store" "swarm/board"
-   "swarm/tools" "swarm/runner" "swarm/auditors" "native_runner" "entry" "system"])
+   "swarm/tools" "swarm/runner" "swarm/auditors" "entry" "system"])
 
 (defn ^:async main []
   (let [started (.now js/Date)

@@ -1,11 +1,12 @@
 (ns cljs.herd-mode-test
-  (:require ["node:fs" :as fs]
-            ["node:os" :as os]
-            ["node:path" :as path]
-            [herd.system :as system]
-            [herd.stages.store :as store]
-            [herd.test :as t]
-            [promesa.core :as p]))
+  (:require
+   ["node:fs" :as fs]
+   ["node:os" :as os]
+   ["node:path" :as path]
+   [herd.stages.store :as store]
+   [herd.system :as system]
+   [herd.test :as t]
+   [promesa.core :as p]))
 
 (defn- root [] (fs/mkdtempSync (path/join (os/tmpdir) "herd-mode-")))
 (defn- host []
@@ -29,9 +30,9 @@
                 (fs/mkdirSync (path/dirname file) #js {:recursive true})
                 (fs/appendFileSync file
                                    (str (js/JSON.stringify
-                                         #js {:type "custom"
-                                              :customType kind
-                                              :data data}) "\n")))}}))
+                                          #js {:type "custom"
+                                               :customType kind
+                                               :data data}) "\n")))}}))
 (defn- install [root]
   (let [pi (host)]
     (system/reset-state!)
@@ -53,6 +54,12 @@
                 _ ((.-handler handler) "" (ctx r "session-1"))
                 active-herd (set @(aget pi "active"))
                 mode-herd (get-in @system/state [:sessions "session:session-1" :mode])
+                sent-messages (atom [])
+                _ (set! (.-sendUserMessage pi) (fn [msg & _] (swap! sent-messages conj msg)))
+                _ ((.-handler handler) "Update grammar" (ctx r "session-1"))
+                mode-devops-2 (get-in @system/state [:sessions "session:session-1" :mode])
+                _ ((.-handler handler) "Resume grammar" (ctx r "session-1"))
+                mode-herd-2 (get-in @system/state [:sessions "session:session-1" :mode])
                 mission (store/read-mission r "session-1")]
           (t/to-be (contains? active-s1 "clj_plan") true)
           (t/to-be (contains? active-devops "clj_devops") true)
@@ -64,5 +71,7 @@
           (t/to-be (contains? active-herd "clj_plan") true)
           (t/to-be (contains? active-herd "review") true)
           (t/to-be mode-herd :herd)
+          (t/to-be mode-devops-2 :devops)
+          (t/to-be mode-herd-2 :herd)
+          (t/to-be (vec @sent-messages) ["Update grammar" "Resume grammar"])
           (t/to-be (:ok mission) true))))))
-

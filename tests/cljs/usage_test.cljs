@@ -36,11 +36,10 @@
   (set! (.-__pi js/globalThis) pi)
   (set! (.-__herdTui js/globalThis)
         #js {:highlightCode (fn [code] (str/split-lines code))})
-  (set! (.-__herdNative js/globalThis)
-        #js {:getRunner (fn []
-                          #js {:hasNativeTool (fn [_] false)
-                               :invokeNativeTool (fn [& _]
-                                                   (js/Promise.resolve #js {:content #js []}))})})
+  (set! (.-__herdNativeTools js/globalThis)
+        #js {:available (fn [_name _context] false)
+             :invoke (fn [& _]
+                       (js/Promise.reject (js/Error. "native tools unavailable")))})
   ((.-__herdEnsureActivated js/globalThis)))
 
 (defn- reset-usage! []

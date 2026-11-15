@@ -2,7 +2,9 @@
   (:require
    ["node:crypto" :as crypto]
    ["node:fs/promises" :as fs]
+   ["node:os" :as os]
    ["node:path" :as path]
+   [bridge.native-tools :as native-tools]
    [clojure.string :as str]
    [herd.repl :as repl]
    [herd.stages.approval :as approval]
@@ -28,7 +30,7 @@
 
 (def ^:private newline-char (js/String.fromCharCode 10))
 
-(def ^:private slug-pattern #"^[a-z0-9][a-z0-9-]{0,63}$")
+(def ^:private slug-pattern #"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 (def ^:private role-token-pattern
   #"^\[HERD_ROLE: ([A-Za-z][A-Za-z0-9 _-]*?)(?: nonce=([A-Za-z0-9_-]{8,128}))?\]$")
@@ -45,9 +47,8 @@
 (def ^:private progress-tool-names
   (set (concat board-tool-names
                ["review" "ask_user" "attach_brainstorm" "attach_manual_tests"
-                "attach_dev_guide" "attach_coordination" "attach_case_audit"])))
-
-(def ^:private nudge-delays [0 30000 60000 120000 240000 300000])
+                "attach_dev_guide" "attach_coordination" "attach_case_audit"
+                "write" "mkdir" "rm" "mv" "submit_devops_report"])))
 
 (def ^:private upstream-backoff-ms [5000 10000 20000 40000 80000])
 
@@ -62,14 +63,18 @@
 
 (def ^:private devops-call-pattern #"^HERD_DEVOPS_CALL: ([A-Za-z0-9_-]{8,64})$")
 
+(declare clear-nudge-timer!)
+(declare clear-upstream-timer!)
+(declare user-cancelled?)
 (declare devops-call-id-of)
+(declare devops-receipt-dir-of)
 (declare s5-review! ensure-reviewer! write-devops-receipt!)
 
 (defonce state
   (atom {:sessions {}
          :last-ctx nil
-         :nudge {:attempts 0 :timer nil :pending nil}
-         :upstream {:attempts 0 :timer nil :stalled false :events []}
+         :nudge {:timer nil :pending nil :generation 0}
+         :upstream {:attempts 0 :timer nil :stalled false :events [] :generation 0}
          :audit-inflight {}
          :reviewers {}
          :installed false
@@ -95,12 +100,14 @@
 
 (defn reset-state! []
   (let [clear (:clear-timeout (:options @state) js/clearTimeout)]
-    (when-let [timer (get-in @state [:nudge :timer])]
-      (try (clear timer) (catch :default _ nil))))
+    (doseq [timer [(get-in @state [:nudge :timer])
+                   (get-in @state [:upstream :timer])]]
+      (when timer
+        (try (clear timer) (catch :default _ nil)))))
   (reset! state {:sessions {}
                  :last-ctx nil
-                 :nudge {:attempts 0 :timer nil :pending nil}
-                 :upstream {:attempts 0 :timer nil :stalled false :events []}
+                 :nudge {:timer nil :pending nil :generation 0}
+                 :upstream {:attempts 0 :timer nil :stalled false :events [] :generation 0}
                  :audit-inflight {}
                  :reviewers {}
                  :installed false
@@ -198,7 +205,9 @@
           "main"))))
 
 (defn- path-safe-session-id? [value]
-  (and (string? value) (re-matches #"^[A-Za-z0-9._-]{1,128}$" value)))
+  (and (string? value)
+       (boolean (re-matches slug-pattern value))
+       (not (str/includes? value ".."))))
 
 (defn session-id [ctx]
   (try
@@ -210,6 +219,31 @@
 
 (defn role-of-ctx [ctx]
   (get-in @state [:sessions (session-key ctx) :role-token :role]))
+
+(defn holder-ctx? [ctx]
+  (let [session (get-in @state [:sessions (session-key ctx)])]
+    (or (= "Swarm Holder" (get-in session [:role-token :role]))
+        (true? (:holder? session)))))
+
+(defn consume-pending-barrier! [ctx]
+  (let [key (session-key ctx)
+        barrier (get-in @state [:sessions key :pending-barrier])]
+    (when barrier
+      (swap! state update-in [:sessions key] dissoc :pending-barrier))
+    barrier))
+
+(defn- ^:async read-subagent-binding-file [nonce]
+  (when (text? nonce)
+    (try
+      (let [target (path/join (.tmpdir os) "herd-subagent-bindings" (str nonce ".json"))
+            raw (await (.readFile fs target "utf8"))
+            parsed (js/JSON.parse raw)]
+        (when (some? parsed)
+          {:task-id (.-taskId parsed)
+           :role (.-role parsed)
+           :agent-id (.-agentId parsed)
+           :slot-id (.-slotId parsed)}))
+      (catch :default _ nil))))
 
 (defn workspace-root [cwd]
   (path/resolve (if (and (string? cwd) (pos? (count cwd))) cwd (js/process.cwd))))
@@ -238,12 +272,14 @@
     :else ""))
 
 (defn- role-token* [prompt]
-  (let [line (str/trim (or (first (str/split (or prompt "") #"\r?\n")) ""))
-        match (re-matches role-token-pattern line)]
-    (cond
-      (nil? match) nil
-      (contains? role-names (nth match 1)) {:role (nth match 1) :nonce (nth match 2) :raw line}
-      :else {:role nil :raw line})))
+  (some (fn [raw-line]
+          (let [line (str/trim raw-line)
+                match (re-matches role-token-pattern line)]
+            (when match
+              (if (contains? role-names (nth match 1))
+                {:role (nth match 1) :nonce (nth match 2) :raw line}
+                {:role nil :raw line}))))
+        (str/split (or prompt "") #"\r?\n")))
 
 (defn- ctx-for-slug [slug]
   (or (->> (:sessions @state)
@@ -287,15 +323,24 @@
 
 (defn ^:async ensure-focus! [ctx root]
   (let [key (session-key ctx)
-        read (await (session-log/read-entries ctx))
+        sub? (subagent? ctx)
+        read (if sub?
+               {:ok true :entries []}
+               (await (session-log/read-entries ctx)))
         entries (if (:ok read) (:entries read) [])
         logged (session-log/task-id entries)
         recorded-mode (or (session-log/mode-of entries)
                           (get-in @state [:sessions key :mode])
                           :devops)
         injected (get-in @state [:sessions key :slug])
+        file-binding (when (and sub? (nil? injected))
+                       (let [token (role-token* (get-in @state [:sessions key :prompt]))]
+                         (when-let [nonce (:nonce token)]
+                           (or (when-let [mem (some-> (.-__herdSubagentBindings js/globalThis) (aget nonce))]
+                                 {:task-id mem})
+                               (await (read-subagent-binding-file nonce))))))
         slug (or (when (text? logged) logged)
-                 (when (subagent? ctx) injected))]
+                 (when sub? (or injected (:task-id file-binding))))]
     (when-not (:ok read)
       (record-health! {:entry "system.session-log"
                        :status "degraded"
@@ -343,13 +388,13 @@
   [{:keys [mission? subagent? stage role mode]}]
   (let [role (when (contains? narrowing-role-names role) role)]
     (cond
-      (= mode :devops) ["clj_devops"]
       (= role "Plan DevOps") ["clj_devops" "submit_devops_report"]
       (= role "Reviewer") ["clj_review" "review"]
       (= role "Swarm Worker") (conj board-tool-names "clj_worker")
       (= role "Swarm Holder") (conj board-tool-names "clj_worker")
       (= role "Manual Auditor") ["clj_auditor" "attach_case_audit"]
       subagent? nil
+      (= mode :devops) ["clj_devops"]
 
       (and mission? (contains? mission-stage-set stage))
       (case stage
@@ -367,7 +412,7 @@
                                                :stage (get-in @state [:sessions key :stage])
                                                :role (get-in @state [:sessions key :role-token :role])
                                                :mode (get-in @state [:sessions key :mode])})]
-                  (vec (distinct (concat global-tool-names tools))))]
+                  (vec (distinct (concat ["read" "write"] global-tool-names tools))))]
     (if (nil? allowed)
       false
       (do
@@ -436,6 +481,8 @@
   (before-agent-start-ticket! event ctx))
 
 (defn- ^:async before-agent-start-ticket! [event ctx]
+  (clear-nudge-timer!)
+  (clear-upstream-timer!)
   (let [key (session-key ctx)
         root (resolve-root ctx)]
     (swap! state assoc :last-ctx ctx)
@@ -445,14 +492,22 @@
                  (assoc :ctx ctx :root root :turn-tools #{} :successful-tools #{}
                         :turn-id (new-turn-id)
                         :prompt (let [p (event-prompt event)] (subs p 0 (min (count p) 2000))))
-                 (dissoc :gate-cache))))
+                 (dissoc :gate-cache :suppress-nudge))))
     (if (subagent? ctx)
       (do
         (let [token (role-token* (event-prompt event))
-              binding (when (and token (some? (.-__herdSubagentBindings js/globalThis)))
-                        (aget (.-__herdSubagentBindings js/globalThis) (:nonce token)))]
+              mem-binding (when (and token (some? (.-__herdSubagentBindings js/globalThis)))
+                            (aget (.-__herdSubagentBindings js/globalThis) (:nonce token)))
+              file-binding (when (and token (or (nil? mem-binding) (nil? (get-in @state [:sessions key :bound-agent-id]))))
+                             (await (read-subagent-binding-file (:nonce token))))
+              binding (or mem-binding (:task-id file-binding))]
           (when (and (text? binding) (path-safe-session-id? binding))
-            (swap! state assoc-in [:sessions key :slug] binding))
+            (swap! state assoc-in [:sessions key :slug] binding)
+            (set! (.-__herdTaskId js/globalThis) binding))
+          (when (text? (:agent-id file-binding))
+            (swap! state assoc-in [:sessions key :bound-agent-id] (:agent-id file-binding)))
+          (when (text? (:slot-id file-binding))
+            (swap! state assoc-in [:sessions key :bound-slot-id] (:slot-id file-binding)))
           (cond
             (and token (:role token))
             (swap! state assoc-in [:sessions key :role-token] {:role (:role token)})
@@ -463,9 +518,13 @@
                              :reason (if token "unknown role token" "subagent has no role token")
                              :raw (:raw token)
                              :session key})))
-        (let [call-id (devops-call-id-of (event-prompt event))]
+        (let [prompt (event-prompt event)
+              call-id (devops-call-id-of prompt)
+              receipt-dir (devops-receipt-dir-of prompt)]
           (when call-id
-            (swap! state assoc-in [:sessions key :devops-call-id] call-id))))
+            (swap! state assoc-in [:sessions key :devops-call-id] call-id))
+          (when receipt-dir
+            (swap! state assoc-in [:sessions key :devops-receipt-dir] receipt-dir))))
       (do
         (swap! state assoc-in [:sessions key :role-token] nil)
         (when (persistent-session? ctx)
@@ -508,7 +567,11 @@
 
 (defn- reset-nudge! []
   (clear-nudge-timer!)
-  (swap! state assoc :nudge {:attempts 0 :timer nil :pending nil}))
+  (swap! state update :nudge
+         (fn [nudge]
+           (-> (or nudge {})
+               (assoc :timer nil :pending nil)
+               (update :generation (fnil inc 0))))))
 
 (declare reset-upstream!)
 
@@ -516,15 +579,13 @@
   (try
     (let [message (when event (.-message event))]
       (when (and message (= "user" (.-role message)))
+        (swap! state update :sessions
+               (fn [sessions]
+                 (into {} (map (fn [[k v]] [k (dissoc v :suppress-nudge)]) sessions))))
         (reset-nudge!)
         (reset-upstream!)))
     (catch :default _ nil))
   nil)
-
-(defn next-nudge-delay [attempt progress?]
-  (if progress?
-    0
-    (nth nudge-delays (min (max attempt 0) (dec (count nudge-delays))))))
 
 (defn unattended-nudge [plan]
   (let [stage (str/upper-case (str (:stage plan)))
@@ -544,14 +605,9 @@
                            "（请明确调用 `unpark` 恢复或推进新决策，系统不会代你自动恢复）。")))]
     (str/join newline-char lines)))
 
-(defn- abort-end? [event]
+(defn- abort-end? [event ctx]
   (or (true? (.-willContinue event))
-      (true? (.-userAborted event))
-      (= "user" (.-abortReason event))
-      (some (fn [message]
-              (and (= "assistant" (.-role message))
-                   (= "aborted" (.-stopReason message))))
-            (array-seq (or (.-messages event) #js [])))))
+      (user-cancelled? event ctx)))
 
 (defn- subagent-nudge-plan [role stage successful]
   (let [exit (case role
@@ -567,7 +623,10 @@
       (contains? successful "ask_user") nil
       (contains? successful exit) nil
       (and (= role "Swarm Holder") (contains? successful "board_take_or_die")) nil
-      (and (= role "Swarm Worker") (contains? successful "board_park_slot")) nil
+      (and (= role "Swarm Worker")
+           (or (contains? successful "board_park_slot")
+               (contains? successful "board_take_or_die")
+               (contains? successful "board_split"))) nil
       :else {:stage (if stage (name stage) "s5")
              :expected-tool exit
              :open-items []
@@ -600,7 +659,9 @@
         stage (tenure/normalize-stage (:stage mission))
         successful (get-in @state [:sessions key :successful-tools] #{})]
     (cond
-      (abort-end? event) nil
+      (abort-end? event ctx) nil
+      (true? (get-in @state [:sessions key :suppress-nudge])) nil
+      (true? (get-in @state [:sessions key :actor-dead?])) nil
       (and (nil? role) (nil? slug)) nil
       (and (subagent? ctx) (nil? role)) nil
       (= stage :completed) nil
@@ -630,9 +691,14 @@
 
 (defn- schedule-nudge! [pi text delay]
   (clear-nudge-timer!)
-  (let [set-timer (or (get-in @state [:options :set-timeout])
+  (let [generation (get-in @state [:nudge :generation] 0)
+        set-timer (or (get-in @state [:options :set-timeout])
                       (fn [f ms] (js/setTimeout f ms)))
-        timer (set-timer (fn [] (deliver-nudge! pi text)) delay)]
+        timer (set-timer (fn []
+                           (when (= generation
+                                    (get-in @state [:nudge :generation] 0))
+                             (deliver-nudge! pi text)))
+                         delay)]
     (swap! state assoc-in [:nudge :timer] timer)
     (try
       (when (and timer (fn? (.-unref timer))) (.unref timer))
@@ -680,25 +746,38 @@
                          (when assistant-err?
                            (safe-json-text (.-errorMessage assistant)))])))))
 
-(defn- user-cancelled? [event]
-  (or (true? (.-userAborted event))
-      (= "user" (.-abortReason event))
-      (let [signal (.-signal event)]
-        (and (some? signal)
-             (true? (.-aborted signal))
-             (let [reason (.-reason signal)]
-               (or (= "user" reason)
-                   (and (string? reason)
-                        (str/includes? (str/lower-case reason) "user"))))))))
+(defn- user-cancel-reason? [reason]
+  (when (some? reason)
+    (let [text (str/lower-case (str reason))]
+      (or (= "user" text)
+          (str/includes? text "user")
+          (str/includes? text "cancel")
+          (str/includes? text "interrupt")))))
 
-(defn- upstream-failure-kind [event]
-  (let [blob (or (event-blob event) "")
-        stop (last-assistant-stop event)]
+(defn- aborted-signal? [signal]
+  (boolean (and (some? signal) (true? (.-aborted signal)))))
+
+(defn- upstream-evidence? [event]
+  (let [blob (or (event-blob event) "")]
+    (boolean (or (re-find upstream-quota-pattern blob)
+                 (re-find upstream-status-pattern blob)
+                 (re-find upstream-network-pattern blob)))))
+
+(defn- user-cancelled? [event ctx]
+  (or (true? (.-userAborted event))
+      (user-cancel-reason? (.-abortReason event))
+      (aborted-signal? (.-signal event))
+      (aborted-signal? (when ctx (.-signal ctx)))
+      (and (= "aborted" (last-assistant-stop event))
+           (not (upstream-evidence? event)))))
+
+(defn- upstream-failure-kind [event ctx]
+  (let [blob (or (event-blob event) "")]
     (cond
+      (user-cancelled? event ctx) nil
       (re-find upstream-quota-pattern blob) :quota
       (re-find upstream-status-pattern blob) :retryable
       (re-find upstream-network-pattern blob) :retryable
-      (and (= "aborted" stop) (not (user-cancelled? event))) :retryable
       :else nil)))
 
 (defn- clear-upstream-timer! []
@@ -710,11 +789,12 @@
 
 (defn- reset-upstream! []
   (clear-upstream-timer!)
-  (swap! state assoc :upstream
-         {:attempts 0
-          :timer nil
-          :stalled false
-          :events (get-in @state [:upstream :events] [])}))
+  (swap! state update :upstream
+         (fn [upstream]
+           (-> (or upstream {})
+               (assoc :attempts 0 :timer nil :stalled false)
+               (update :events #(or % []))
+               (update :generation (fnil inc 0))))))
 
 (defn- note-upstream! [entry]
   (let [record (assoc entry :at (now-iso))]
@@ -742,15 +822,18 @@
       :else nil)))
 
 (defn- schedule-upstream-retry! [pi delay attempt remaining]
-  (let [set-timer (or (get-in @state [:options :set-timeout])
+  (let [generation (get-in @state [:upstream :generation] 0)
+        set-timer (or (get-in @state [:options :set-timeout])
                       (fn [f ms] (js/setTimeout f ms)))
         timer (set-timer
                 (fn []
-                  (deliver-upstream-retry!
-                    pi
-                    (str "[UPSTREAM RETRY " attempt "/" (count upstream-backoff-ms) "] "
-                         "上游连接中断（无用户取消信号）。请从最近一次成功的工具结果继续，"
-                         "不要重放已完成的写操作；剩余重试预算 " remaining " 次。")))
+                  (when (= generation
+                           (get-in @state [:upstream :generation] 0))
+                    (deliver-upstream-retry!
+                      pi
+                      (str "[UPSTREAM RETRY " attempt "/" (count upstream-backoff-ms) "] "
+                           "上游连接中断（无用户取消信号）。请从最近一次成功的工具结果继续，"
+                           "不要重放已完成的写操作；剩余重试预算 " remaining " 次。"))))
                 delay)]
     (swap! state assoc-in [:upstream :timer] timer)
     (try
@@ -758,11 +841,11 @@
       (catch :default _ nil))
     timer))
 
-(defn- guard-upstream! [pi event]
+(defn- guard-upstream! [pi event ctx]
   (try
-    (let [kind (upstream-failure-kind event)]
+    (let [kind (upstream-failure-kind event ctx)]
       (cond
-        (user-cancelled? event)
+        (user-cancelled? event ctx)
         (do (reset-upstream!) nil)
 
         (= :quota kind)
@@ -805,18 +888,22 @@
       nil)))
 
 (defn- on-agent-end! [pi event ctx]
-  (guard-upstream! pi event)
   (try
-    (let [plan (nudge-plan ctx event)]
-      (if (nil? plan)
-        (clear-nudge-timer!)
-        (let [key (session-key ctx)
-              progress? (pos? (count (get-in @state [:sessions key :successful-tools] #{})))
-              attempts (get-in @state [:nudge :attempts] 0)
-              delay (next-nudge-delay attempts progress?)]
-          (swap! state assoc-in [:nudge :attempts]
-                 (if progress? 0 (inc attempts)))
-          (schedule-nudge! pi (unattended-nudge plan) delay))))
+    (cond
+      (true? (.-willContinue event))
+      (clear-nudge-timer!)
+
+      (user-cancelled? event ctx)
+      (do
+        (reset-nudge!)
+        (reset-upstream!))
+
+      :else
+      (do
+        (guard-upstream! pi event ctx)
+        (if-let [plan (nudge-plan ctx event)]
+          (schedule-nudge! pi (unattended-nudge plan) 0)
+          (reset-nudge!))))
     (catch :default error
       (record-health! {:entry "system.nudge"
                        :status "degraded"
@@ -826,7 +913,7 @@
 
 (defn- note-tool-end! [pi event ctx]
   (when (true? (.-isError event))
-    (guard-upstream! pi event))
+    (guard-upstream! pi event ctx))
   (try
     (let [key (session-key ctx)
           name (.-toolName event)
@@ -925,7 +1012,7 @@
     (contains? #{:attach_manual_tests :attach_dev_guide :attach_coordination} tool)
     ((:attach! service) tool request options)
     (= tool :ask_user) ((:ask-user! service) request options)
-    (= tool :devops) ((:devops! service) request options)
+    (= tool :devops) ((:devops! service) (cond-> request (:signal options) (assoc :signal (:signal options))) options)
     (= tool :submit_devops_report) ((:submit-devops-report! service) request options)
     :else (gate-failure :INVALID_ARGUMENT "unknown gate tool" {:tool tool})))
 
@@ -951,8 +1038,10 @@
 (defn- attach-denied-result [result]
   (if (= :denied (:status result))
     (assoc result
-           :ask-user {:question (or (text? (:feedback result))
-                                    (text? (:question result)))
+           :ask-user {:question (or (when (text? (:feedback result)) (:feedback result))
+                                    (when (text? (:question result)) (:question result))
+                                    (get-in result [:ask-user :question])
+                                    "请在对话中说明需要如何调整 S1 头脑风暴文档。")
                       :context "attach_brainstorm 的确认面板返回 deny；未提交 barrier，仍留在 S1。"})
     result))
 
@@ -990,10 +1079,11 @@
 
 (declare gate-ticket!)
 
-(defn- gate-execute! [pi service deps tool params ctx call-id]
-  (gate-ticket! pi service deps tool params ctx call-id))
+(defn- gate-execute! [pi service deps tool params signal ctx call-id]
+  (native-tools/with-context ctx
+    (fn [] (gate-ticket! pi service deps tool params signal ctx call-id))))
 
-(defn- ^:async gate-ticket! [pi service deps tool params ctx call-id]
+(defn- ^:async gate-ticket! [pi service deps tool params signal ctx call-id]
   (let [key (session-key ctx)
         turn-id (get-in @state [:sessions key :turn-id])
         cached (get-in @state [:sessions key :gate-cache])
@@ -1002,7 +1092,7 @@
         root (resolve-root ctx)
         slug (if cache-hit? (:slug cached) (await (ensure-focus! ctx root)))
         role (if cache-hit? (:role cached) (await (role-of ctx root slug)))
-        options {:root root :slug slug :role role :call-id call-id}
+        options {:root root :slug slug :role role :call-id call-id :signal signal}
         mission (if cache-hit?
                   (:mission cached)
                   (when (text? slug)
@@ -1099,6 +1189,11 @@
                         :seed (:seed refreshed)
                         :briefing briefing}))))))
       (swap! state update-in [:sessions key] dissoc :gate-cache))
+    (when (and (map? result)
+               (or (true? (:suppress-nudge result))
+                   (contains? #{:awaiting-user :denied} (:status result))))
+      (swap! state assoc-in [:sessions key :suppress-nudge] true)
+      (reset-nudge!))
     result))
 
 (defn- ^:async read-document [root slug args]
@@ -1348,8 +1443,18 @@
       (fn? injected) injected
       (and (some? host) (fn? (.-runSubagent host)))
       (fn [request]
-        (-> (.runSubagent host (clj->js request))
-            (.then (fn [value] (js->clj value :keywordize-keys true)))))
+        (let [run (.-runSubagent host)
+              js-request #js {:role (:role request)
+                              :prompt (:prompt request)
+                              :cwd (:cwd request)
+                              :artifacts-dir (:artifacts-dir request)
+                              :artifactsDir (:artifacts-dir request)
+                              :name (:name request)}]
+          (when (some? (:signal request)) (aset js-request "signal" (:signal request)))
+          (when (some? (:agent-id request)) (aset js-request "agentId" (:agent-id request)))
+          (when (some? (:slot-id request)) (aset js-request "slotId" (:slot-id request)))
+          (-> (run js-request)
+              (.then (fn [value] (js->clj value :keywordize-keys true))))))
       :else nil)))
 
 (defn- s5-board-handle [root slug]
@@ -1459,6 +1564,23 @@
                               result
                               {:ok true :result result})))))))))
 
+(defn- ^:async wake-remaining-swarm! [deps handle initial-board]
+  (loop [wave 0
+         board initial-board]
+    (if (or (>= wave 4)
+            (not (swarm-model/board-state? board))
+            (:ok (runner/quiescence board {}))
+            (empty? (swarm-model/progressable-summary board)))
+      board
+      (let [before-ver (:board-version board 0)
+            _ (await (runner/wake-all-slots! deps {:board-state board
+                                                   :mission (:mission deps)
+                                                   :reason :swarm-progress}))
+            next-board (or (await (swarm-store/read-board handle)) board)]
+        (if (> (:board-version next-board 0) before-ver)
+          (recur (inc wave) next-board)
+          next-board)))))
+
 (defn- ^:async ensure-reviewer! [root slug mission]
   (let [existing (get-in @state [:reviewers slug])]
     (if existing
@@ -1466,32 +1588,78 @@
       (let [prepared (await (ensure-s5-board! root slug mission))]
         (if-not (:ok prepared)
           prepared
-          (let [started (await (runner/start-reviewer!
-                                 (s5-deps root slug mission (:handle prepared))
-                                 {:board-state (:board prepared) :mission mission}))]
-            (if-not (:ok started)
-              (do
-                (record-health! {:entry "system.reviewer"
-                                 :status "degraded"
-                                 :reason "the S5 Reviewer failed to start"
-                                 :slug slug
-                                 :error (get-in started [:error :message])})
-                started)
-              (do
-                (swap! state update :reviewers dissoc slug)
-                (let [handle (:handle prepared)
-                      latest-board (when handle (await (swarm-store/read-board handle)))
-                      latest-read (await (store/read-mission root slug))
-                      latest-mission (or (:mission latest-read) mission)
-                      latest-stage (tenure/normalize-stage (:stage latest-mission))]
-                  (if (and (= :s5 latest-stage)
-                           (swarm-model/board-state? latest-board)
-                           (pos? (count (:tasks latest-board)))
-                           (:ok (runner/quiescence latest-board {})))
-                    (let [relayed (await (runner/relay! (s5-deps root slug latest-mission handle)
-                                                        {:board latest-board :mission latest-mission}))]
-                      (assoc started :status :reviewer-relayed :relay relayed))
-                    (assoc started :status :reviewer-started)))))))))))
+          (let [handle (:handle prepared)]
+            (loop [cycle 0
+                   cur-mission mission
+                   cur-board (:board prepared)
+                   last-started nil]
+              (let [deps (s5-deps root slug cur-mission handle)
+                    cur-board (if (and (pos? cycle)
+                                       (swarm-model/board-state? cur-board)
+                                       (not (:ok (runner/quiescence cur-board {}))))
+                                (await (wake-remaining-swarm! deps handle cur-board))
+                                cur-board)
+                    started (await (runner/start-reviewer!
+                                     deps
+                                     {:board-state cur-board :mission cur-mission}))]
+                (if-not (:ok started)
+                  (do
+                    (record-health! {:entry "system.reviewer"
+                                     :status "degraded"
+                                     :reason "the S5 Reviewer failed to start"
+                                     :slug slug
+                                     :error (get-in started [:error :message])})
+                    (or (when last-started (assoc last-started :status :reviewer-started :last-error started))
+                        started))
+                  (do
+                    (swap! state update :reviewers dissoc slug)
+                    (let [after-board (or (when handle (await (swarm-store/read-board handle))) cur-board)
+                          settled-board (if (and (swarm-model/board-state? after-board)
+                                                 (pos? (count (:tasks after-board)))
+                                                 (not (:ok (runner/quiescence after-board {}))))
+                                          (await (wake-remaining-swarm! deps handle after-board))
+                                          after-board)
+                          latest-read (await (store/read-mission root slug))
+                          latest-mission (or (:mission latest-read) cur-mission)
+                          latest-stage (tenure/normalize-stage (:stage latest-mission))
+                          completed? (or (= :completed (:stage latest-mission))
+                                         (= "completed" (:stage latest-mission)))
+                          progressed? (> (:board-version settled-board 0) (:board-version cur-board 0))]
+                      (cond
+                        completed?
+                        (assoc started :status :completed :stage :completed :mission latest-mission)
+
+                        (and (= :s5 latest-stage)
+                             (swarm-model/board-state? settled-board)
+                             (pos? (count (:tasks settled-board)))
+                             (:ok (runner/quiescence settled-board {}))
+                             (< cycle 8))
+                        (let [relayed (await (runner/relay! (s5-deps root slug latest-mission handle)
+                                                            {:board settled-board :mission latest-mission}))
+                              post-read (await (store/read-mission root slug))
+                              post-mission (or (:mission post-read) latest-mission)
+                              post-board (or (when handle (await (swarm-store/read-board handle))) settled-board)
+                              post-done? (or (= :completed (:stage post-mission))
+                                             (= "completed" (:stage post-mission)))]
+                          (cond
+                            post-done?
+                            (assoc started :status :completed :stage :completed :relay relayed :mission post-mission)
+
+                            (and (true? (:ok relayed))
+                                 (> (:board-version post-board 0) (:board-version settled-board 0)))
+                            (recur (inc cycle) post-mission post-board started)
+
+                            :else
+                            (assoc started :status :reviewer-relayed :relay relayed)))
+
+                        (and (= :s5 latest-stage)
+                             progressed?
+                             (pos? (count (remove (fn [[_ t]] (= :done (:state t))) (:tasks settled-board))))
+                             (< cycle 8))
+                        (recur (inc cycle) latest-mission settled-board started)
+
+                        :else
+                        (assoc started :status :reviewer-started)))))))))))))
 
 (defn- audit-batch-port [deps board]
   (let [injected (or (get-in @state [:options :run-audit-batch])
@@ -1558,7 +1726,9 @@
                  :response {:ok false
                             :error {:code :STALE_CONTROL
                                     :message "the S5 board is missing"}}}
-                {:board (assoc-in current [:tenure :initial-question-asked?] true)
+                {:board (-> current
+                          (assoc-in [:tenure :initial-question-asked?] true)
+                          (assoc-in [:tenure :initial-ask-used] true))
                  :events [{:type :s5-initial-question
                            :at (.toISOString (js/Date.))}]
                  :commit true
@@ -1632,9 +1802,18 @@
             (when match (nth match 1))))
         (str/split (or prompt "") #"\r?\n")))
 
-(defn- build-devops-prompt [args call-id]
+(def ^:private devops-receipt-pattern #"^HERD_DEVOPS_RECEIPT_DIR: (.+)$")
+
+(defn- devops-receipt-dir-of [prompt]
+  (some (fn [line]
+          (let [match (re-matches devops-receipt-pattern (str/trim line))]
+            (when match (nth match 1))))
+        (str/split (or prompt "") #"\r?\n")))
+
+(defn- build-devops-prompt [args call-id artifacts-dir]
   (str/join newline-char
             [(devops-call-line call-id)
+             (str "HERD_DEVOPS_RECEIPT_DIR: " (path/join artifacts-dir "devops-reports"))
              (str "Workspace: " (:root args))
              (str "Stage: " (name (or (:stage args) :s1)))
              "Inspect the real workspace with `clj_devops` (read-only)."
@@ -1660,12 +1839,16 @@
   (try
     (let [key (session-key ctx)
           call-id (get-in @state [:sessions key :devops-call-id])
+          receipt-dir (get-in @state [:sessions key :devops-receipt-dir])
           manager (session-manager ctx)
           session-file (when (and manager (fn? (.-getSessionFile manager)))
-                         (.getSessionFile manager))]
-      (when (and (text? call-id) (text? session-file))
-        (let [directory (path/join (path/dirname session-file) "devops-reports")
-              target (path/join directory (str call-id ".edn"))]
+                         (.getSessionFile manager))
+          directory (cond
+                      (text? receipt-dir) receipt-dir
+                      (text? session-file) (path/join (path/dirname session-file) "devops-reports")
+                      :else nil)]
+      (when (and (text? call-id) (text? directory))
+        (let [target (path/join directory (str call-id ".edn"))]
           (await (.mkdir fs directory #js {:recursive true}))
           (await (atomic/write-edn-atomic!
                    target
@@ -1688,11 +1871,9 @@
 
 (defn- ^:async run-devops-port [args]
   (let [injected (get-in @state [:options :run-devops])
-        global (.-__herdRunDevops js/globalThis)
         subagent (s5-subagent-port)]
     (cond
       (fn? injected) (injected args)
-      (and (nil? subagent) (fn? global)) (global args)
       (nil? subagent)
       (do
         (record-health! {:entry "system.devops"
@@ -1710,13 +1891,21 @@
             artifacts-dir (path/join root ".herd" "artifacts" slug (str "PlanDevOps-" short-id))
             request {:role "Plan DevOps"
                      :name (str "PlanDevOps-" slug "-" short-id)
-                     :prompt (build-devops-prompt args call-id)
+                     :prompt (build-devops-prompt args call-id artifacts-dir)
                      :cwd root
                      :artifacts-dir artifacts-dir
                      :signal (:signal args)}
             started (try
-                      [:ok (js/Promise.resolve (subagent request))]
-                      (catch :default error [:error error]))]
+                      [:ok (subagent request)]
+                      (catch :default error
+                        (try
+                          (let [fs ((.-__herdRequire js/globalThis) "node:fs")]
+                            (.appendFileSync fs "/tmp/herd-devops-start-error.log"
+                                             (str error "\n"
+                                                  (when (instance? js/Error error) (.-stack error))
+                                                  "\n" "---" "\n")))
+                          (catch :default _ nil))
+                        [:error error]))]
         (if (= :error (first started))
           (do
             (record-health! {:entry "system.devops"
@@ -1813,8 +2002,8 @@
       (let [tool (keyword (:name definition))
             wrapped (assoc definition
                            :execute (bridge-execute-tool
-                                      (fn [call-id params _signal _on-update ctx]
-                                        (gate-execute! pi service deps tool params ctx call-id))))]
+                                      (fn [call-id params signal _on-update ctx]
+                                        (gate-execute! pi service deps tool params signal ctx call-id))))]
         (register-tool! pi wrapped)))
     service))
 
@@ -1872,59 +2061,100 @@
                                   [])))
                 resolved))))))))
 
-(defn- board-execute! [tool params ctx call-id]
-  (let [root (resolve-root ctx)
-        slug (get-in @state [:sessions (session-key ctx) :slug])
-        role (get-in @state [:sessions (session-key ctx) :role-token :role])
-        actor-id (agent-id ctx)
+(defn- ^:async sync-board-station! [handle]
+  (let [disk-board (await (swarm-store/read-board handle))]
+    (when (swarm-model/board-state? disk-board)
+      (await (ensure-board-station! handle disk-board)))))
+
+(defn- sync-actor-session! [key actor-id board]
+  (when (and key actor-id (swarm-model/board-state? board))
+    (let [holder-id (get-in board [:token-slot :holder-id])
+          actor-rec (get-in board [:actors actor-id])
+          life (:life-state actor-rec)
+          holder? (and (= actor-id holder-id) (= :alive life))]
+      (cond
+        (= :dead life)
+        (swap! state update-in [:sessions key]
+               assoc :actor-dead? true :holder? false)
+
+        holder?
+        (swap! state update-in [:sessions key]
+               (fn [s]
+                 (->
+                   s
+                   (assoc :holder? true)
+                   (assoc-in [:role-token :role] "Swarm Holder"))))
+
+        :else
+        (swap! state update-in [:sessions key]
+               (fn [s]
+                 (->
+                   s
+                   (assoc :holder? false)
+                   (cond-> (= "Swarm Holder" (get-in s [:role-token :role]))
+                     (assoc-in [:role-token :role] "Swarm Worker")))))))))
+
+(defn- ^:async board-ticket! [tool params ctx call-id]
+  (let [key (session-key ctx)
+        root (resolve-root ctx)
+        slug (or (get-in @state [:sessions key :slug])
+                 (when (subagent? ctx) (await (ensure-focus! ctx root))))
+        role (get-in @state [:sessions key :role-token :role])
+        actor-id (or (get-in @state [:sessions key :bound-agent-id])
+                     (agent-id ctx))
         request (js->clj (or params #js {}) :keywordize-keys true)
         command (swarm-tools/tool-command tool request)
         request-id (or (:request_id request) call-id)
-        turn-id (get-in @state [:sessions (session-key ctx) :turn-id])
+        turn-id (get-in @state [:sessions key :turn-id])
         handle (when (and (text? root) (text? slug))
-                 (swarm-store/open-board root slug))
-        board-station (when handle (get @board-stations (:board-path handle)))]
+                 (swarm-store/open-board root slug))]
     (cond
       (not (subagent? ctx))
-      (js/Promise.resolve
-        (do
-          (record-health! {:entry "system.role"
-                           :status "degraded"
-                           :reason "board tools need a subagent identity"
-                           :tool (name tool)})
-          (gate-failure :CAPABILITY_DENIED
-                        "board tools are available only to swarm subagents"
-                        {:tool (name tool) :reason :agent-identity-missing})))
+      (do
+        (record-health! {:entry "system.role"
+                         :status "degraded"
+                         :reason "board tools need a subagent identity"
+                         :tool (name tool)})
+        (gate-failure :CAPABILITY_DENIED
+                      "board tools are available only to swarm subagents"
+                      {:tool (name tool) :reason :agent-identity-missing}))
 
       (not (contains? #{"Swarm Worker" "Swarm Holder"} role))
-      (js/Promise.resolve
-        (gate-failure :CAPABILITY_DENIED
-                      "the current role may not call board tools"
-                      {:role role :allowed ["Swarm Worker" "Swarm Holder"]}))
+      (gate-failure :CAPABILITY_DENIED
+                    "the current role may not call board tools"
+                    {:role role :allowed ["Swarm Worker" "Swarm Holder"]})
 
       (nil? slug)
-      (js/Promise.resolve
-        (gate-failure :STAGE_MISMATCH
-                      "the session mission focus is not bound"
-                      {:field :slug :reason :session-slug-missing}))
+      (gate-failure :STAGE_MISMATCH
+                    "the session mission focus is not bound"
+                    {:field :slug :reason :session-slug-missing})
 
       (nil? command)
-      (js/Promise.resolve
-        (gate-failure :INVALID_ARGUMENT "unknown board tool" {:tool tool}))
-
-      (nil? board-station)
-      (js/Promise.resolve
-        (gate-failure :STAGE_MISMATCH
-                      "the board station is not ready; ensure the S5 board first"
-                      {:field :board :reason :station-missing}))
+      (gate-failure :INVALID_ARGUMENT "unknown board tool" {:tool tool})
 
       :else
-      (let [actor {:agent-id actor-id
-                   :role (if (= role "Swarm Holder") :holder :normal)}]
-        (p/let [result (if (= :take-or-die (:type command))
-                         (take-or-die! board-station command actor request-id turn-id)
-                         (board-command! board-station command actor request-id turn-id))]
-          (board-tool-result result))))))
+      (let [board-station (when handle (await (sync-board-station! handle)))]
+        (if (nil? board-station)
+          (gate-failure :STAGE_MISMATCH
+                        "the board station is not ready; ensure the S5 board first"
+                        {:field :board :reason :station-missing})
+          (let [current-board (:board (station/snapshot board-station))
+                holder? (or (= role "Swarm Holder")
+                            (and (= actor-id (get-in current-board [:token-slot :holder-id]))
+                                 (= :alive (get-in current-board [:actors actor-id :life-state]))))
+                actor {:agent-id actor-id
+                       :role (if holder? :holder :normal)}
+                result (await (if (= :take-or-die (:type command))
+                                (take-or-die! board-station command actor request-id turn-id)
+                                (board-command! board-station command actor request-id turn-id)))
+                formatted (board-tool-result result)]
+            (when (swarm-model/board-state? (:state formatted))
+              (sync-actor-session! key actor-id (:state formatted)))
+            formatted))))))
+
+(defn- board-execute! [tool params ctx call-id]
+  (native-tools/with-context ctx
+    (fn [] (board-ticket! tool params ctx call-id))))
 
 (defn- register-board-tools! [pi]
   (doseq [definition (swarm-tools/tool-definitions {})]
@@ -1947,7 +2177,8 @@
 (declare audit-ticket!)
 
 (defn- audit-execute! [params ctx _call-id]
-  (audit-ticket! params ctx _call-id))
+  (native-tools/with-context ctx
+    (fn [] (audit-ticket! params ctx _call-id))))
 
 (defn- ^:async audit-ticket! [params ctx _call-id]
   (let [request (js->clj (or params #js {}) :keywordize-keys true)
@@ -2086,6 +2317,14 @@
             (do
               (swap! state assoc-in [:sessions key :mode] :herd)
               (await (apply-surface! pi ctx))
+              (when (and (fn? (.-sendUserMessage pi)) (pos? (count seed)))
+                (try
+                  (.sendUserMessage pi seed #js {:expandPromptTemplates false})
+                  (catch :default error
+                    (record-health! {:entry "system.herd"
+                                     :status "degraded"
+                                     :reason "sendUserMessage failed"
+                                     :error (str error)}))))
               (notify! ctx "已切回 herd 模式。"))
             (notify! ctx (str "模式切换失败："
                               (or (get-in written [:error :message]) "unknown")))))
@@ -2097,6 +2336,14 @@
             (do
               (swap! state assoc-in [:sessions key :mode] :devops)
               (await (apply-surface! pi ctx))
+              (when (and (fn? (.-sendUserMessage pi)) (pos? (count seed)))
+                (try
+                  (.sendUserMessage pi seed #js {:expandPromptTemplates false})
+                  (catch :default error
+                    (record-health! {:entry "system.herd"
+                                     :status "degraded"
+                                     :reason "sendUserMessage failed"
+                                     :error (str error)}))))
               (notify! ctx "已切到 devops 模式；任务保留。"))
             (notify! ctx (str "模式切换失败："
                               (or (get-in written [:error :message]) "unknown")))))))
@@ -2143,6 +2390,10 @@
                        :reason "host extension API lacks registerCommand"})
       false)))
 
+(def ^:private blocked-host-tools
+  #{"read" "write" "edit" "apply_patch" "ast_edit" "ast_grep"
+    "bash" "exec" "eval" "glob" "grep" "find"})
+
 (defn- register-hooks! [pi]
   (cond
     (.has registered-hook-pis pi)
@@ -2155,6 +2406,11 @@
       (.on pi "agent_end"
            (fn [event ctx]
              (js/Promise.resolve (on-agent-end! pi event ctx))))
+      (.on pi "tool_call"
+           (fn [event _ctx]
+             (when (contains? blocked-host-tools (.-toolName event))
+               #js {:block true
+                    :reason "Host read/write/shell tools are hidden; use the clj_* sandbox."})))
       (.on pi "tool_execution_end"
            (fn [event ctx]
              (note-tool-end! pi event ctx)

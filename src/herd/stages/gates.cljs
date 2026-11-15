@@ -13,7 +13,7 @@
    [herd.ui :as ui]
    [herd.util.atomic-write :as atomic]))
 
-(def ^:private slug-pattern #"^[a-z0-9][a-z0-9-]{0,63}$")
+(def ^:private slug-pattern #"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 (def ^:private specific-pattern #"[A-Za-z0-9\u4e00-\u9fff]")
 
 (def ^:private attach-stages
@@ -55,7 +55,7 @@
 
 (defn- resolve-slug [deps options]
   (let [value (or (:slug options) (:slug deps))]
-    (when (and (string? value) (re-matches slug-pattern value)) value)))
+    (when (and (string? value) (re-matches slug-pattern value) (not (string/includes? value ".."))) value)))
 
 (defn- now-of [deps]
   (if (fn? (:now deps))

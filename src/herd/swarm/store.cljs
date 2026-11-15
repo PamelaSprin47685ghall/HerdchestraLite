@@ -4,8 +4,8 @@
    ["node:fs/promises" :as fs]
    ["node:path" :as path]
    [clojure.string :as string]
-   [herd.swarm.edn :as edn]
    [herd.lock-daemon :as lock-daemon]
+   [herd.swarm.edn :as edn]
    [herd.swarm.model :as model]
    [herd.ufss :as ufss]
    [herd.util.atomic-write :as atomic]
@@ -90,7 +90,7 @@
             hash (subs (.digest (.update (.createHash crypto "sha256") resolved) "hex") 0 16)
             platform (.-platform js/process)]
         (cond
-          (= platform "win32") (str "\\\\.\\pipe\\herd-lock-" hash)
+          (= platform "win32") (str #"\\.\pipe\herd-lock-"# hash)
           (= platform "linux") (str (char 0) "herd-lock-" hash)
           :else (path/join (.tmpdir os) (str "herd-lock-" hash ".sock"))))))
 
@@ -214,7 +214,7 @@
                                  (-> (write-board-file! board-path board)
                                      (.then (fn [_] (ensure-file! events-path)))
                                      (.then (fn [_] (checkpoint! checkpoint-path board-path
-                                                                  events-path board)))
+                                                      events-path board)))
                                      (.then (fn [_] board)))))))))))))))
 
 (defn create-file-store [options]
@@ -255,9 +255,9 @@
          board-path (or (:board-path options) (path/join directory "board.edn"))
          events-path (or (:events-path options) (path/join directory "events.jsonl"))
          checkpoint-path (or (:checkpoint-path options) (path/join directory "checkpoint.edn"))
-         lock-path (when (= mode :swarm)
+         lock-path (when (and (= mode :swarm) (not (false? (:lock options))))
                      (or (:lock-path options)
-                         nil))
+                         (path/join directory "board.lock")))
          store (or (:store options)
                    (create-file-store {:board-path board-path
                                        :events-path events-path
@@ -301,28 +301,39 @@
       (await ((:initialize store) (or board (model/initial-board {:mode (:mode handle)})))))))
 
 (defn ^:async commit-board!
-  "Persist a board already transitioned by the station. The station owns the
+  """
+Persist a board already transitioned by the station. The station owns the
   in-memory state; this function owns the only durable write. A failure after
   the board file is renamed is marked uncertain so the station blocks further
-  writes until resync."
+  writes until resync.
+"""
   [handle board events]
   (await
-   (with-board-lock
-     (:lock-path handle)
-     (fn []
-       (-> (write-board-file! (:board-path handle) board)
-           (.then
-            (fn [_]
-              (-> (append-events! (:events-path handle) events)
-                  (.then (fn [_]
-                           (checkpoint! (:checkpoint-path handle)
-                                        (:board-path handle)
-                                        (:events-path handle)
-                                        board)))
-                  (.then (fn [_] {:ok true}))
-                  (.catch (fn [error]
-                            (throw (ex-info
-                                    (or (ex-message error) (str error))
-                                    (assoc (or (ex-data error) {})
-                                           :uncertain true)))))))))))))
-
+    (with-board-lock
+      (:lock-path handle)
+      (fn []
+        (-> (read-board-file (:board-path handle))
+            (.then
+              (fn [detail]
+                (when (and (:state detail)
+                           (> (or (:board-version (:state detail)) -1)
+                              (or (:board-version board) 0)))
+                  (throw (ex-info "board version on disk is newer than planned board"
+                                  {:code :BOARD_CONFLICT
+                                   :disk-version (:board-version (:state detail))
+                                   :planned-version (:board-version board)})))
+                (write-board-file! (:board-path handle) board)))
+            (.then
+              (fn [_]
+                (-> (append-events! (:events-path handle) events)
+                    (.then (fn [_]
+                             (checkpoint! (:checkpoint-path handle)
+                                          (:board-path handle)
+                                          (:events-path handle)
+                                          board)))
+                    (.then (fn [_] {:ok true}))
+                    (.catch (fn [error]
+                              (throw (ex-info
+                                       (or (ex-message error) (str error))
+                                       (assoc (or (ex-data error) {})
+                                              :uncertain true)))))))))))))

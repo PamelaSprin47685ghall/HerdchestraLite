@@ -23,31 +23,25 @@
   (-> (fsp/writeFile (aget params "path") (aget params "content") "utf8")
       (.then (fn [_] #js {:content #js []}))))
 
-(defn- native-runner []
-  #js {:getRunner
-       (fn []
-         #js {:hasNativeTool (fn [name] (or (= name "read") (= name "write")))
-              :invokeNativeTool
-              (fn [name params]
-                (if (= name "read")
-                  (native-read params)
-                  (native-write params)))})})
+(defn- native-tools []
+  #js {:available (fn [_name _context] true)
+       :invoke (fn [name params _options _context]
+                 (if (= name "read")
+                   (native-read params)
+                   (native-write params)))})
 
-(defn- failing-runner [f2]
-  #js {:getRunner
-       (fn []
-         #js {:hasNativeTool
-              (fn [name] (or (= name "read") (= name "write")))
-              :invokeNativeTool
-              (fn [name params]
-                (if (and (= name "write") (= (aget params "path") f2))
-                  (js/Promise.reject (js/Error. "simulated crash on second write"))
-                  (if (= name "read")
-                    (native-read params)
-                    (native-write params))))})})
+(defn- failing-tools [f2]
+  #js {:available (fn [_name _context] true)
+       :invoke
+       (fn [name params _options _context]
+         (if (and (= name "write") (= (aget params "path") f2))
+           (js/Promise.reject (js/Error. "simulated crash on second write"))
+           (if (= name "read")
+             (native-read params)
+             (native-write params))))})
 
 (set! (.-__herdLockRoot js/globalThis) lock-root)
-(set! (.-__herdNative js/globalThis) (native-runner))
+(set! (.-__herdNativeTools js/globalThis) (native-tools))
 
 (defn- error-text [error]
   (or (:code (ex-data error))
@@ -274,13 +268,13 @@
           (t/to-be (:exit res) 0))))
     (t/it "F13: keeps first write and leaves third unwritten on mid-sequence native write failure"
       (fn []
-        (let [orig (.-__herdNative js/globalThis)]
+        (let [orig (.-__herdNativeTools js/globalThis)]
           (try
             (p/let [root (make-root)
                     f1 (path/join root "f13-1.txt")
                     f2 (path/join root "f13-2.txt")
                     f3 (path/join root "f13-3.txt")]
-              (set! (.-__herdNative js/globalThis) (failing-runner f2))
+              (set! (.-__herdNativeTools js/globalThis) (failing-tools f2))
               (p/let [res (-> (sandbox/write {:path f1 :content "first"})
                               (.then (fn [_] (sandbox/write {:path f2 :content "second"})))
                               (.then (fn [_] (sandbox/write {:path f3 :content "third"})))
@@ -294,7 +288,7 @@
                 (t/to-be t2 "missing")
                 (t/to-be t3 "missing")))
             (finally
-              (set! (.-__herdNative js/globalThis) orig))))))
+              (set! (.-__herdNativeTools js/globalThis) orig))))))
     (t/it "F14: documents best-effort boundary when external writer mutates file outside protocol"
       (fn []
         (p/let [root (make-root)

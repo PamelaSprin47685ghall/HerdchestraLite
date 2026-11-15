@@ -35,17 +35,16 @@
 (defn- ensure! []
   (set! (.-__pi js/globalThis) pi)
   (set! (.-__herdTui js/globalThis) #js {:highlightCode (fn [code] (str/split-lines code))})
-  (set! (.-__herdNative js/globalThis)
-        #js {:getRunner (fn []
-                          #js {:hasNativeTool (fn [name] (or (= name "read") (= name "write")))
-                               :invokeNativeTool
-                               (fn [name params]
-                                 (if (= name "read")
-                                   (js/Promise.resolve
-                                    #js {:content #js [#js {:type "text"
-                                                            :text (.readFileSync fs (aget params "path") "utf8")}]})
-                                   (do (.writeFileSync fs (aget params "path") (aget params "content") "utf8")
-                                       (js/Promise.resolve #js {:content #js []}))))})})
+  (set! (.-__herdNativeTools js/globalThis)
+        #js {:available (fn [_name _context] true)
+             :invoke
+             (fn [name params _options _context]
+               (if (= name "read")
+                 (js/Promise.resolve
+                  #js {:content #js [#js {:type "text"
+                                          :text (.readFileSync fs (aget params "path") "utf8")}]})
+                 (do (.writeFileSync fs (aget params "path") (aget params "content") "utf8")
+                     (js/Promise.resolve #js {:content #js []}))))})
   ((.-__herdEnsureActivated js/globalThis)))
 
 (defn- tool [name] (.get (aget pi "tools") name))

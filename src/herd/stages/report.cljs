@@ -3,7 +3,7 @@
    [clojure.string :as string]
    [herd.util.atomic-write :as atomic]))
 
-(def ^:private slug-pattern #"^[a-z0-9][a-z0-9-]{0,63}$")
+(def ^:private slug-pattern #"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 (defn- text? [value]
   (and (string? value) (pos? (count (string/trim value)))))
@@ -203,7 +203,7 @@
         settings (or options {})]
     (when-not (text? root)
       (swap! errors conj (failure :INVALID_ARGUMENT "root must be a non-empty string" {:field :root})))
-    (when-not (and (string? slug) (re-matches slug-pattern slug))
+    (when-not (and (string? slug) (re-matches slug-pattern slug) (not (string/includes? slug "..")))
       (swap! errors conj (failure :INVALID_ARGUMENT "slug must match [a-z0-9][a-z0-9-]{0,63}" {:field :slug})))
     (when-not (map? result)
       (swap! errors conj (failure :INVALID_ARGUMENT "result must be an object" {:field :result})))

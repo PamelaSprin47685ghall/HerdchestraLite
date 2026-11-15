@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as formatter from "@chrisoakman/standard-clojure-style";
+import { installRunnerCapture } from "./host/runner-capture.js";
 
 const entryPath = fileURLToPath(import.meta.url.replace(/[?#].*$/, ""));
 const require = createRequire(entryPath);
@@ -36,9 +37,7 @@ if (daemonIndex >= 0 && process.argv[daemonIndex + 1]) {
 		cliVersion: process.env.OMP_VERSION || codingAgent.VERSION,
 		runtimePackageVersion: codingAgent.VERSION,
 	};
-	globalThis.__herdRunnerModule = await import("@oh-my-pi/pi-coding-agent/extensibility/extensions/runner").catch(
-		() => null,
-	);
+	globalThis.__herdNativeTools = installRunnerCapture(codingAgent.AgentSession);
 	await nbb.loadFile(join(globalThis.__herdPluginSrc, "herd", "bootstrap.cljs"));
 	entryActivate = await nbb.loadString("(fn [pi] (herd.entry/activate pi))");
 }

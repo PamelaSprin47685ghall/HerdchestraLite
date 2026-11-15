@@ -2,6 +2,7 @@
   (:require
    ["node:child_process" :as cp]
    ["node:path" :as path]
+   [bridge.native-tools :as native-tools]
    [clojure.string :as string]
    [herd.clock :as clock]
    [herd.lock-daemon :as lock-daemon]
@@ -337,23 +338,8 @@
                             :limit max-read-bytes}))
                 (.readFile fs-promises absolute "utf8"))))))))
 
-(defn- native-text [result]
-  (cond
-    (string? result) result
-    (and result (.-content result))
-    (->> (array-seq (.-content result))
-         (keep (fn [block] (when (= "text" (.-type block)) (.-text block))))
-         (string/join ""))
-    :else (str result)))
-
 (defn read [{:keys [path]}]
-  (let [native (.-__herdNative js/globalThis)
-        runner (when native ((.-getRunner native)))]
-    (when-not (and runner (.hasNativeTool runner "read"))
-      (throw (ex-info "host native read is unavailable"
-                      {:code :HOST_API_MISMATCH :path path})))
-    (-> (.invokeNativeTool runner "read" #js {:path path} #js {})
-        (.then native-text))))
+  (native-tools/read! path))
 
 (defonce budgets (atom {}))
 
@@ -442,21 +428,14 @@ Reject when the file no longer matches the stamp captured by a read. Async
       (fn []
         (with-lock
           (fn []
-            (let [absolute (resolve-path path)
-                  native (.-__herdNative js/globalThis)
-                  runner (when native ((.-getRunner native)))]
-              (when-not (and runner (.hasNativeTool runner "write"))
-                (throw (ex-info "host native write is unavailable"
-                                {:code :HOST_API_MISMATCH :path path})))
+            (let [absolute (resolve-path path)]
               (-> (check-stamp! absolute (or (:expected-stamp request) (:__expectedStamp request)))
                   (.then
                     (fn [_]
                       ;; Do not create missing parents here: a write into a
                       ;; directory removed earlier must stay blocked instead of
                       ;; resurrecting the path.
-                      (.invokeNativeTool runner "write"
-                                         #js {:path absolute :content content}
-                                         #js {})))
+                      (native-tools/write! absolute content)))
                   (.then (fn [_] nil))))))))))
 
 (defn mkdir [{:keys [path]}]
