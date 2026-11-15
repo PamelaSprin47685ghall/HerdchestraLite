@@ -16,13 +16,6 @@
    "Swarm Holder" board-tools
    "Manual Auditor" ["attach_case_audit"]})
 
-(def ^:private role-system-prompts
-  {"Plan DevOps" "You are the Plan DevOps subagent for Herdchestra Lite. Inspect the real workspace read-only with clj_devops and finish exactly once through submit_devops_report."
-   "Reviewer" "You are the Herdchestra Lite S5 Reviewer. Inspect the frozen contract documents and the real single workspace, then finish with exactly one review call."
-   "Swarm Worker" "You are a Herdchestra Lite Swarm Worker. Coordinate only through the shared board tools and the write gate; never wait for a human."
-   "Swarm Holder" "You are a Herdchestra Lite Swarm Holder. Coordinate only through the shared board tools and the write gate; never wait for a human."
-   "Manual Auditor" "You are a Herdchestra Lite Manual Auditor. Audit exactly one CASE in the isolated copy and finish exactly once through attach_case_audit."})
-
 (def ^:private role-line #"^\[HERD_ROLE:[^\]]*]\r?\n?")
 
 (defonce latest-ctx (atom nil))
@@ -48,7 +41,6 @@
 (defn- nbb-module [] (.-__herdNbb js/globalThis))
 (defn- node-require [name] ((.-__herdRequire js/globalThis) name))
 (defn- process-env [] (.-env (.-process js/globalThis)))
-(defn- process-cwd [] (.cwd (.-process js/globalThis)))
 (defn- performance-now [] (.now (.-performance js/globalThis)))
 
 (defn trace-enabled?
@@ -93,18 +85,6 @@
 (defn- trace-on [] (when (trace-enabled?) true))
 (defn- ms-since [started] (/ (js/Math.round (* (- (performance-now) started) 1000)) 1000))
 
-(defn- ^:async traced [trace phase f]
-  (if (nil? trace)
-    (await (f))
-    (let [started (performance-now)]
-      (try
-        (let [value (await (f))]
-          (trace-boot-event "boot-phase" #js {:phase phase :ms (ms-since started)})
-          value)
-        (catch :default error
-          (trace-boot-event "boot-phase" #js {:phase phase :ms (ms-since started)})
-          (throw error))))))
-
 (defn- boot-state []
   (let [key (js/Symbol.for "herdchestra.boot.v1")
         existing (aget js/globalThis key)]
@@ -137,12 +117,6 @@
                 "")]
     (str/replace (str raw) role-line "")))
 
-(defn- request-system-prompt [request]
-  (let [explicit (option-of request "systemPrompt" "system-prompt")]
-    (if (and (string? explicit) (pos? (count (str/trim explicit))))
-      explicit
-      (get role-system-prompts (aget request "role")))))
-
 (defn- request-model [request]
   (let [explicit (option-of request "model" "model")
         role (aget request "role")
@@ -164,35 +138,6 @@
       explicit
       (when-let [surface (get role-tools (aget request "role"))]
         (vec surface)))))
-
-(defn- request-artifacts-dir [request]
-  (let [value (option-of request "artifactsDir" "artifacts-dir")]
-    (when (and (string? value) (pos? (count value))) value)))
-
-(defn- request-session-file [request]
-  (let [value (option-of request "sessionFile" "session-file")]
-    (when (and (string? value) (pos? (count value))) value)))
-
-(defn- outcome-payload [outcome role]
-  (let [result (when (object-like? outcome) (.-result outcome))
-        result-markdown (cond
-                          (string? result) result
-                          (and result (string? (.-result result))) (.-result result)
-                          (and result (string? (.-text result))) (.-text result)
-                          (and result (string? (.-message result))) (.-message result)
-                          (and result (string? (.-output result))) (.-output result)
-                          :else "")
-        ok (true? (when outcome (.-ok outcome)))
-        error (when-not ok (message-of (or (.-error outcome) "subagent failed")))]
-    #js {:ok ok
-         :role role
-         :agentId (when outcome (.-agentId outcome))
-         :resultMarkdown result-markdown
-         :artifactsDir (when (and outcome (.-artifacts outcome)) (.-dir (.-artifacts outcome)))
-         :sessionFile (when (and outcome (.-artifacts outcome)) (.-sessionFile (.-artifacts outcome)))
-         :error error
-         :code (when-not ok (or (when (and outcome (.-error outcome)) (.-code (.-error outcome))) ":AGENT_SPAWN_FAILED"))
-         :resolvedModel (when outcome (.-resolvedModel outcome))}))
 
 (defn ^:async run-subagent [request]
   (try
