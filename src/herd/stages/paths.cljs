@@ -29,12 +29,5 @@
     (when (some #(= text (name %)) (keys stage-documents))
       (keyword text))))
 
-(defn stage-document-path [slug stage]
-  (let [id (normalize-document-stage stage)]
-    (when-not id
-      (throw (ex-info "unknown stage document"
-                      {:code :INVALID_ARGUMENT :stage stage})))
-    (str "herd/" slug "/" (get stage-documents id))))
-
 (defn s2-cases-path [slug]
   (str "herd/" slug "/s2-cases.edn"))

@@ -775,9 +775,6 @@ Start all K auditors concurrently from already validated case specs.
 (defn- batch-key [root slug]
   [(or root "") (or slug "")])
 
-(defn reset-batch-state! [root slug]
-  (swap! batch-records dissoc (batch-key root slug)))
-
 (defn- valid-batch-record? [value]
   (and (map? value)
        (text? (:batch-id value))

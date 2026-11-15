@@ -235,29 +235,6 @@
                      (str/join newline-char)))]
     (str/join newline-char (remove str/blank? [base calls]))))
 
-(defn- dictionary-text [messages]
-  (->> (array-seq messages)
-       (map message-text)
-       (remove str/blank?)
-       (str/join newline-char)))
-
-(defn- message-call-ids [message]
-  (let [direct (cond-> []
-                 (.-toolCallId message) (conj (.-toolCallId message))
-                 (.-tool_call_id message) (conj (.-tool_call_id message)))
-        blocks (.-content message)
-        calls (let [tcs (or (.-tool_calls message) (.-toolCalls message))]
-                (if (array? tcs)
-                  (keep (fn [tc] (or (.-id tc) (.-toolCallId tc))) (array-seq tcs))
-                  []))
-        block-ids (if (array? blocks)
-                    (keep (fn [block]
-                            (when (= "toolCall" (.-type block))
-                              (or (.-toolCallId block) (.-id block))))
-                          (array-seq blocks))
-                    [])]
-    (concat direct block-ids calls)))
-
 (defn- ^:async handoff-execute [_tool-call-id params _signal _on-update ctx]
   (let [markdown (.-markdown params)]
     (when-not (and (string? markdown) (pos? (count (str/trim markdown))))

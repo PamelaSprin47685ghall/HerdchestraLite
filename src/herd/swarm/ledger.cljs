@@ -6,13 +6,6 @@
 (defn is-attach-ready [board]
   (boolean (:attach-ready board)))
 
-(defn review-ledger [board]
-  (let [tasks (vals (:tasks board {}))]
-    {:summary (:review-summary board)
-     :findings (mapv (fn [task] {:key (:key task) :value (:value task)}) tasks)
-     :empty (empty? tasks)
-     :attach-ready (is-attach-ready board)}))
-
 (defn- set-plan-parent [board task parent-key]
   (let [previous (:parent-key task)]
     (if (= previous parent-key)

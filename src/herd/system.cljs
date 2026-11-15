@@ -163,13 +163,6 @@
   (when (and value (fn? (.-catch value)))
     (.catch value (fn [_] nil))))
 
-(defn- enqueue! [tail-atom f]
-  (let [run (-> @tail-atom
-                (.then (fn [_] true) (fn [_] true))
-                (.then (fn [_] (f))))]
-    (reset! tail-atom (-> run (.then (fn [_] nil) (fn [_] nil))))
-    run))
-
 (defn- agent-of [ctx]
   (when ctx (.-agent ctx)))
 
@@ -994,12 +987,6 @@
                 (attach-denied-result result))
               (awaiting-receipt slug (or (:reason (second decision)) :host-pending))))))
       (await ((:attach! service) :attach_brainstorm request options)))))
-
-(defn pop-pending-barrier! [key]
-  (let [barrier (get-in @state [:sessions key :pending-barrier])]
-    (when barrier
-      (swap! state update-in [:sessions key] dissoc :pending-barrier))
-    barrier))
 
 (declare gate-ticket!)
 
