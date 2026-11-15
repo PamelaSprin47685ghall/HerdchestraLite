@@ -43,7 +43,7 @@ omp plugin link /absolute/path/to/HerdchestraLite
 omp plugin list --json
 ```
 
-之后启动 `omp`。当前已在 `omp/18.20.2` 完成扩展加载冒烟：`omp -p '只回复 ok'` stdout 为 `Working... ok`，无 `Failed to load extension`；入口 `src/clj-main.mjs` 49 行。完整 S1→S5 仍未重跑；16.x/17.x 未实测。
+之后启动 `omp`。当前已在 `omp/18.20.2` 完成扩展加载冒烟：`omp -p '只回复 ok'` stdout 为 `Working... ok`，无 `Failed to load extension`；入口 `src/clj-main.mjs` 48 行。完整 S1→S5 仍未重跑；16.x/17.x 未实测。
 
 ## 使用
 

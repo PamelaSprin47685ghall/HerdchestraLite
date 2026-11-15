@@ -320,5 +320,5 @@ clean-break 不删除、不改写以下既有资料：
 ## 2026-11-15 真实 omp 扩展加载修复
 
 - **症状**：`omp/18.20.2` 加载已链接插件时依次报 `Unable to resolve symbol: pp/pprint`、`Cannot find module '@chrisoakman/standard-clojure-style'`、`Extension does not export a valid factory function`、`Unable to resolve symbol: herd.entry/activate`、`Unable to resolve symbol: herd.errors/herd-error` 与 `fact`。
-- **修复**：入口改为从去掉 query/hash 的真实文件路径 `createRequire` 加载插件自带 nbb，formatter 保持宿主静态 import；导出改为默认 async 工厂包装 `herd.entry/activate`；bootstrap 加载 `native_runner` 与 `entry`；`entry` boot-body 先 require `herd.errors`/`herd.host`/`bridge.command-host`/`bridge.hack-context`/`herd.main`；`herd.host` 修复 `fact` 自引用与无 UI/无 sessionManager 的 ctx 守卫。入口压缩到 49 行。
+- **修复**：入口改为从去掉 query/hash 的真实文件路径 `createRequire` 加载插件自带 nbb，formatter 保持宿主静态 import；导出改为默认 async 工厂包装 `herd.entry/activate`；bootstrap 加载 `native_runner` 与 `entry`；`entry` boot-body 先 require `herd.errors`/`herd.host`/`bridge.command-host`/`bridge.hack-context`/`herd.main`；`herd.host` 修复 `fact` 自引用与无 UI/无 sessionManager 的 ctx 守卫。入口压缩到 48 行。
 - **证据**：`omp/18.20.2` + 已链接本工作区，`omp -p '只回复 ok'` stdout 为 `Working... ok`，无 `Failed to load extension`；日志 `/tmp/herd-omp-smoke12.log`。完整 S1→S5 与 K 路审计未重跑。
