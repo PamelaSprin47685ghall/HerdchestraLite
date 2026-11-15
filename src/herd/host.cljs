@@ -49,29 +49,30 @@
   ([pi context observed]
    (let [api (if (object-like? pi) pi #js {})
          ctx (when (object-like? context) context)
+         ctx-ui (when ctx (.-ui ctx))
+         ctx-session-manager (when ctx (.-sessionManager ctx))
          facts (if (object-like? observed) observed #js {})
          unverified (atom [])
          add-unverified! (fn [name] (swap! unverified conj name))
-         fact (fn
-                ([name] (fact name false))
-                ([name mark-missing]
-                 (let [value (aget facts name)]
-                   (cond
-                     (true? value) true
-                     (some? value) (do (add-unverified! name) false)
-                     mark-missing (do (add-unverified! name) false)
-                     :else false))))
+         fact (fn [name & [mark-missing]]
+                (let [value (aget facts name)
+                      mark-missing? (boolean mark-missing)]
+                  (cond
+                    (true? value) true
+                    (some? value) (do (add-unverified! name) false)
+                    mark-missing? (do (add-unverified! name) false)
+                    :else false)))
          observed-ctx-agent (and ctx (some? (.-agent ctx)))
          has-ctx-agent (or (fact "hasCtxAgent") observed-ctx-agent)
          _ (when (and (nil? (aget facts "hasCtxAgent")) (nil? ctx))
              (add-unverified! "hasCtxAgent"))
-         has-set-widget (and ctx (fn? (.-setWidget (.-ui ctx))))
-         has-on-terminal-input (and ctx (fn? (.-onTerminalInput (.-ui ctx))))
+         has-set-widget (and ctx-ui (fn? (.-setWidget ctx-ui)))
+         has-on-terminal-input (and ctx-ui (fn? (.-onTerminalInput ctx-ui)))
          _ (when (nil? ctx)
              (add-unverified! "hasSetWidget")
              (add-unverified! "hasOnTerminalInput"))
-         has-artifacts-dir (and ctx (fn? (.-getArtifactsDir (.-sessionManager ctx))))
-         has-session-file (and ctx (fn? (.-getSessionFile (.-sessionManager ctx))))
+         has-artifacts-dir (and ctx-session-manager (fn? (.-getArtifactsDir ctx-session-manager)))
+         has-session-file (and ctx-session-manager (fn? (.-getSessionFile ctx-session-manager)))
          _ (when (nil? ctx)
              (add-unverified! "hasArtifactsDir")
              (add-unverified! "hasSessionFile"))
@@ -96,7 +97,7 @@
                     :hasBeforeSubagentSpawn (fact "hasBeforeSubagentSpawn" true)
                     :hasTurnEnd (fact "hasTurnEnd" true)
                     :hasSetWidget has-set-widget
-                    :hasHookWidget (and ctx (fn? (.-setHookWidget (.-ui ctx))))
+                    :hasHookWidget (and ctx-ui (fn? (.-setHookWidget ctx-ui)))
                     :hasOnTerminalInput has-on-terminal-input
                     :hasRegisterShortcut (fn? (.-registerShortcut api))
                     :hasSetActiveTools (fn? (.-setActiveTools api))

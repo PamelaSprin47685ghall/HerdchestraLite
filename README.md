@@ -6,13 +6,13 @@ Herdchestra Lite 是面向 `omp` 终端宿主的轻量多智能体研发插件�
 >
 > **TUI 看板面板已按用户 2026-11-14 指令整体移除。** `src/tui/*` 与旧 `src/main.mjs` 已从源码树删除；本轮 clean-break 以 `tests/cljs/architecture_test.cljs` 锁定 mjs 自举、门卫同步与旧入口清除；看板挂载路径已不存在。
 >
-> 真实 tmux 中的 S1→S5 手工验收尚未完成（`DEBT.md` 的运行时真实 S5 条目）；当前架构下没有 `herd/<sessionId>/s5-report.md` 的真实运行；`docs/manual-acceptance/clean-break/report.md` 是 clean-break 前的历史记录，不能作为 TicketStation 实现验收。不得把测试或冒烟写成验收。
+> 2026-11-15 已在 `omp/18.20.2` 完成扩展加载冒烟（`Working... ok`，无加载错误）；但真实 tmux 中的 S1→S5 手工验收尚未完成（`DEBT.md` 的运行时真实 S5 条目）；当前架构下没有 `herd/<sessionId>/s5-report.md` 的真实运行；`docs/manual-acceptance/clean-break/report.md` 是 clean-break 前的历史记录，不能作为 TicketStation 实现验收。不得把测试或冒烟写成验收。
 >
 > 唯一规格仍是根 `AGENTS.md`；未关闭缺口在 `DEBT.md`；架构装配与宿主/依赖实测在 `src/AGENTS.md`。本 README 只描述当前可核对的事实。
 
 ## 当前启用面
 
-- **清单入口**：`package.json` 的 `omp.extensions` / `pi.extensions` 都只声明 `./src/clj-main.mjs`。该入口启动 nbb，加载 `src/herd/bootstrap.cljs`，再由后者加载 `src/herd/main.cljs` 与 `src/herd/system.cljs`。并发激活共享 `globalThis.__herdBootPromise`，启动失败会清空该 promise 以便重试；`contextPis`、`activated-pis` 与 system 的 `installed-pis` 都是 per-pi `WeakSet`，同一进程里的多个 pi 各自只安装一次。
+- **清单入口**：`package.json` 的 `omp.extensions` / `pi.extensions` 都只声明 `./src/clj-main.mjs`。该入口从插件真实路径加载 nbb 与 formatter，加载 `src/herd/bootstrap.cljs`，再由后者加载 `src/herd/main.cljs` 与 `src/herd/system.cljs`。并发激活共享 `globalThis.__herdBootPromise`，启动失败会清空该 promise 以便重试；`contextPis`、`activated-pis` 与 system 的 `installed-pis` 都是 per-pi `WeakSet`，同一进程里的多个 pi 各自只安装一次。
 - **运行时依赖**：`nbb@1.6.215`、`@chrisoakman/standard-clojure-style@0.29.0`、`highlight.js@11.12.0`（仅内容语言识别；高亮仍由宿主 native 高亮器完成）。
 - **工具面（插件共注册 23 个）**：
   - 沙箱与上下文：`clj_devops`、`wait`、`handoff`。
@@ -43,7 +43,7 @@ omp plugin link /absolute/path/to/HerdchestraLite
 omp plugin list --json
 ```
 
-之后启动 `omp`。当前已在 `omp 18.20.0` 做过加载冒烟：`timeout 120 omp -p '只回复 ok'` exit 0、wall 5.1s。16.x/17.x 未实测（D5）。
+之后启动 `omp`。当前已在 `omp/18.20.2` 完成扩展加载冒烟：`omp -p '只回复 ok'` stdout 为 `Working... ok`，无 `Failed to load extension`；入口 `src/clj-main.mjs` 49 行。完整 S1→S5 仍未重跑；16.x/17.x 未实测。
 
 ## 使用
 

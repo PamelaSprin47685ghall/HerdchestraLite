@@ -202,6 +202,7 @@
 (defn- ^:async boot-body []
   (let [nbb (nbb-module)
         load-string (fn [source] (.loadString nbb source))
+        _ (await (load-string "(require 'herd.errors 'herd.host 'bridge.command-host 'bridge.hack-context 'herd.main)"))
         herd-error (await (load-string "herd.errors/herd-error"))
         is-herd-error (await (load-string "herd.errors/is-herd-error"))
         message-of-fn (await (load-string "herd.errors/message-of"))
