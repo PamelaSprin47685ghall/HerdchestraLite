@@ -307,3 +307,12 @@ clean-break 不删除、不改写以下既有资料：
 - `handoff` 改为追加宿主 compaction entry，不调用 `rewriteSession`；context 钩子 append-only。
 - `src/bridge/` 拆出 `hack-context`、`native-runner`、`command-host`；`src/herd/` 业务不直接依赖宿主实现。
 - 服务台/工单内核已在 `src/herd/station.cljs` 落地（12 项不变量测试），尚未接入 board 工具；`command-host` 已在 `src/bridge/command-host.mjs` 落地，尚未接入 `/herd`。custom-entry 权威化仍在推进。
+
+## 2026-11-15 TicketStation clean-break 收口
+
+- **服务台/工单边界**：`src/herd/station.cljs` 只有 `run-ticket` 为 `^:async`；`system.cljs` 的 `gate-execute!`、`s5-review!`、`audit-execute!`、`invoke-service`、`before-agent-start!`、`session-start!`、`herd-command!` 改为同步门卫并返回工单 Promise；`bridge/command_host.cljs` 无 `async`/`await`。
+- **看板写路径**：生产 board 只经 station 工单；`swarm/apply.cljs` 删除，旧 `apply-board!`/`execute-tool!` 改名 `submit-board-command!`/`execute-board-tool!`。
+- **死代码**：删除无接线的 `stages/review.cljs` 及 bootstrap/UFSS 测试引用。
+- **mjs→cljs**：生产 `.mjs` 仅 `src/clj-main.mjs`；测试 `.mjs` 仅 `tests/cljs-suite.test.mjs`；fake clock 与激活迁到 `tests/cljs/harness.cljs`。
+- **验证**：`env -u BUN_OPTIONS bun test tests --parallel` 221 pass / 0 fail / 1 file；`biome check .` 0 errors；`tests/cljs/architecture_test.cljs` 与 `ticket_naming_test.cljs` 锁定静态约束。
+- **历史报告**：`docs/manual-acceptance/clean-break/report.md` 是 clean-break 前记录，不能作为当前实现的验收证据；真实 S1→S5 手工验收仍待重跑。
