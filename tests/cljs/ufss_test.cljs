@@ -13,7 +13,7 @@
   ["prompts.cljs" "sandbox.cljs" "repl.cljs" "main.cljs" "ufss.cljs" "ui.cljs"
    "bootstrap.cljs" "stages/parsers.cljs" "stages/tenure.cljs" "stages/disclosures.cljs"
    "stages/scores.cljs" "stages/paths.cljs" "stages/mission.cljs" "stages/attach.cljs"
-   "stages/approval.cljs" "stages/review.cljs" "stages/store.cljs" "stages/report.cljs"
+   "stages/approval.cljs" "stages/store.cljs" "stages/report.cljs"
    "stages/audit.cljs" "stages/gates.cljs" "gates_host.cljs" "util/atomic_write.cljs"
    "system.cljs"])
 

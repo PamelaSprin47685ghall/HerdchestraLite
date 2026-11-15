@@ -23,7 +23,7 @@ JS 边界层（`src/` 下仅保留以下活跃 `.mjs` 文件，旧 `main.mjs`、
 
 ## 1.1 S5 迁移状态（2026-11-15）
 
-已完成：工具 schema 去 `slug`；`/herd` 改模式开关并删除 `unique-slug!`、命令补全 slug、`parse-auditor-context`；路径迁到 `herd/{sessionId}/`；删除 `focus.edn` 与 `boards/` 归档；审计提交与批次状态内存化；`handoff` 改为追加 compaction；`hack-context`、`native-runner` 迁入 `src/bridge/`。
+已完成：工具 schema 去 `slug`；`/herd` 改模式开关并删除 `unique-slug!`、命令补全 slug、`parse-auditor-context`；路径迁到 `herd/{sessionId}/`；删除 `focus.edn` 与 `boards/` 归档；审计提交与批次状态内存化；`handoff` 改为追加 compaction；`hack_context.cljs` 在 `src/bridge/`，`native_runner.cljs` 在 `src/herd/`。
 
 `mission.edn` 已不再写入；`herd.task`/`herd.mode`/`herd.seed`/`herd.barrier`/`herd.pending`/`herd.approval` 是权威 custom entry，阶段与 tenure 由 barrier 推导。`rewriteSession` 已删除，context 只追加。`src/herd/station.cljs` 是同步服务台内核，只有 `run-ticket` 是异步工单；`swarm/board.cljs` 以同步门卫 + station 工单执行每个看板命令，`swarm/tools.cljs` 只做宿主工具接线，`swarm/apply.cljs` 已删除；`/herd` 经 `src/bridge/command_host.cljs` 的 `handleTui`，无全局工厂时回退直连。
 
@@ -104,7 +104,7 @@ herd/swarm/store ── herd/swarm/{edn,model}
 - **同步回执不入 `wait` 队列**：`repl/run-role` 通过 `:returned-directly` 守卫与 `finish-directly!` 保证 2000ms 内同步完成/失败的调用立刻从 `@programs` 清除，仅 `:forked` 与 `:parked` 程序保留供 `wait`/`unpark` 收集。
 - **park / unpark / abandon**：`park` 不中止后台 `call` 并带增量 `:stdout`/`:stderr` 与 `:call-active true`；`unpark` 先向活跃 `call` 灌入 `:stdin`/`:eof` 并 resolve 续体、通过 `await-resumed` 等待结果；`abandon` 负责强制击杀进程组并清理状态。
 - **handoff 与工作条**：`handoff` 经 `src/bridge/command_host.cljs` 转交宿主 compaction；`hackContext` 只做机械同步与 append-only，不再解码或替换历史。`context-handler` 每次请求末尾无条件追加的仅含 `<system-reminder><skill version="1.0">…</skill></system-reminder>` 的 `user` 尾注是有意设计的 feature（非重复注入/空消息 bug，见根 `AGENTS.md` §5.3）。`usage` 由真实 hook 事件驱动恢复被宿主覆盖的工作条（100ms 合并、无轮询定时器，子代理不写主 UI）。
-- **门禁、看板与审计隔离**：`submit_devops_report` 以 `getSessionFile()` 父目录为回执根；`devops` 透传 `AbortSignal`；`board_finish` 校验相对 `dependency_paths`，`wait_for` 支持任务 ID 与 `condition:` 键；Auditor 仅作防呆（独立 `/tmp/herd-audit-<slug>-<case>-<batch>`，无写工具，`call` 属信任边界，无 bwrap）。
+- **门禁、看板与审计隔离**：`submit_devops_report` 以 `getSessionFile()` 父目录为回执根；`devops` 透传 `AbortSignal`；`board_finish` 校验相对 `dependency_paths`，`wait_for` 支持任务 ID 与 `condition:` 键；Auditor 仅作防呆（独立 `/tmp/herd-audit-<sessionId>-<case>-<batch>`，无写工具，`call` 属信任边界，无 bwrap）。
 - **跨进程事件驱动锁**：写门 `$W$` 与 S5 看板事务统一走 `src/herd/lock_daemon.cljs`（`node:net` 按需单例守护进程，连接即持锁、`SIGKILL` 秒级释锁、零轮询、无陈旧锁），同进程写操作先经 FIFO 队列接力防自踩。写门等待默认 500ms（`HERD_LOCK_WAIT_MS` 50–5000ms，`:LOCK_BUSY`）；`glob` 跳过 `node_modules`/`.git`/`.herd`（20k/2s）；`where` 最近行 1M cells/150ms；`cat`/`write` 单文件 2 MiB；`guard-source!` 拒绝 `console`/stdio 直接访问（`:CAPABILITY_DENIED`）；`HERD_TRACE=1` / `HERD_CACHE_PROBE=1` 默认关闭（1 MiB 上限）。
 - **当前验证与未验收边界**：开发者测试当前为 `tests/cljs-suite.test.mjs` 221 pass / 0 fail（全量同数），`biome check .` 0 errors；TicketStation clean-break 后的真实 `omp 18.20.0` + `tmux` S1→S5 与 K=5 路审计尚未重跑。`docs/manual-acceptance/clean-break/report.md` 是 clean-break 前的历史记录，不能作为当前实现验收证据；16.x/17.x 本机无二进制，以能力探测与 fail-closed 单测覆盖。
 

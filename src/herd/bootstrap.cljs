@@ -58,7 +58,7 @@
 (def ^:private modules
   ["clock" "prompts" "highlight" "ui" "sandbox" "repl" "stages/parsers" "stages/tenure"
    "stages/disclosures" "stages/paths" "stages/mission" "util/atomic_write"
-   "stages/store" "stages/attach" "stages/review" "stages/approval"
+   "stages/store" "stages/attach" "stages/approval"
    "stages/scores" "stages/audit" "stages/report" "stages/gates" "gates_host"
    "swarm/edn" "swarm/model" "swarm/ledger" "swarm/actors" "swarm/tasks"
    "swarm/commands" "swarm/token" "swarm/kernel" "swarm/store" "swarm/board"
