@@ -114,7 +114,7 @@
                                             [])))
                           (station-result resolved)))))))))))))
 
-(defn apply-board! [raw-args]
+(defn submit-board-command! [raw-args]
   (let [board-arg (:board raw-args)
         args (dissoc raw-args :board)
         command (:command args)]

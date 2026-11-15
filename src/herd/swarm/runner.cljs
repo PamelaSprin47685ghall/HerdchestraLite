@@ -354,7 +354,7 @@ No central manager will pick tasks for you. Coordinate solely through the shared
         (if-not (and handle (:store handle))
           (failure :INVALID_ARGUMENT "add-root-tasks! needs an open board handle"
                    {:field :board})
-          (let [result (await (apply/apply-board!
+          (let [result (await (apply/submit-board-command!
                                 {:board handle
                                  :command command
                                  :actor (or (:actor options) "Coordinator")
@@ -429,7 +429,7 @@ No central manager will pick tasks for you. Coordinate solely through the shared
                   (do
                     (swap! task-ids conj task-id)
                     (when (= :done (:state task))
-                      (let [reopened (await (apply/apply-board!
+                      (let [reopened (await (apply/submit-board-command!
                                               {:board handle
                                                :command {:type "reopen"
                                                          :task-id task-id
@@ -441,7 +441,7 @@ No central manager will pick tasks for you. Coordinate solely through the shared
                         (when-not (:ok reopened)
                           (swap! errors conj (or (:error reopened) reopened)))))
                     (when (not= (:goal task) (:goal spec))
-                      (let [updated (await (apply/apply-board!
+                      (let [updated (await (apply/submit-board-command!
                                              {:board handle
                                               :command {:type "update"
                                                         :task-id task-id
@@ -535,7 +535,7 @@ No central manager will pick tasks for you. Coordinate solely through the shared
         _ (when (map? handle)
             (doseq [slot slots]
               (when-not (get-in board [:actors (:agent-id slot)])
-                (await (apply/apply-board!
+                (await (apply/submit-board-command!
                          {:board handle
                           :command {:type "register_actor" :agentId (:agent-id slot) :slotId (:slot-id slot)}
                           :actor (or (:actor deps) "Coordinator")
@@ -821,7 +821,7 @@ No central manager will pick tasks for you. Coordinate solely through the shared
   (let [handle (board-handle deps)]
     (if-not (and handle (:store handle))
       (failure :INVALID_ARGUMENT "register-actor! needs an open board handle" {:field :board})
-      (await (apply/apply-board!
+      (await (apply/submit-board-command!
                {:board handle
                 :command {:type "register_actor"
                           :agentId (:agent-id request)
@@ -920,7 +920,7 @@ No central manager will pick tasks for you. Coordinate solely through the shared
       (failure :ACTOR_DEAD "park-slot! needs a live slot actor" {:slot-id slot-id})
 
       :else
-      (let [result (await (apply/apply-board!
+      (let [result (await (apply/submit-board-command!
                             {:board (board-handle deps)
                              :command {:type "park_slot"
                                        :observed-board-version observed}

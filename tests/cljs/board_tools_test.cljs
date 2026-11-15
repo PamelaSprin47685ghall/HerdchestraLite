@@ -17,7 +17,7 @@
               :actor-of (fn [_] {:agent-id "A"})
               :turn-of (fn [_ ctx] ctx)}
         register (fn [id slot request]
-                   (apply/apply-board! {:board handle
+                   (apply/submit-board-command! {:board handle
                                         :command {:type "register_actor"
                                                   :agentId id :slotId slot}
                                         :request-id request :turn-id "boot"}))]
@@ -44,7 +44,7 @@
     (t/it "claims and finishes a task through the tool receipts"
       (fn []
         (p/let [[handle deps] (seed "/tmp")
-                _ (apply/apply-board! {:board handle
+                _ (apply/submit-board-command! {:board handle
                                        :command {:type "add_tasks"
                                                  :tasks [{:goal "job"
                                                           :remaining-work "work"
@@ -52,12 +52,12 @@
                                        :actor "A" :request-id "add-1" :turn-id "add"})
                 board (store/read-board handle)
                 task-id (first (keys (:tasks board)))
-                claimed (tools/execute-tool! deps :board_claim
+                claimed (tools/execute-board-tool! deps :board_claim
                                              {:task_id task-id :atomicity_reason "atomic"}
                                              nil "call-1")
                 after-claim (store/read-board handle)
                 claim-id (get-in after-claim [:tasks task-id :claim-id])
-                finished (tools/execute-tool! deps :board_finish
+                finished (tools/execute-board-tool! deps :board_finish
                                               {:task_id task-id
                                                :claim_id claim-id
                                                :result_summary "done"
@@ -72,7 +72,7 @@
     (t/it "splits with the observed version and rejects a stale one"
       (fn []
         (p/let [[handle deps] (seed "/tmp")
-                _ (apply/apply-board! {:board handle
+                _ (apply/submit-board-command! {:board handle
                                        :command {:type "add_tasks"
                                                  :tasks [{:goal "root"
                                                           :remaining-work "integrate"
@@ -81,7 +81,7 @@
                 board (store/read-board handle)
                 parent (first (keys (:tasks board)))
                 version (:board-version board)
-                split (tools/execute-tool! deps :board_split
+                split (tools/execute-board-tool! deps :board_split
                                            {:parent_id parent
                                             :expected_board_version version
                                             :remaining_work "integrate"
@@ -92,7 +92,7 @@
                                                         :remaining_work "w2"
                                                         :done_when "d2"}]}
                                            nil "call-split")
-                stale (tools/execute-tool! deps :board_split
+                stale (tools/execute-board-tool! deps :board_split
                                            {:parent_id parent
                                             :expected_board_version version
                                             :remaining_work "integrate again"
@@ -109,7 +109,7 @@
     (t/it "replays one take-or-die call id without a second term"
       (fn []
         (p/let [[handle deps] (seed "/tmp")
-                _ (apply/apply-board! {:board handle
+                _ (apply/submit-board-command! {:board handle
                                        :command {:type "add_tasks"
                                                  :tasks [{:goal "token"
                                                           :remaining-work "run"
@@ -119,9 +119,9 @@
                 params {:request_id "take-1"
                         :confirm "i-hereby-confirm-i-die-without-regret"
                         :handoff_markdown "handoff"}
-                first (tools/execute-tool! deps :board_take_or_die params nil "call-take")
-                second (tools/execute-tool! deps :board_take_or_die params nil "call-take")
-                changed (tools/execute-tool! deps :board_take_or_die
+                first (tools/execute-board-tool! deps :board_take_or_die params nil "call-take")
+                second (tools/execute-board-tool! deps :board_take_or_die params nil "call-take")
+                changed (tools/execute-board-tool! deps :board_take_or_die
                                              (assoc params :handoff_markdown "different")
                                              nil "call-take")
                 board (store/read-board handle)]

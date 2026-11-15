@@ -62,7 +62,7 @@
   (p/let [handle (store/open-board root "demo"
                                    {:store (store/create-memory-store)
                                     :durable false})
-          _ (apply/apply-board!
+          _ (apply/submit-board-command!
              {:board handle
               :command {:type "register_actor" :agentId "Coordinator" :slotId "C"}
               :request-id "seed-audit-board" :turn-id "boot"})]

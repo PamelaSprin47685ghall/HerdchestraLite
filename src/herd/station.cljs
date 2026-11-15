@@ -5,7 +5,7 @@
   synchronous: it changes memory first and then calls the injected
   `:open-ticket` capability in tail position. Ticket functions own all
   asynchronous work and are the only functions in this namespace declared
-  `^:async`.
+  async.
 
   Board writes are queued on one promise chain. The committed board and its
   version move only after the injected persist capability reports success.

@@ -15,7 +15,7 @@
   (p/let [handle (store/open-board "/tmp" "demo"
                                    {:store (store/create-memory-store)
                                     :durable false})
-          _ (apply/apply-board!
+          _ (apply/submit-board-command!
              {:board handle
               :command {:type "register_actor" :agentId "Coordinator" :slotId "C"}
               :request-id "seed-coordinator" :turn-id "boot"})]
@@ -25,7 +25,7 @@
   (store/read-board handle))
 
 (defn- add-task [handle spec request]
-  (apply/apply-board!
+  (apply/submit-board-command!
    {:board handle
     :command {:type "add_tasks" :tasks [spec]}
     :actor "Coordinator" :request-id request :turn-id "add"}))
@@ -180,7 +180,7 @@
     (t/it "wakes a parked slot once the board epoch advances"
       (fn []
         (p/let [handle (seed-board)
-                _ (apply/apply-board!
+                _ (apply/submit-board-command!
                    {:board handle
                     :command {:type "register_actor" :agentId "A" :slotId "S1"}
                     :request-id "seed-a" :turn-id "boot"})

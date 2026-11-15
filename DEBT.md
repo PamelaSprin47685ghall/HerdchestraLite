@@ -3,8 +3,9 @@
 ## TicketStation clean-break
 
 - **已落地**：`src/herd/station.cljs` 接线 S5 board；`swarm/apply.cljs` 删除；`swarm/board.cljs` 是同步门卫 + station 工单；`swarm/tools.cljs` 是同步门卫；`command_host.cljs` 同步返回 Promise；`station.cljs` 仅 `run-ticket` 为 `^:async`。
-- **剩余**：`src/herd/**` 仍有工单级 `^:async`/`await` 函数（`stages/gates.cljs`、`swarm/runner.cljs`、`swarm/auditors.cljs` 等），需要按 TicketStation 边界逐模块收口。
-- **影响**：静态规则尚未全仓满足；`station.cljs` 自身已满足。
+- **门卫已同步**：`system` 的 `gate-execute!`、`s5-review!`、`audit-execute!`、`invoke-service`、`before-agent-start!`、`session-start!`、`herd-command!` 均同步返回工单 Promise；`bridge/**` 无异步/await；`swarm/board` 与 `swarm/tools` 门卫同步。
+- **剩余异步仅工单/端口/helper**：`station/run-ticket`；`stages/gates` 的 `review!*`/`attach!*` 等；`stages/{store,attach,review,report,audit}`；`swarm/{runner,auditors}`；`system` 的 `*-ticket!`、端口、`ensure-*`、devops 辅助；`entry/main/bootstrap/lock_daemon/util` 的宿主/引导函数。它们承担 I/O，不再承担服务台/门卫职责。
+- **静态验收**：`rg '\^:async' src/herd/station.cljs` 仅 `run-ticket`；`src/bridge` 无 async/await；旧 `apply-board!`/`execute-tool!`/`swarm.apply`/`Mission slug:` 无命中。
 
 ## mjs→cljs
 

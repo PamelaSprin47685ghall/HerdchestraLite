@@ -124,7 +124,7 @@
       :else
       (let [handle (or (:handle deps) (store/open-board root slug))
             request-id (or (param params :request_id) call-id)]
-        (apply/apply-board!
+        (apply/submit-board-command!
                  {:board handle
                   :command command
                   :actor actor
@@ -143,7 +143,7 @@
   {:isError (not (:ok result))
    :content [{:type "text" :text (ufss/canonical (receipt-view result))}]})
 
-(defn execute-tool!
+(defn execute-board-tool!
   [deps tool params ctx call-id]
   (try
     (-> (execute-command! deps tool params ctx call-id)
@@ -263,7 +263,7 @@
      :load-mode "essential"
      :parameters parameters
      :execute (fn [call-id params _signal _on-update ctx]
-                (execute-tool! deps tool (js->clj (or params #js {}) :keywordize-keys true)
+                (execute-board-tool! deps tool (js->clj (or params #js {}) :keywordize-keys true)
                                ctx call-id))}
     (ui/board-renderers tool)))
 

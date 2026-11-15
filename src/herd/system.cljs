@@ -437,7 +437,12 @@
                                  (str ": " (:value task))))))
                vec))))))
 
-(defn ^:async before-agent-start! [event ctx]
+(declare before-agent-start-ticket!)
+
+(defn before-agent-start! [event ctx]
+  (before-agent-start-ticket! event ctx))
+
+(defn- ^:async before-agent-start-ticket! [event ctx]
   (let [key (session-key ctx)
         root (resolve-root ctx)]
     (swap! state assoc :last-ctx ctx)
@@ -481,7 +486,12 @@
 
 (declare ensure-s5-board!)
 
-(defn ^:async session-start! [ctx]
+(declare session-start-ticket!)
+
+(defn session-start! [ctx]
+  (session-start-ticket! ctx))
+
+(defn- ^:async session-start-ticket! [ctx]
   (let [key (session-key ctx)
         root (resolve-root ctx)]
     (swap! state assoc :last-ctx ctx)
@@ -916,7 +926,7 @@
                          :tool name})
         false))))
 
-(defn- ^:async invoke-service [service tool request options]
+(defn- invoke-service [service tool request options]
   (cond
     (= tool :review) ((:review! service) request options)
     (contains? #{:attach_manual_tests :attach_dev_guide :attach_coordination} tool)
@@ -991,7 +1001,12 @@
       (swap! state update-in [:sessions key] dissoc :pending-barrier))
     barrier))
 
-(defn- ^:async gate-execute! [pi service deps tool params ctx call-id]
+(declare gate-ticket!)
+
+(defn- gate-execute! [pi service deps tool params ctx call-id]
+  (gate-ticket! pi service deps tool params ctx call-id))
+
+(defn- ^:async gate-ticket! [pi service deps tool params ctx call-id]
   (let [key (session-key ctx)
         turn-id (get-in @state [:sessions key :turn-id])
         cached (get-in @state [:sessions key :gate-cache])
@@ -1585,7 +1600,12 @@
       (or answer {:ok true :status :awaiting-user :stage :s5
                   :question question :suppress-nudge true}))))
 
-(defn- ^:async s5-review! [root slug mission request]
+(declare s5-review-ticket!)
+
+(defn- s5-review! [root slug mission request]
+  (s5-review-ticket! root slug mission request))
+
+(defn- ^:async s5-review-ticket! [root slug mission request]
   (let [prepared (await (ensure-s5-board! root slug mission))]
     (if-not (:ok prepared)
       prepared
@@ -1937,7 +1957,12 @@
                 :developer_score {:type "number" :minimum 0 :maximum 100}
                 :report_markdown {:type "string" :minLength 1}}})
 
-(defn- ^:async audit-execute! [params ctx _call-id]
+(declare audit-ticket!)
+
+(defn- audit-execute! [params ctx _call-id]
+  (audit-ticket! params ctx _call-id))
+
+(defn- ^:async audit-ticket! [params ctx _call-id]
   (let [request (js->clj (or params #js {}) :keywordize-keys true)
         ctx-root (resolve-root ctx)
         ctx-slug (await (ensure-focus! ctx ctx-root))
@@ -2017,7 +2042,12 @@
     (catch :default _ nil))
   text)
 
-(defn- ^:async herd-command! [pi args ctx]
+(declare herd-command-ticket!)
+
+(defn- herd-command! [pi args ctx]
+  (herd-command-ticket! pi args ctx))
+
+(defn- ^:async herd-command-ticket! [pi args ctx]
   (try
     (let [seed (str/trim (if (string? args) args (str (or args ""))))
           root (resolve-root ctx)

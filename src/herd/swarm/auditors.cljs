@@ -547,7 +547,7 @@ Start all K auditors concurrently from already validated case specs.
               (do
                 (swap! task-ids conj task-id)
                 (when (= :done (:state task))
-                  (let [reopened (await (apply/apply-board!
+                  (let [reopened (await (apply/submit-board-command!
                                           {:board handle
                                            :command {:type "reopen"
                                                      :task-id task-id
@@ -559,7 +559,7 @@ Start all K auditors concurrently from already validated case specs.
                     (when-not (:ok reopened)
                       (swap! errors conj (or (:error reopened) reopened)))))
                 (when (not= (:goal task) (:goal spec))
-                  (let [updated (await (apply/apply-board!
+                  (let [updated (await (apply/submit-board-command!
                                          {:board handle
                                           :command {:type "update"
                                                     :task-id task-id
@@ -574,7 +574,7 @@ Start all K auditors concurrently from already validated case specs.
         (if (seq @errors)
           (failure (:code (first @errors)) "repair task upsert failed" {:errors @errors})
           (let [added (when (seq @new-specs)
-                        (await (apply/apply-board!
+                        (await (apply/submit-board-command!
                                  {:board handle
                                   :command {:type "add_tasks" :tasks @new-specs}
                                   :actor (or (:actor deps) "Coordinator")

@@ -24,11 +24,11 @@
         (let [root (root)
               handle (store/open-board root "demo")]
           (p/let [_ (store/initialize-board! handle)
-                  r1 (apply/apply-board! {:board handle
+                  r1 (apply/submit-board-command! {:board handle
                                           :command {:type "register_actor"
                                                     :agentId "A" :slotId "S1"}
                                           :request-id "r1" :turn-id "boot"})
-                  r2 (apply/apply-board! {:board handle
+                  r2 (apply/submit-board-command! {:board handle
                                           :command {:type "add_tasks"
                                                     :tasks [{:goal "job"
                                                              :remaining-work "work"
@@ -51,9 +51,9 @@
               handle (store/open-board root "demo")]
           (p/let [_ (store/initialize-board! handle)
                   command {:type "register_actor" :agentId "A" :slotId "S1"}
-                  r1 (apply/apply-board! {:board handle :command command
+                  r1 (apply/submit-board-command! {:board handle :command command
                                           :request-id "same" :turn-id "boot"})
-                  r2 (apply/apply-board! {:board handle :command command
+                  r2 (apply/submit-board-command! {:board handle :command command
                                           :request-id "same" :turn-id "boot"})
                   board (store/read-board handle)
                   events-text (.readFileSync fs (str (base root) "events.jsonl") "utf8")]
@@ -67,12 +67,12 @@
         (let [root (root)
               handle (store/open-board root "demo")]
           (p/let [_ (store/initialize-board! handle)
-                  _ (apply/apply-board! {:board handle
+                  _ (apply/submit-board-command! {:board handle
                                          :command {:type "register_actor"
                                                    :agentId "A" :slotId "S1"}
                                          :request-id "r1" :turn-id "boot"})
                   _ (.unlinkSync fs (str (base root) "board.edn"))
-                  r2 (apply/apply-board! {:board handle
+                  r2 (apply/submit-board-command! {:board handle
                                           :command {:type "record_input" :text "new"}
                                           :request-id "r2" :turn-id "user"})]
             (t/to-be (:ok r2) false)
@@ -98,27 +98,27 @@
         (let [root (root)
               handle (store/open-board root "demo")]
           (p/let [_ (store/initialize-board! handle)
-                  _ (apply/apply-board! {:board handle
+                  _ (apply/submit-board-command! {:board handle
                                          :command {:type "register_actor"
                                                    :agentId "A" :slotId "S1"}
                                          :request-id "r1" :turn-id "boot"})
-                  _ (apply/apply-board! {:board handle
+                  _ (apply/submit-board-command! {:board handle
                                          :command {:type "register_actor"
                                                    :agentId "B" :slotId "S2"}
                                          :request-id "r2" :turn-id "boot"})
-                  _ (apply/apply-board! {:board handle
+                  _ (apply/submit-board-command! {:board handle
                                          :command {:type "add_tasks"
                                                    :tasks [{:goal "token"
                                                             :remaining-work "run"
                                                             :done-when "green"
                                                             :needs-token true}]}
                                          :actor "A" :request-id "r3" :turn-id "add"})
-                  take-a (apply/apply-board! {:board handle
+                  take-a (apply/submit-board-command! {:board handle
                                               :command {:type "take_or_die"
                                                         :confirm token/take-or-die-confirmation
                                                         :handoff-markdown "A handoff"}
                                               :actor "A" :request-id "take-a" :turn-id "take"})
-                  take-b (apply/apply-board! {:board handle
+                  take-b (apply/submit-board-command! {:board handle
                                               :command {:type "take_or_die"
                                                         :confirm token/take-or-die-confirmation
                                                         :handoff-markdown "B handoff"}
