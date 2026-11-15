@@ -130,7 +130,7 @@
     read
     {:ok false :error (:error read)}))
 
-(defn ^:async review!* [deps replay params options]
+(defn ^:async review-ticket! [deps replay params options]
   (let [role (or (:role options) (:role deps))
         denied (role-denied role review-roles)
         root (resolve-root deps options)
@@ -454,7 +454,7 @@
           (attached-result slug tool stage (:barrier committed)
                            (:mission cleared) (:documents committed)))))))
 
-(defn ^:async attach!* [deps replay tool params options]
+(defn ^:async attach-ticket! [deps replay tool params options]
   (let [role (or (:role options) (:role deps))
         denied (role-denied role attach-roles)
         stage (get attach-stages tool)
@@ -559,7 +559,7 @@
           (failure :HOST_API_MISMATCH (or (ex-message error) (str error)) {})))
       receipt)))
 
-(defn ^:async ask-user!* [deps params options]
+(defn ^:async ask-user-ticket! [deps params options]
   (let [role (or (:role options) (:role deps))
         denied (role-denied role ask-roles)
         root (resolve-root deps options)
@@ -610,7 +610,7 @@
                        "ask_user is allowed only in S1 or the one-time S5 empty-ledger exception"
                        {:stage stage}))))))))
 
-(defn ^:async devops!* [deps params options]
+(defn ^:async devops-ticket! [deps params options]
   (let [role (or (:role options) (:role deps))
         denied (role-denied role devops-roles)
         root (resolve-root deps options)
@@ -661,7 +661,7 @@
                 (catch :default error
                   (failure :HOST_API_MISMATCH (or (ex-message error) (str error)) {}))))))))))
 
-(defn ^:async submit-devops-report!* [deps params options]
+(defn ^:async submit-devops-report-ticket! [deps params options]
   (let [role (or (:role options) (:role deps))
         denied (role-denied role devops-report-roles)
         root (resolve-root deps options)
@@ -720,20 +720,20 @@
                    :stage stage
                    :report report})))))))))
 
-(declare resume-approval!*)
+(declare resume-approval-ticket!)
 
 (defn create-service [deps]
   (let [replay (or (:replay deps) (atom {}))
         settings (assoc deps :replay replay)]
-    {:review! (fn [params options] (review!* settings replay params options))
-     :attach! (fn [tool params options] (attach!* settings replay tool params options))
-     :ask-user! (fn [params options] (ask-user!* settings params options))
-     :devops! (fn [params options] (devops!* settings params options))
-     :submit-devops-report! (fn [params options] (submit-devops-report!* settings params options))
-     :resume-approval! (fn [root slug decision] (resume-approval!* settings replay root slug decision))
+    {:review! (fn [params options] (review-ticket! settings replay params options))
+     :attach! (fn [tool params options] (attach-ticket! settings replay tool params options))
+     :ask-user! (fn [params options] (ask-user-ticket! settings params options))
+     :devops! (fn [params options] (devops-ticket! settings params options))
+     :submit-devops-report! (fn [params options] (submit-devops-report-ticket! settings params options))
+     :resume-approval! (fn [root slug decision] (resume-approval-ticket! settings replay root slug decision))
      :replay replay}))
 
-(defn ^:async resume-approval!* [deps replay root slug decision]
+(defn ^:async resume-approval-ticket! [deps replay root slug decision]
   (let [read (mission-error (await (store/read-mission root slug)))]
     (if-not (:ok read)
       read

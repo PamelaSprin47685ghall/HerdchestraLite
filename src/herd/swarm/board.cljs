@@ -32,7 +32,7 @@
       {:ok false
        :error {:code code :message message}})))
 
-(defn- ^:async open-station! [handle]
+(defn- ^:async open-station-ticket! [handle]
   (try
     (let [current (await (store/read-board handle))
           board (cond
@@ -125,12 +125,12 @@
           (let [request-id (:request-id args)]
             (if-not (edn/text? request-id)
               (failure :INVALID_ARGUMENT "request_id is required" {:field :request-id})
-              (-> (open-station! handle)
+              (-> (open-station-ticket! handle)
                   (.then (fn [board-station]
                            (if-not board-station
                              (failure :STALE_CONTROL "slice board is missing or unreadable" {})
                              (take-or-die! board-station command args request-id)))))))
-          (-> (open-station! handle)
+          (-> (open-station-ticket! handle)
               (.then (fn [board-station]
                        (if-not board-station
                          (failure :STALE_CONTROL "slice board is missing or unreadable" {})

@@ -25,7 +25,7 @@ edn
 - `token.cljs`：`take_or_die` 接受/裁决、持令者无责退休、失败移交。
 - `kernel.cljs`：`apply-command` 编排（request 重放、版本守卫、事件、wake、退休、receipt）。
 - `store.cljs`：IPC 跨进程事件驱动板锁（`src/herd/lock_daemon.cljs` + 进程内 FIFO 队列）、原子 `board.edn`、追加 `events.jsonl`、`checkpoint.edn`、内存/文件 store、`open-board`、`read-board`。
-- `board.cljs`：同步门卫 + station-backed `submit-board-command!`；普通命令一张工单，`take_or_die` 仍是 accept/resolve 两张 station 工单（两次提交）；station 持有内存板，`store` 负责唯一持久化。
+- `board.cljs`：同步门卫 + station-backed `submit-board-command!`；`open-station-ticket!` 负责读板开站；普通命令一张工单，`take_or_die` 仍是 accept/resolve 两张 station 工单（两次提交）；station 持有内存板，`store` 负责唯一持久化。
 - `tools.cljs`：11 个 `board_*` 工具定义、snake_case 参数、receipt 投影与 host 注册。
 
 ## 不变量
