@@ -9,7 +9,7 @@
 
 ## mjs→cljs
 
-- **已落地**：生产 `.mjs` 只剩 `src/clj-main.mjs`（≤50 行，仅加载 cljs）；`tests/cljs-suite.test.mjs` 是唯一测试自举（11 行，≤50 行），激活与 fake clock 已迁到 `tests/cljs/harness.cljs`；已迁移 20+ 个 cljs 测试模块，当前 suite 224 pass / 0 fail；全量 `bun test tests --parallel` 224 pass / 0 fail / 1 file；`tests/cljs/architecture_test.cljs` 锁定 clean-break 静态不变量，`tests/cljs/herd_mode_test.cljs` 覆盖 `/herd` 切换后工具面回默认且任务保留，`tests/cljs/surface_test.cljs` 覆盖 Reviewer 面无 `ask_user` 且 `wait`/`handoff` 全局常驻，`tests/cljs/sandbox_limits_test.cljs` 覆盖 where/wait/streaming/limits；`tests/cljs/ticket_naming_test.cljs` 锁定门禁与开站工单的显式命名；`tests/cljs/gates_test.cljs` 覆盖 S1 pending 在服务重启后的同 call-id 恢复；`tests/cljs/subagent_entry_test.cljs` 覆盖宿主 `task` 工具、角色 token 与父 session 绑定。
+- **已落地**：生产 `.mjs` 只剩 `src/clj-main.mjs`（≤50 行，仅加载 cljs）；`tests/cljs-suite.test.mjs` 是唯一测试自举（11 行，≤50 行），激活与 fake clock 已迁到 `tests/cljs/harness.cljs`；已迁移 20+ 个 cljs 测试模块，当前 suite 226 pass / 0 fail；全量 `bun test tests --parallel` 226 pass / 0 fail / 1 file；`tests/cljs/architecture_test.cljs` 锁定 clean-break 静态不变量，`tests/cljs/herd_mode_test.cljs` 覆盖 `/herd` 切换后工具面回默认且任务保留，`tests/cljs/surface_test.cljs` 覆盖 Reviewer 面无 `ask_user` 且 `wait`/`handoff` 全局常驻，`tests/cljs/sandbox_limits_test.cljs` 覆盖 where/wait/streaming/limits；`tests/cljs/ticket_naming_test.cljs` 锁定门禁与开站工单的显式命名；`tests/cljs/gates_test.cljs` 覆盖 S1 pending 在服务重启后的同 call-id 恢复；`tests/cljs/subagent_entry_test.cljs` 覆盖宿主 `task` 工具、角色 token 与父 session 绑定；`tests/cljs/approval_test.cljs` 覆盖审批 token 的绑定与确定性。
 - **已清空**：`tests/` 只剩 `tests/cljs-suite.test.mjs`；`tests/fake-clock.mjs` 与 `tests/helpers/nbb-boot.mjs` 已删除；fake clock 与激活逻辑在 `tests/cljs/harness.cljs`。
 - **验收**：生产与测试均只剩一个自举 `.mjs`，且均 ≤50 行。
 

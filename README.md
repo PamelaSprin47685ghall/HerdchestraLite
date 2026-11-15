@@ -72,7 +72,7 @@ omp plugin list --json
 env -u BUN_OPTIONS bun test tests --parallel
 ```
 
-当前结果：`env -u BUN_OPTIONS bun test tests --parallel` 224 pass / 0 fail / 1 file（约 3s）；`env -u BUN_OPTIONS ./node_modules/.bin/biome check .` exit 0（0 errors / 0 warnings）。测试入口只剩 `tests/cljs-suite.test.mjs`。
+当前结果：`env -u BUN_OPTIONS bun test tests --parallel` 226 pass / 0 fail / 1 file（约 3s）；`env -u BUN_OPTIONS ./node_modules/.bin/biome check .` exit 0（0 errors / 0 warnings）。测试入口只剩 `tests/cljs-suite.test.mjs`。
 
 关键测试覆盖：
 
@@ -84,6 +84,7 @@ env -u BUN_OPTIONS bun test tests --parallel
 - `tests/cljs/runner_test.cljs`、`auditors_test.cljs`、`report_test.cljs`：S5 runner、K 路审计、报告/批准。
 - `tests/cljs/usage_test.cljs`、`working_message_test.cljs`、`handoff_test.cljs`、`hack_context_rewrite_test.cljs`：宿主适配与 handoff append-only。
 - `tests/cljs/subagent_entry_test.cljs`：宿主 `task` 工具、角色 token、父 session 绑定与 fail-closed。
+- `tests/cljs/approval_test.cljs`：审批 token 绑定 mission/revision/report/key 且确定性。
 - `tests/cljs/tool_ui_test.cljs`：工具渲染。
 
 这些测试只保护组件与接线，不是根规格的 CASE 验收。TicketStation clean-break 后的真实 S1→S5 tmux 使命尚未重跑；`docs/manual-acceptance/clean-break/report.md` 是历史记录，不能替代当前实现的真实 S5 报告。
