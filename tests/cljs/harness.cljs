@@ -54,6 +54,11 @@
             (reset! waiters [])))
     clock))
 
+(set! (.-__herdCodingAgent js/globalThis)
+      #js {:Container (fn []) :Markdown (fn []) :Spacer (fn []) :Text (fn []) :Settings (fn []) :VERSION "test"})
+(set! (.-__herdHostExtras js/globalThis) #js {})
+(set! (.-__herdHostVersions js/globalThis)
+      #js {:hostVersion "test" :cliVersion "test" :runtimePackageVersion "test"})
 (set! (.-__herdClock js/globalThis) (install-fake-clock))
 (set! (.-__herdDetectLanguage js/globalThis) (fn [& _] "clojure"))
 (set! (.-__herdEnsureActivated js/globalThis)
