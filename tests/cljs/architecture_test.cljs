@@ -71,7 +71,8 @@
               board (fs/readFileSync (path/join src-root "herd/swarm/board.cljs") "utf8")]
           (same hits [])
           (t/to-be (str/includes? board "station/submit!") true)
-          (t/to-be (str/includes? board "submit-board-command!") true))))
+          (t/to-be (str/includes? board "submit-board-command!") true)
+          (t/to-be (fs/existsSync (path/join src-root "herd/stages/review.cljs")) false))))
     (t/it "keeps exactly one production and one test bootstrap .mjs"
       (fn []
         (let [src-mjs (sort (mapv relative (walk-files src-root #(str/ends-with? % ".mjs"))))

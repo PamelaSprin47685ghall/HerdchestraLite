@@ -76,7 +76,7 @@ env -u BUN_OPTIONS bun test tests --parallel
 
 关键测试覆盖：
 
-- `tests/cljs/architecture_test.cljs`、`tests/cljs/ticket_naming_test.cljs`：唯一 mjs 自举、station 仅 run-ticket 异步、门卫同步、旧 board 入口清除、工单显式命名。
+- `tests/cljs/architecture_test.cljs`、`tests/cljs/ticket_naming_test.cljs`：唯一 mjs 自举、station 仅 run-ticket 异步、门卫同步、旧 board 入口清除、死代码 review 模块不存在、工单显式命名。
 - `tests/cljs/station_test.cljs`、`board_store_test.cljs`、`board_tools_test.cljs`：station 服务台/工单内核、持久化、看板工具。
 - `tests/cljs/file_matrix_test.cljs`、`lock_contention_test.cljs`：stamp 复核、写锁与跨进程竞争。
 - `tests/cljs/devops_sandbox_test.cljs`、`sandbox_limits_test.cljs`、`console_guard_test.cljs`：沙箱、where/park/wait、输出上限与 console/stdio 防呆。
