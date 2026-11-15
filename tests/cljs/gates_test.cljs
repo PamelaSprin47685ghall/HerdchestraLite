@@ -156,6 +156,25 @@
           (t/to-be (boolean (get-in mission [:mission :attach :pending])) true)
           (t/to-be (:ok again) false)
           (t/to-be (get-in again [:error :code]) :ATTACH_ALREADY_PENDING))))
+    (t/it "recovers a pending S1 attach after a service restart with the same call id"
+      (fn []
+        (p/let [root (fresh-root)
+                _ (create! root)
+                svc (service root)
+                _ ((:review! svc) {} {})
+                pending ((:attach! svc) :attach_brainstorm
+                         {:markdown s1-markdown} {:call-id "crash-1"})
+                pending-mission (store/read-mission root "demo")
+                restarted (service root)
+                recovered ((:attach! restarted) :attach_brainstorm
+                           {:markdown s1-markdown} {:call-id "crash-1"})
+                mission (store/read-mission root "demo")]
+          (t/to-be (= (:status pending) :awaiting-user) true)
+          (t/to-be (boolean (get-in pending-mission [:mission :attach :pending])) true)
+          (t/to-be (= (:status recovered) :attached) true)
+          (t/to-be (= (:next-stage recovered) :s2) true)
+          (t/to-be (= (get-in mission [:mission :stage]) :s2) true)
+          (t/to-be (get-in mission [:mission :attach :pending]) nil))))
     (t/it "returns denied feedback and clears the pending attach"
       (fn []
         (p/let [root (fresh-root)
