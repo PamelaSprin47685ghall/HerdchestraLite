@@ -38,9 +38,9 @@
     "@biomejs/biome": "2.5.15"
   },
   "scripts": {
-    "test": "bun test tests/fast.test.mjs",
+    "test": "bun test tests --parallel",
     "test:full": "bun test tests --parallel",
-    "test:suite": "bun test tests --parallel",
+    "test:suite": "bun test tests/cljs-suite.test.mjs",
     "check": "biome check .",
     "format": "biome format --write ."
   }

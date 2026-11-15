@@ -4,6 +4,7 @@
    ["node:path" :as path]
    [clojure.string :as string]
    [herd.clock :as clock]
+   [herd.lock-daemon :as lock-daemon]
    [nbb.classpath :as cp-path]))
 
 (def ^:private fs-promises (js/require "node:fs/promises"))
@@ -96,33 +97,8 @@
                                            (.catch (fn [_] nil))))))))))))
                    (.catch (fn [_] nil))))))))
 
-(defn- daemon-candidates []
-  (let [delim (.-delimiter path)
-        cp-entries (->> (.split (or (cp-path/get-classpath) "") delim)
-                        (remove (fn [entry] (or (string/blank? entry) (.includes entry ".herd")))))
-        roots (distinct (remove nil?
-                                (concat [(.-__herdPluginSrc js/globalThis)]
-                                        cp-entries
-                                        [(path/join (js/process.cwd) "src")])))]
-    (mapv (fn [root] (path/join root "host" "lock-daemon.mjs")) roots)))
-
 (defn- load-lock-daemon []
-  (if-let [cached (.-__herdLockDaemon js/globalThis)]
-    (js/Promise.resolve cached)
-    (let [candidates (daemon-candidates)]
-      (letfn [(probe [index]
-                (if (>= index (count candidates))
-                  (js/Promise.reject
-                    (ex-info "lock daemon module not found" {:code :HOST_API_MISMATCH}))
-                  (let [candidate (nth candidates index)]
-                    (-> (.access fs-promises candidate)
-                        (.then
-                          (fn [_]
-                            (let [loaded (js/require candidate)]
-                              (aset js/globalThis "__herdLockDaemon" loaded)
-                              loaded)))
-                        (.catch (fn [_] (probe (inc index))))))))]
-        (probe 0)))))
+  (js/Promise.resolve #js {:acquireIpcLock (fn [options] (lock-daemon/acquire-ipc-lock options))}))
 
 (defn- busy-error [waited endpoint key]
   (let [error (ex-info

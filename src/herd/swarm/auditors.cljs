@@ -9,7 +9,7 @@
    [herd.stages.paths :as paths]
    [herd.stages.report :as report]
    [herd.stages.scores :as scores]
-   [herd.swarm.apply :as apply]
+   [herd.swarm.board :as apply]
    [herd.swarm.edn :as edn]
    [herd.swarm.model :as model]
    [herd.swarm.store :as store]

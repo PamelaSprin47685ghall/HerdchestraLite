@@ -10,22 +10,22 @@
 
 当前清单（`package.json` 的 `omp.extensions` / `pi.extensions`）只有一个入口：
 
-1. `src/clj-main.mjs`：唯一清单入口与宿主适配层。启动 nbb 与 formatter，尝试加载 `@oh-my-pi/pi-tui` 与 `host/language-detect.mjs`，设置 `globalThis.__herdHost.runSubagent`、`globalThis.__herdNative` 与 `globalThis.__herdPluginSrc`，加载 `src/herd/bootstrap.cljs`，最后用 `hackContext` 安装 `herd.main/context-handler`。它只提供宿主能力，不实现阶段、看板或审计语义。
+1. `src/clj-main.mjs`：唯一清单入口与宿主适配层。启动 nbb 与 formatter，设置 `globalThis.__herdRequire`/`__herdEntryPath`/`__herdNbb`/`__herdCodingAgent`/`__herdHostExtras`/`__herdRunnerModule` 等注入，加载 `src/herd/bootstrap.cljs` 与 `herd.entry/activate`；宿主能力由 cljs 模块消费。它只提供宿主能力，不实现阶段、看板或审计语义。
 2. `src/herd/bootstrap.cljs`：从 classpath 与 `globalThis.__herdPluginSrc` 定位 `src/herd/*.cljs`，加载 `herd/main.cljs`。
-3. `src/herd/main.cljs`：CLJ 工具面（`clj_devops`、`wait`、`handoff`）、系统提示词注入、handoff 消费、usage/status、`HERD_TRACE` 热路径计时与 hooks；加载时调用 `system/install!`。
+3. `src/herd/main.cljs`：CLJ 工具面（`clj_devops`、`wait`、`handoff`）、系统提示词注入、handoff 经 bridge 转交、usage/status、`HERD_TRACE` 热路径计时与 hooks；加载时调用 `system/install!`。
 4. `src/herd/system.cljs`：完整装配接线。注册八个门禁工具（`review`、`attach_brainstorm`、`attach_manual_tests`、`attach_dev_guide`、`attach_coordination`、`ask_user`、`devops`、`submit_devops_report`）、11 个 `board_*` 与 `attach_case_audit`；提供 `/herd` 模式开关、会话日志 custom entry 与 `herd/{sessionId}/` 产物、阶段/角色工具面、Nudge、S1 面板端口、S5 runner/审计端口与 health 记录。
 5. `src/herd/swarm/runner.cljs`、`src/herd/swarm/auditors.cljs`：单工作区 S5 Reviewer ⇄ Swarm 接力与 K 路审计，已由 `system.cljs` 接线。
 
 JS 边界层（`src/` 下仅保留以下活跃 `.mjs` 文件，旧 `main.mjs`、`bootstrap-main.mjs`、`tui/`、`prompts/`、`stages/`、`swarm/`、`clj-sandbox/`、`sandbox/` 及旧 `util/{atomic-write,file-lock,broker}.mjs`、`host/{health,model-seed,hack-system-prompt,session-key}.mjs` 均已删除）：
 
-- `src/bridge/*.mjs` 是抹平层：`hack-context`、`native-runner`、`command-host`；`src/host/*.mjs` 保留 `imports`、`lock-daemon`、`subprocess`、`language-detect`。`src/clj-main.mjs` 只装配二者。
-- `src/util/errors.mjs` 为宿主子代理边界提供错误码与 EDN 错误渲染（由 `src/host/subprocess.mjs` 使用）。
+- `src/bridge/*.cljs` 是抹平层：`command-host`、`hack-context`；`src/host/language_detect.cljs` 负责内容语言识别；宿主包与 Runner 捕获由 `herd/entry.cljs`、`herd/native_runner.cljs` 承担。`src/clj-main.mjs` 只装配。
+- `src/herd/errors.cljs` 提供错误码与 EDN 错误渲染；`src/herd/host.cljs` 提供宿主能力探测；`src/herd/lock_daemon.cljs` 提供 IPC 锁守护。
 
 ## 1.1 S5 迁移状态（2026-11-15）
 
 已完成：工具 schema 去 `slug`；`/herd` 改模式开关并删除 `unique-slug!`、命令补全 slug、`parse-auditor-context`；路径迁到 `herd/{sessionId}/`；删除 `focus.edn` 与 `boards/` 归档；审计提交与批次状态内存化；`handoff` 改为追加 compaction；`hack-context`、`native-runner` 迁入 `src/bridge/`。
 
-`mission.edn` 已不再写入；`herd.task`/`herd.mode`/`herd.seed`/`herd.barrier`/`herd.pending`/`herd.approval` 是权威 custom entry，阶段与 tenure 由 barrier 推导。`rewriteSession` 已删除，context 只追加。`src/herd/station.cljs` 是独立的不变量内核（12 个测试），生产 board 适配仍由 `swarm/apply` 的两阶段事务承担；`/herd` 已优先经 `src/bridge/command-host.mjs` 的 `handleTui`，无全局工厂时回退直连。
+`mission.edn` 已不再写入；`herd.task`/`herd.mode`/`herd.seed`/`herd.barrier`/`herd.pending`/`herd.approval` 是权威 custom entry，阶段与 tenure 由 barrier 推导。`rewriteSession` 已删除，context 只追加。`src/herd/station.cljs` 是同步服务台内核，只有 `run-ticket` 是异步工单；`swarm/board.cljs` 以同步门卫 + station 工单执行每个看板命令，`swarm/tools.cljs` 只做宿主工具接线，`swarm/apply.cljs` 已删除；`/herd` 经 `src/bridge/command_host.cljs` 的 `handleTui`，无全局工厂时回退直连。
 
 `src/herd/main.cljs` 的 `before-agent-start` 负责系统提示词注入：`herd.prompts/common-rules-text` 包含 `# Repo-aware Rules`、11 段 `COMMON_CORE_RULES`、`SANDBOX_PROMISE_NOTE` 与 `UFSS_PROMPT_NOTE`；用 `<!-- herdchestra:system-prompt v1 -->` 受管区替换旧块，支持 string 与 string[] prompt，检测到标题已存在则替换（幂等），异常时 fail-open 返回宿主原提示词。`herd.system/briefing-for` 在使命会话中追加当前阶段的 S1–S5 简报；子代理不注入。语言纪律仍由出站 `context` 尾注注入。
 
@@ -41,10 +41,10 @@ omp 在进程内缓存已加载的 ESM 模块，系统提示词在会话启动�
 
 ```text
 clj-main
-  ├── bridge/{hack-context,native-runner}
-  ├── host/{imports,lock-daemon,subprocess,language-detect}
+  ├── bridge/{command-host,hack-context}
+  ├── host/language_detect.cljs
   └── herd/bootstrap ── herd/main
-                          ├── herd/{handoff,prompts,repl,system,ufss,ui}
+                          ├── herd/{prompts,repl,system,ufss,ui}
                           └── herd/system
                                 ├── herd/{repl,ufss,ui,util/atomic-write}
                                 ├── herd/stages/{audit,disclosures,gates,paths,store,tenure}
@@ -80,19 +80,21 @@ herd/swarm/store ── herd/swarm/{edn,model}
 |---|---|---|
 | `src/clj-main.mjs` | 唯一清单入口、nbb 引导、宿主 subagent port、Runner 捕获 | `host/*`、`herd/bootstrap` |
 | `src/herd/bootstrap.cljs` | CLJS 源码定位与加载顺序 | `herd/ufss` |
-| `src/herd/main.cljs` | CLJ 工具面、系统提示词受管区、handoff 消费、usage/status、trace | `herd/{handoff,prompts,repl,system,ufss,ui}` |
+| `src/herd/main.cljs` | CLJ 工具面、系统提示词受管区、handoff 经 bridge 转交、usage/status、trace | `herd/{prompts,repl,system,ufss,ui}` |
 | `src/herd/ui.cljs` | 所有 CLJ/门禁/看板/审计工具的统一视觉渲染（Title --- [Tag] + hrule + EDN+UFSS） | `herd/{highlight,ufss}` |
 | `src/herd/system.cljs` | 完整装配、`/herd`、mission/focus、阶段/角色面、Nudge、S1 面板、S5 端口 | `herd/stages/*`、`herd/swarm/*` |
 | `src/herd/repl.cljs` | nbb 程序生命周期、park/unpark/abandon、`guard-source!` | `herd/{sandbox,ufss}` |
 | `src/herd/sandbox.cljs` | 异步 fs、跨进程写锁、`glob`/`where`/`call` 边界 | — |
-| `src/herd/handoff.cljs` | 双锚点解码、覆盖去重、解不了即字面 | — |
 | `src/herd/ufss.cljs` | EDN reader/writer、UFSS fence、canonical | — |
 | `src/herd/prompts.cljs` | COMMON 规范、角色提示词、UFSS 注记 | — |
 | `src/herd/stages/*.cljs` | 门禁解析、tenure、mission/store、review/attach、报告、审计提交 | `herd/ufss`、`herd/ui`、`herd/util/atomic-write` |
 | `src/herd/swarm/*.cljs` | 看板内核/存储/工具、单工作区 runner、K 路审计 | `herd/stages/*`、`herd/ufss`、`herd/ui` |
 | `src/herd/util/atomic_write.cljs` | 同目录临时文件 + fsync + rename | — |
-| `src/host/*.mjs` | 宿主 imports、IPC 锁守护进程、native runner、subprocess、hack context、language-detect | 宿主包、`util/errors` |
-| `src/util/errors.mjs` | 宿主边界错误码与 EDN 错误渲染 | — |
+| `src/herd/host.cljs` | 宿主能力探测（host、detectCapabilities） | `globalThis.__herdCodingAgent`、`__herdHostExtras` |
+| `src/herd/errors.cljs` | 错误码与 EDN 错误渲染 | — |
+| `src/herd/native_runner.cljs` | 受控 Runner 捕获 | `globalThis.__herdRunnerModule` |
+| `src/herd/lock_daemon.cljs` | IPC 锁守护 | `globalThis.__herdRequire` |
+
 
 ## 4 当前装配与运行契约
 
@@ -101,10 +103,10 @@ herd/swarm/store ── herd/swarm/{edn,model}
 - **沙盒调用与自检**：`clj_devops` 强制提供唯一 `name` 与 `agent_state` 枚举（状态切换时在 EDN 前置 `;` 注释）；`more_workers_without_hitting_mythical_man_month` 为正时在回执末尾追加 `<system-reminder>`，`ui.cljs` 剥离尾注保留正文高亮。同回合多 `clj_*` 按 tool bundle 串行排队。
 - **同步回执不入 `wait` 队列**：`repl/run-role` 通过 `:returned-directly` 守卫与 `finish-directly!` 保证 2000ms 内同步完成/失败的调用立刻从 `@programs` 清除，仅 `:forked` 与 `:parked` 程序保留供 `wait`/`unpark` 收集。
 - **park / unpark / abandon**：`park` 不中止后台 `call` 并带增量 `:stdout`/`:stderr` 与 `:call-active true`；`unpark` 先向活跃 `call` 灌入 `:stdin`/`:eof` 并 resolve 续体、通过 `await-resumed` 等待结果；`abandon` 负责强制击杀进程组并清理状态。
-- **handoff 与工作条**：`handoff` 双锚点解码（`src/herd/handoff.cljs`）+ `hackContext` 每会话分支至多全量重写一次，其后 append-only（含 `compaction`/`reset_boundary` 时仅边界后追加；扫描窗口 512/32）。`context-handler` 每次请求末尾无条件追加的仅含 `<system-reminder><skill version="1.0">…</skill></system-reminder>` 的 `user` 尾注是有意设计的 feature（非重复注入/空消息 bug，见根 `AGENTS.md` §5.3）。`usage` 由真实 hook 事件驱动恢复被宿主覆盖的工作条（100ms 合并、无轮询定时器，子代理不写主 UI）。
+- **handoff 与工作条**：`handoff` 经 `src/bridge/command_host.cljs` 转交宿主 compaction；`hackContext` 只做机械同步与 append-only，不再解码或替换历史。`context-handler` 每次请求末尾无条件追加的仅含 `<system-reminder><skill version="1.0">…</skill></system-reminder>` 的 `user` 尾注是有意设计的 feature（非重复注入/空消息 bug，见根 `AGENTS.md` §5.3）。`usage` 由真实 hook 事件驱动恢复被宿主覆盖的工作条（100ms 合并、无轮询定时器，子代理不写主 UI）。
 - **门禁、看板与审计隔离**：`submit_devops_report` 以 `getSessionFile()` 父目录为回执根；`devops` 透传 `AbortSignal`；`board_finish` 校验相对 `dependency_paths`，`wait_for` 支持任务 ID 与 `condition:` 键；Auditor 仅作防呆（独立 `/tmp/herd-audit-<slug>-<case>-<batch>`，无写工具，`call` 属信任边界，无 bwrap）。
-- **跨进程事件驱动锁**：写门 `$W$` 与 S5 看板事务统一走 `src/host/lock-daemon.mjs`（`node:net` 按需单例守护进程，连接即持锁、`SIGKILL` 秒级释锁、零轮询、无陈旧锁），同进程写操作先经 FIFO 队列接力防自踩。写门等待默认 500ms（`HERD_LOCK_WAIT_MS` 50–5000ms，`:LOCK_BUSY`）；`glob` 跳过 `node_modules`/`.git`/`.herd`（20k/2s）；`where` 最近行 1M cells/150ms；`cat`/`write` 单文件 2 MiB；`guard-source!` 拒绝 `console`/stdio 直接访问（`:CAPABILITY_DENIED`）；`HERD_TRACE=1` / `HERD_CACHE_PROBE=1` 默认关闭（1 MiB 上限）。
-- **当前验证与未验收边界**：开发者测试为 275 pass / 0 fail / 25 files（`tests/fast.test.mjs` 45 pass，`tools/dev-acceptance/test` 23 pass），`biome check .` 为 0 errors / 0 warnings；真实 `omp 18.20.0` + `tmux` + Mock OpenAI 的 S1 面板四态（pending/revise/deny/approve）、角色探测（`Plan DevOps`/`Reviewer`/`Swarm Worker`/`Manual Auditor`）、S1→S5 完整使命与 K=5 路审计均已实测通过并记录于 `docs/manual-acceptance/clean-break/report.md`；16.x/17.x 本机无二进制，以能力探测与 fail-closed 单测覆盖。
+- **跨进程事件驱动锁**：写门 `$W$` 与 S5 看板事务统一走 `src/herd/lock_daemon.cljs`（`node:net` 按需单例守护进程，连接即持锁、`SIGKILL` 秒级释锁、零轮询、无陈旧锁），同进程写操作先经 FIFO 队列接力防自踩。写门等待默认 500ms（`HERD_LOCK_WAIT_MS` 50–5000ms，`:LOCK_BUSY`）；`glob` 跳过 `node_modules`/`.git`/`.herd`（20k/2s）；`where` 最近行 1M cells/150ms；`cat`/`write` 单文件 2 MiB；`guard-source!` 拒绝 `console`/stdio 直接访问（`:CAPABILITY_DENIED`）；`HERD_TRACE=1` / `HERD_CACHE_PROBE=1` 默认关闭（1 MiB 上限）。
+- **当前验证与未验收边界**：开发者测试当前为 `tests/cljs-suite.test.mjs` 207 pass / 0 fail（全量同数），`biome check .` 0 errors；真实 `omp 18.20.0` + `tmux` + Mock OpenAI 的 S1 面板四态（pending/revise/deny/approve）、角色探测（`Plan DevOps`/`Reviewer`/`Swarm Worker`/`Manual Auditor`）、S1→S5 完整使命与 K=5 路审计均已实测通过并记录于 `docs/manual-acceptance/clean-break/report.md`；16.x/17.x 本机无二进制，以能力探测与 fail-closed 单测覆盖。
 
 ## 5 宿主边界、平台实测与受控绕行（原 HACK.md）
 
@@ -114,11 +116,11 @@ herd/swarm/store ── herd/swarm/{edn,model}
 - 宿主在 shell 注入 `BUN_OPTIONS=--preload /home/kunweiz/.config/omp/zstd-preload.js`，导致 Bun 1.4.4 把 `bun test` 误解析为脚本名。开发者测试须带 `env -u BUN_OPTIONS`；沙箱 `call`（`src/herd/sandbox.cljs`）已自动剥离 `BUN_OPTIONS`/`NODE_OPTIONS`/`BASH_ENV`/`ENV`/`PROMPT_COMMAND`。
 - 不指定 `--model` 时本机默认模型可能触发 `model_not_available_for_integrator`，真实验收须显式指定可用主模型与 `@task` 模型。
 
-### 5.2 唯一受控宿主补丁：`src/bridge/native-runner.mjs`
+### 5.2 唯一受控宿主补丁：`src/herd/native_runner.cljs`
 
-- **目的与实现**：宿主公开 `ExtensionAPI`/`ExtensionContext` 不暴露 Runner，唯独 `ExtensionRunner.prototype.invokeNativeTool` 可执行官方 `read`/`write`。`native-runner.mjs`（由 `host/imports.mjs` 重导出）懒加载 `@oh-my-pi/pi-coding-agent/extensibility/extensions/runner` 并包装 `ExtensionRunner.prototype.createContext`，记入 `WeakMap<ctx, runner>` 与最近 runner；编译宿主将扩展内字面量动态 import 重写为 `omp-legacy-pi-bundled:` 单例注册表，因此补丁准确命中宿主自身 `ExtensionRunner`。
+- **目的与实现**：宿主公开 `ExtensionAPI`/`ExtensionContext` 不暴露 Runner，唯独 `ExtensionRunner.prototype.invokeNativeTool` 可执行官方 `read`/`write`。`herd/native_runner.cljs` 懒加载 `@oh-my-pi/pi-coding-agent/extensibility/extensions/runner` 并包装 `ExtensionRunner.prototype.createContext`，记入 `WeakMap<ctx, runner>` 与最近 runner；编译宿主将扩展内字面量动态 import 重写为 `omp-legacy-pi-bundled:` 单例注册表，因此补丁准确命中宿主自身 `ExtensionRunner`。
 - **失败与限制**：捕获失败或 `--no-tools` 禁用内置工具时返回 `:HOST_API_MISMATCH`（禁止回退 `node:fs`）；`callerContext` 不可得导致 `write` 的 LSP 批量刷新元数据不完整；worker 桥未把 `AbortSignal` 传入 `invokeNativeTool`。
-- **回滚**：移除 `src/clj-main.mjs` 的 `installRunnerCapture()` 调用与 `src/bridge/native-runner.mjs`，沙箱将自然 fail-closed。
+- **回滚**：移除 `herd.native-runner/install-capture!` 与 `src/herd/native_runner.cljs`，沙箱将自然 fail-closed。
 
 ### 5.3 `omp` Hooks、`sessionManager` 与 `runSubprocess`
 
@@ -130,7 +132,7 @@ herd/swarm/store ── herd/swarm/{edn,model}
 
 - `nbb@1.6.215`：宿主 bare/bundled `nbb` 不含 `cljs.pprint`，`src/clj-main.mjs` 须从插件真实路径 `createRequire` 解析自带 `nbb`，并按 `(module, name)` 顺序调用 `nbb.registerModule(formatter, "@chrisoakman/standard-clojure-style")`；`bootstrap.cljs` 从 `nbb.classpath` 与 `globalThis.__herdPluginSrc` 解析源码根，不依赖 `process.cwd()`。
 - SCI 版 `cljs.pprint` 默认宽度约 72 列，且不导出 `*print-right-margin*`/`*print-miser-width*`/`write`，测试不得逐字固化 EDN 换行位置。
-- `@oh-my-pi/pi-tui` 提供 `highlightCode(code, lang, theme)`；内容语言识别由 `highlight.js@11.12.0`（`src/host/language-detect.mjs`）委托完成，`xml` 映射到 `html`。
+- `@oh-my-pi/pi-tui` 提供 `highlightCode(code, lang, theme)`；内容语言识别由 `highlight.js@11.12.0`（`src/host/language_detect.cljs`）委托完成，`xml` 映射到 `html`。
 
 ### 5.5 常用复检命令
 

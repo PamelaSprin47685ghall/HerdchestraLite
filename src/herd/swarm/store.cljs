@@ -5,6 +5,7 @@
    ["node:path" :as path]
    [clojure.string :as string]
    [herd.swarm.edn :as edn]
+   [herd.lock-daemon :as lock-daemon]
    [herd.swarm.model :as model]
    [herd.ufss :as ufss]
    [herd.util.atomic-write :as atomic]
@@ -93,30 +94,8 @@
           (= platform "linux") (str (char 0) "herd-lock-" hash)
           :else (path/join (.tmpdir os) (str "herd-lock-" hash ".sock"))))))
 
-(defn- daemon-candidates []
-  (let [delim (.-delimiter path)
-        cp-entries (->> (.split (or (cp-path/get-classpath) "") delim)
-                        (remove (fn [entry] (or (string/blank? entry) (.includes entry ".herd")))))
-        roots (distinct (remove nil?
-                                (concat [(.-__herdPluginSrc js/globalThis)]
-                                        cp-entries
-                                        [(path/join (js/process.cwd) "src")])))]
-    (mapv (fn [root] (path/join root "host" "lock-daemon.mjs")) roots)))
-
 (defn- ^:async load-lock-daemon []
-  (if-let [cached (.-__herdLockDaemon js/globalThis)]
-    cached
-    (let [candidates (daemon-candidates)]
-      (loop [index 0]
-        (if (>= index (count candidates))
-          (throw (ex-info "lock daemon module not found" {:code :HOST_API_MISMATCH}))
-          (let [candidate (nth candidates index)
-                ok? (await (file-exists? candidate))]
-            (if ok?
-              (let [loaded (js/require candidate)]
-                (aset js/globalThis "__herdLockDaemon" loaded)
-                loaded)
-              (recur (inc index)))))))))
+  #js {:acquireIpcLock (fn [options] (lock-daemon/acquire-ipc-lock options))})
 
 (defonce ^:private board-lock-queues (atom {}))
 
@@ -320,3 +299,30 @@
     (if-not (fn? (:initialize store))
       (throw (ex-info "board store cannot initialize" {:code :INVALID_ARGUMENT}))
       (await ((:initialize store) (or board (model/initial-board {:mode (:mode handle)})))))))
+
+(defn ^:async commit-board!
+  "Persist a board already transitioned by the station. The station owns the
+  in-memory state; this function owns the only durable write. A failure after
+  the board file is renamed is marked uncertain so the station blocks further
+  writes until resync."
+  [handle board events]
+  (await
+   (with-board-lock
+     (:lock-path handle)
+     (fn []
+       (-> (write-board-file! (:board-path handle) board)
+           (.then
+            (fn [_]
+              (-> (append-events! (:events-path handle) events)
+                  (.then (fn [_]
+                           (checkpoint! (:checkpoint-path handle)
+                                        (:board-path handle)
+                                        (:events-path handle)
+                                        board)))
+                  (.then (fn [_] {:ok true}))
+                  (.catch (fn [error]
+                            (throw (ex-info
+                                    (or (ex-message error) (str error))
+                                    (assoc (or (ex-data error) {})
+                                           :uncertain true)))))))))))))
+

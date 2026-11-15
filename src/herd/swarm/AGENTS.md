@@ -12,7 +12,7 @@ edn
      ├─ tasks
      │   └─ commands
      ├─ token
-     └─ kernel ── store ── apply
+     └─ kernel ── store ── board
                           └─ tools
 ```
 
@@ -24,23 +24,23 @@ edn
 - `commands.cljs`：split/claim/finish/cancel/replace/release/reopen/comment/update/park-slot/register-actor/record-input/add-tasks/resolve-condition/start-action/set-action-phase。
 - `token.cljs`：`take_or_die` 接受/裁决、持令者无责退休、失败移交。
 - `kernel.cljs`：`apply-command` 编排（request 重放、版本守卫、事件、wake、退休、receipt）。
-- `store.cljs`：IPC 跨进程事件驱动板锁（`src/host/lock-daemon.mjs` + 进程内 FIFO 队列）、原子 `board.edn`、追加 `events.jsonl`、`checkpoint.edn`、内存/文件 store、`open-board`、`read-board`。
-- `apply.cljs`：对 handle 的事务式 `apply-board!` 与两阶段 `take_or_die`。
+- `store.cljs`：IPC 跨进程事件驱动板锁（`src/herd/lock_daemon.cljs` + 进程内 FIFO 队列）、原子 `board.edn`、追加 `events.jsonl`、`checkpoint.edn`、内存/文件 store、`open-board`、`read-board`。
+- `board.cljs`：同步门卫 + station-backed `apply-board!`；普通命令一张工单，`take_or_die` 仍是 accept/resolve 两张 station 工单（两次提交）；station 持有内存板，`store` 负责唯一持久化。
 - `tools.cljs`：11 个 `board_*` 工具定义、snake_case 参数、receipt 投影与 host 注册。
 
 ## 不变量
 
-1. 内核纯函数；I/O 只在 `store`/`apply`。
+1. 内核纯函数；I/O 只在 `store`/`board` 的工单与 `station` 的持久化注入。
 2. 父项因子项完成只回 `:ready`；同回合关闭返回 `:PARENT_NOT_READY`。
 3. 令牌竞争不可逆：赢或逻辑死亡；持令者责任集为空时同事务退休。
 4. `request_id` 重放原样返回；不同载荷 `:CALL_REPLAY_MISMATCH`。
 5. 缺失/损坏板不重建；有 ledger 时缺失返回 `:STALE_CONTROL`。
-6. 两阶段取令在持久 store 上先接受、后裁决，版本因此多一次提交。
+6. 两阶段取令在 station 上先接受、后裁决，版本因此多一次提交。
 
 ## 测试
 
 ```text
-env -u BUN_OPTIONS bun test tests/cljs-board.test.mjs tests/cljs-board-store.test.mjs tests/cljs-board-tools.test.mjs
+env -u BUN_OPTIONS bun test tests/cljs-suite.test.mjs
 ```
 
-以上用例（及 `tests/cljs-runner.test.mjs`、`tests/cljs-auditors.test.mjs`）覆盖 T01–T13 核心交错（含 T05/T06/T11/V02）、存储边界、工具面、单工作区 runner 与 K 路审计；测试不是验收。
+以上用例覆盖 T01–T13 核心交错（含 T05/T06/T11/V02）、存储边界、工具面、单工作区 runner 与 K 路审计；测试不是验收。

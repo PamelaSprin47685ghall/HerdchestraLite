@@ -56,12 +56,12 @@
         true))))
 
 (def ^:private modules
-  ["clock" "prompts" "handoff" "highlight" "ui" "sandbox" "repl" "stages/parsers" "stages/tenure"
+  ["clock" "prompts" "highlight" "ui" "sandbox" "repl" "stages/parsers" "stages/tenure"
    "stages/disclosures" "stages/paths" "stages/mission" "util/atomic_write"
    "stages/store" "stages/attach" "stages/review" "stages/approval"
    "stages/scores" "stages/audit" "stages/report" "stages/gates" "gates_host"
    "swarm/edn" "swarm/model" "swarm/ledger" "swarm/actors" "swarm/tasks"
-   "swarm/commands" "swarm/token" "swarm/kernel" "swarm/store" "swarm/apply"
+   "swarm/commands" "swarm/token" "swarm/kernel" "swarm/store" "swarm/board"
    "swarm/tools" "swarm/runner" "swarm/auditors" "system"])
 
 (defn ^:async main []

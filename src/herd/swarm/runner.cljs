@@ -4,7 +4,7 @@
    [herd.stages.disclosures :as disclosures]
    [herd.stages.store :as stages-store]
    [herd.stages.tenure :as tenure]
-   [herd.swarm.apply :as apply]
+   [herd.swarm.board :as apply]
    [herd.swarm.edn :as edn]
    [herd.swarm.model :as model]
    [herd.swarm.store :as store]))

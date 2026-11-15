@@ -329,31 +329,36 @@
                          (:command ticket)
                          {:ticket-id ticket-id
                           :epoch (:epoch ticket)
-                          :version version})]
-             (if-not (and (map? result) (:ok result))
-               {:ok false
-                :error (or (:error result)
-                           {:code "INVALID_COMMAND"
-                            :message "apply-command rejected the command"})}
-               (let [changed? (if (contains? result :changed?)
-                                (boolean (:changed? result))
-                                (not= (:board result) (:board current)))]
-                 (if-not changed?
-                   {:ok true
-                    :changed? false
-                    :board (:board current)
-                    :version (:committed-version current)}
-                   (if-not (map? (:board result))
-                     {:ok false
-                      :error {:code "INVALID_BOARD"
-                              :message "apply-command did not return a board"}}
-                     (do
-                       (swap! state assoc-in [:tickets ticket-id :planned-version]
-                              version)
+                          :version version})
+                 plan
+                 (if-not (and (map? result) (:ok result))
+                   {:ok false
+                    :error (or (:error result)
+                               {:code "INVALID_COMMAND"
+                                :message "apply-command rejected the command"})}
+                   (let [changed? (if (contains? result :changed?)
+                                    (boolean (:changed? result))
+                                    (not= (:board result) (:board current)))]
+                     (if-not changed?
                        {:ok true
-                        :changed? true
-                        :board (assoc (:board result) :board-version version)
-                        :version version}))))))
+                        :changed? false
+                        :board (:board current)
+                        :version (:committed-version current)
+                        :result result}
+                       (if-not (map? (:board result))
+                         {:ok false
+                          :error {:code "INVALID_BOARD"
+                                  :message "apply-command did not return a board"}}
+                         {:ok true
+                          :changed? true
+                          :board (assoc (:board result) :board-version version)
+                          :version version
+                          :result result}))))]
+             (when (:ok plan)
+               (swap! state assoc-in [:tickets ticket-id :plan] plan)
+               (when (:changed? plan)
+                 (swap! state assoc-in [:tickets ticket-id :planned-version] version)))
+             plan)
            (catch :default error
              {:ok false :error error})))))))
 
@@ -654,6 +659,10 @@
      :version (:version record)
      :error (:error record)
      :error-name (:error-name record)
+     :receipt (get-in record [:plan :result :receipt])
+     :board-version (get-in record [:plan :result :board-version])
+     :replayed (or (get-in record [:plan :result :replayed])
+                   (get-in record [:plan :result :receipt :replayed]))
      :aborted? (boolean (:aborted? record))
      :durable? (boolean (:durable? record))}))
 

@@ -356,13 +356,8 @@
                                (decision-of decision))]
                 (case (:decision decision)
                   :approve
-                  (let [approved (await (read-approved-document root pending markdown))
-                        cleared (await (store/update-mission!
-                                         root slug
-                                         {:attach (assoc (or (:attach mission) {}) :pending nil)}))]
-                    (if-not (:ok cleared)
-                      cleared
-                      (complete-s1-approval! deps root slug mission board pending approved)))
+                  (let [approved (await (read-approved-document root pending markdown))]
+                    (complete-s1-approval! deps root slug mission board pending approved))
 
                   :revise
                   (let [_ (await (store/write-board!
@@ -498,7 +493,14 @@
                 (if-not (:ok read)
                   read
                   (let [mission (:mission read)
-                        pending-failure (pending-attach-failure mission)
+                        pending (pending-of mission)
+                        recoverable? (and (= tool :attach_brainstorm)
+                                          (some? (:call-id options))
+                                          (map? pending)
+                                          (= (:call-id pending) (:call-id options))
+                                          (= (:digest pending) digest))
+                        pending-failure (when (and pending (not recoverable?))
+                                          (pending-attach-failure mission))
                         board (await (store/read-board root slug))]
                     (cond
                       pending-failure pending-failure
@@ -516,12 +518,15 @@
                           (remember!
                             replay key digest
                             (if (= stage :s1)
-                              (await (attach-s1!* deps replay root slug mission board params options
-                                                  digest (:call-id options) markdown))
+                              (if recoverable?
+                                (let [approved (await (read-approved-document root pending markdown))]
+                                  (complete-s1-approval! deps root slug mission board pending approved))
+                                (await (attach-s1!* deps replay root slug mission board params options
+                                                    digest (:call-id options) markdown)))
                               (await (attach-complete!* deps replay root slug tool stage payload options
                                        digest (:call-id options) markdown)))))))))))))))))
 
-(def ^:private ask-roles #{"Plan" "Coordinator" "Reviewer"})
+(def ^:private ask-roles #{"Plan" "Coordinator"})
 (def ^:private devops-roles #{"Plan" "Coordinator"})
 (def ^:private devops-report-roles #{"Plan DevOps"})
 
@@ -743,13 +748,8 @@
               (failure :BOARD_CONFLICT "board.edn has no tasks map" {:slug slug})
               (case (:decision normalized)
                 :approve
-                (let [approved (await (read-approved-document root pending (:markdown pending)))
-                      cleared (await (store/update-mission! root slug
-                                                            {:attach (assoc (or (:attach mission) {})
-                                                                            :pending nil)}))]
-                  (if-not (:ok cleared)
-                    cleared
-                    (complete-s1-approval! deps root slug mission board pending approved)))
+                (let [approved (await (read-approved-document root pending (:markdown pending)))]
+                  (complete-s1-approval! deps root slug mission board pending approved))
 
                 :revise
                 (let [updated (await (store/update-mission!

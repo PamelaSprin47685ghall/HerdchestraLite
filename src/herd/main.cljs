@@ -1,9 +1,9 @@
 (ns herd.main
   (:require
    ["node:fs/promises" :as fs]
+   [bridge.command-host :as command-host]
    [clojure.string :as str]
    [herd.clock :as clock]
-   [herd.handoff :as handoff]
    [herd.prompts :as prompts]
    [herd.repl :as repl]
    [herd.system :as system]
@@ -42,7 +42,6 @@
 
 (defonce last-agent-states (atom {}))
 
-(defonce last-handoffs (atom {}))
 (defonce live-session-manager (atom nil))
 
 (defn- digest [params]
@@ -259,154 +258,17 @@
                     [])]
     (concat direct block-ids calls)))
 
-(def ^:private handoff-scan-window 512)
-
-(defn- handoff-cut-index [messages tool-call-id]
-  (let [n (.-length messages)
-        floor (max 0 (- n handoff-scan-window))]
-    (loop [i (dec n)]
-      (if (< i floor)
-        -1
-        (if (some (fn [id] (= tool-call-id id)) (message-call-ids (aget messages i)))
-          (let [message (aget messages i)]
-            (if (and (pos? i)
-                     (contains? #{"toolResult" "tool"} (.-role message))
-                     (= "assistant" (.-role (aget messages (dec i)))))
-              (dec i)
-              i))
-          (recur (dec i)))))))
-
-(defn- handoff-result? [message tool-call-id]
-  (and (contains? #{"toolResult" "tool"} (.-role message))
-       (some (fn [id] (= tool-call-id id)) (message-call-ids message))))
-
-(defn- handoff-result-index [messages tool-call-id]
-  (let [n (.-length messages)
-        floor (max 0 (- n handoff-scan-window))]
-    (loop [i (dec n)]
-      (if (< i floor)
-        -1
-        (if (handoff-result? (aget messages i) tool-call-id)
-          i
-          (recur (dec i)))))))
-
-(defn- handoff-message
-  ([text] (handoff-message text (.now js/Date)))
-  ([text timestamp]
-   (js-obj "role" "user"
-           "content" (array (js-obj "type" "text" "text" text))
-           "timestamp" timestamp)))
-
-(def ^:private handoff-preamble
-  "You are the successor of the previous AI. The following is the handoff material left by your predecessor. Treat it as the authoritative starting context: continue from where it stopped, verify claims against the real workspace, and do not restart from scratch.")
-
-(defn- content-head-text [content]
-  (cond
-    (string? content) content
-    (array? content) (let [block (aget content 0)]
-                       (when (and block (string? (.-text block)))
-                         (.-text block)))
-    :else nil))
-
-(def ^:private handoff-doc-window 32)
-
-(defn- preamble-user?
-  """
-The handoff document is a user message whose first text block starts with
-  the preamble. Check that block first so the hot path never joins a large
-  message body; the join stays as a fallback for split preambles.
-"""
-  [message]
-  (and (= "user" (.-role message))
-       (let [head (content-head-text (.-content message))]
-         (and (string? head)
-              (or (.startsWith head handoff-preamble)
-                  (and (> (count handoff-preamble) (count head))
-                       (.startsWith handoff-preamble head)
-                       (.startsWith (content-text (.-content message)) handoff-preamble)))))))
-
-(defn- last-doc-index
-  """
-Index of the last persisted handoff document, searched in the trailing
-  window only. A document older than the window is left in place: the request
-  keeps its messages instead of losing them.
-"""
-  [messages]
-  (let [n (.-length messages)
-        floor (max 0 (- n handoff-doc-window))]
-    (loop [i (dec n)]
-      (if (< i floor)
-        -1
-        (if (preamble-user? (aget messages i))
-          i
-          (recur (dec i)))))))
-(defn- consume-handoff! [ctx messages]
-  (let [key (session-key ctx)
-        barrier (system/pop-pending-barrier! key)
-        _ (when barrier
-            (swap! last-handoffs assoc key
-                   {:tool-call-id (:tool-call-id barrier)
-                    :fresh-pending? true
-                    :text (str handoff-preamble newline-char newline-char "---" newline-char newline-char
-                               "Mission: " (:slug barrier) newline-char
-                               "Seed: " (:seed barrier) newline-char newline-char
-                               (:briefing barrier))}))
-        pending (get @last-handoffs key)]
-    (or (when pending
-          (let [fresh? (or (nil? (:text pending)) (true? (:fresh-pending? pending)))
-                _ (when (:fresh-pending? pending)
-                    (swap! last-handoffs update key dissoc :fresh-pending?))
-                text (or (:text pending)
-                         (let [cut (handoff-cut-index messages (:tool-call-id pending))
-                               before (if (>= cut 0) (.slice messages 0 cut) messages)
-                               decoded (handoff/decode (:markdown pending) (dictionary-text before))]
-                           (if (.startsWith decoded handoff-preamble)
-                             decoded
-                             (str handoff-preamble newline-char newline-char "---" newline-char newline-char decoded))))
-                _ (when-not (:text pending)
-                    (swap! last-handoffs assoc-in [key :text] text))
-                cached (:result-index pending)
-                ridx (if (and (integer? cached)
-                              (>= cached 0)
-                              (< cached (.-length messages))
-                              (handoff-result? (aget messages cached) (:tool-call-id pending)))
-                       cached
-                       (handoff-result-index messages (:tool-call-id pending)))
-                _ (when-not (= ridx (:result-index pending))
-                    (swap! last-handoffs assoc-in [key :result-index] ridx))
-                tail (if (>= ridx 0) (.slice messages (inc ridx)) (let [idx (last-doc-index messages)] (if (>= idx 0) (.slice messages (inc idx)) (array))))]
-            {:messages (.concat (array (handoff-message text (:timestamp pending))) tail)
-             :fresh? fresh?}))
-        (let [idx (last-doc-index messages)]
-          (when (>= idx 0)
-            {:messages (.slice messages idx)
-             :fresh? false})))))
-
-(defn- handoff-execute [_tool-call-id params _signal _on-update ctx]
+(defn- ^:async handoff-execute [_tool-call-id params _signal _on-update ctx]
   (let [markdown (.-markdown params)]
     (when-not (and (string? markdown) (pos? (count (str/trim markdown))))
       (throw (ex-info "markdown must be a non-empty string"
                       {:code :INVALID_ARGUMENT :field :markdown})))
-    (let [full (if (.startsWith markdown handoff-preamble)
-                 markdown
-                 (str handoff-preamble newline-char newline-char "---" newline-char newline-char markdown))
-          manager (when ctx (.-sessionManager ctx))
-          entries (when (and manager (fn? (.-getEntries manager)))
-                    (array-seq (.getEntries manager)))
-          last-entry (last entries)
-          first-kept (or (when last-entry (.-id last-entry)) "")
-          short (first (str/split-lines full))
-          committed (boolean
-                      (when (and manager (fn? (.-appendCompaction manager)))
-                        (.appendCompaction manager full short first-kept 0 #js {:fromExtension true})))]
+    (let [result (await (command-host/handoff! ctx markdown))]
       (clj->js
         (tool-result
-          (ufss/canonical {:state :handoff-queued
-                           :committed committed
-                           :markdown-chars (count full)
-                           :build "handoff-boundary-v10"
-                           :note "appended a host compaction entry; no session rewrite"}))))))
-
+          (ufss/canonical {:ok true
+                           :status :handoff-requested
+                           :committed (.-committed result)}))))))
 (defn- code-schema [] {:type "string"})
 (defn- name-schema [] {:type "string" :minLength 1})
 (defn- agent-state-schema []
@@ -1223,7 +1085,7 @@ Append one diagnostic line off the request path. The queue is serial, so a
     (register-all! pi)
     (register! pi {:name "handoff"
                    :label "Handoff"
-                   :description "Compress the current conversation into a handoff that lets a successor continue. Let the content determine the form: choose sections, headings, and length from what the successor actually needs. Do not apply a fixed template, add ceremonial sections, or pad for symmetry; omit anything that does not change the successor's next decision. markdown uses [AAA⯮BBB] refs: from the unique AAA to the unique BBB; non-unique or unresolvable refs stay literal; spans already emitted by earlier refs are not repeated. Returns a placeholder immediately; the next context hook decodes the document against the messages before this call and replaces the whole conversation with the result."
+                   :description "Hand off the current conversation to the host /handoff compaction path. The bridge forwards the markdown; no context decoding or history rewrite occurs."
                    :parameters (handoff-parameters)
                    :renderCall ui/handoff-render-call
                    :renderResult ui/handoff-render-result

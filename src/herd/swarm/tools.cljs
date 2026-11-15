@@ -1,6 +1,6 @@
 (ns herd.swarm.tools
   (:require
-   [herd.swarm.apply :as apply]
+   [herd.swarm.board :as apply]
    [herd.swarm.edn :as edn]
    [herd.swarm.store :as store]
    [herd.ufss :as ufss]
@@ -36,7 +36,7 @@
       (when ctx (.-turnId ctx))
       call-id))
 
-(defn- tool-command [tool params]
+(defn tool-command [tool params]
   (case tool
     :board_split
     {:type :split
@@ -101,7 +101,7 @@
 
     nil))
 
-(defn ^:async execute-command!
+(defn execute-command!
   [deps tool params ctx call-id]
   (let [root (root-of deps ctx)
         slug (slug-of deps ctx)
@@ -124,12 +124,12 @@
       :else
       (let [handle (or (:handle deps) (store/open-board root slug))
             request-id (or (param params :request_id) call-id)]
-        (await (apply/apply-board!
+        (apply/apply-board!
                  {:board handle
                   :command command
                   :actor actor
                   :request-id request-id
-                  :turn-id (turn-of deps ctx request-id)}))))))
+                  :turn-id (turn-of deps ctx request-id)})))))
 
 (defn- receipt-view [result]
   (if (:ok result)
@@ -143,12 +143,20 @@
   {:isError (not (:ok result))
    :content [{:type "text" :text (ufss/canonical (receipt-view result))}]})
 
-(defn ^:async execute-tool!
+(defn execute-tool!
   [deps tool params ctx call-id]
   (try
-    (tool-result (await (execute-command! deps tool params ctx call-id)))
+    (-> (execute-command! deps tool params ctx call-id)
+        (.then tool-result)
+        (.catch (fn [error]
+                  (tool-result (failure :INTERNAL
+                                        (or (ex-message error) (str error))
+                                        {})))))
     (catch :default error
-      (tool-result (failure :INTERNAL (or (ex-message error) (str error)) {})))))
+      (js/Promise.resolve
+       (tool-result (failure :INTERNAL
+                             (or (ex-message error) (str error))
+                             {}))))))
 
 (defn- string-schema [min-length]
   {:type "string" :minLength min-length})

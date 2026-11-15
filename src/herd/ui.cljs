@@ -282,7 +282,7 @@
         data (safe-read-edn raw)
         err? (boolean (some-> result .-isError))
         summary (or (error-summary data err?)
-                    (when (and (map? data) (= :handoff-queued (:state data)))
+                    (when (and (map? data) (contains? #{:handoff-queued :handoff-requested} (:state data)))
                       ["success" "✓" "已排队交接"
                        (str (or (:markdown-chars data) 0) " chars"
                             (when-let [b (:build data)] (str " · " b)))]))]

@@ -1,0 +1,18 @@
+(ns herd.test)
+
+(defn- bt [key] (aget js/__bunTest key))
+
+(defn describe [name f] ((bt "describe") name f))
+(defn it [name f] ((bt "it") name f))
+(defn expect [value] ((bt "expect") value))
+(defn to-be [value expected] (.toBe (expect value) expected))
+(defn to-equal [value expected] (.toEqual (expect value) expected))
+(defn to-contain [value expected] (.toContain (expect value) expected))
+(defn to-be-truthy [value] (.toBeTruthy (expect value)))
+(defn to-be-falsy [value] (.toBeFalsy (expect value)))
+(defn to-be-undefined [value] (.toBeUndefined (expect value)))
+(defn to-be-instance-of [value ctor] (.toBeInstanceOf (expect value) ctor))
+(defn to-throw [f pattern] (.toThrow (expect f) pattern))
+(defn not-to-throw [f] (.toThrow (.-not (expect f))))
+(defn not-to-be [value expected] (let [matcher (expect value)] (.toBe (.-not matcher) expected)))
+(defn not-to-equal [value expected] (let [matcher (expect value)] (.toEqual (.-not matcher) expected)))
