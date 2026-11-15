@@ -18,7 +18,7 @@
 
 JS 边界层（`src/` 下仅保留以下活跃 `.mjs` 文件，旧 `main.mjs`、`bootstrap-main.mjs`、`tui/`、`prompts/`、`stages/`、`swarm/`、`clj-sandbox/`、`sandbox/` 及旧 `util/{atomic-write,file-lock,broker}.mjs`、`host/{health,model-seed,hack-system-prompt,session-key}.mjs` 均已删除）：
 
-- `src/bridge/*.cljs` 是抹平层：`command-host`、`hack-context`；`src/host/language_detect.cljs` 负责内容语言识别；宿主包与 Runner 捕获由 `herd/entry.cljs`、`herd/native_runner.cljs` 承担。`src/clj-main.mjs` 只装配。
+- `src/bridge/*.cljs` 是抹平层：`command_host.cljs`、`hack_context.cljs`；`src/host/language_detect.cljs` 负责内容语言识别；宿主包与 Runner 捕获由 `herd/entry.cljs`、`herd/native_runner.cljs` 承担。`src/clj-main.mjs` 只装配。
 - `src/herd/errors.cljs` 提供错误码与 EDN 错误渲染；`src/herd/host.cljs` 提供宿主能力探测；`src/herd/lock_daemon.cljs` 提供 IPC 锁守护。
 
 ## 1.1 S5 迁移状态（2026-11-15）
@@ -106,7 +106,7 @@ herd/swarm/store ── herd/swarm/{edn,model}
 - **handoff 与工作条**：`handoff` 经 `src/bridge/command_host.cljs` 转交宿主 compaction；`hackContext` 只做机械同步与 append-only，不再解码或替换历史。`context-handler` 每次请求末尾无条件追加的仅含 `<system-reminder><skill version="1.0">…</skill></system-reminder>` 的 `user` 尾注是有意设计的 feature（非重复注入/空消息 bug，见根 `AGENTS.md` §5.3）。`usage` 由真实 hook 事件驱动恢复被宿主覆盖的工作条（100ms 合并、无轮询定时器，子代理不写主 UI）。
 - **门禁、看板与审计隔离**：`submit_devops_report` 以 `getSessionFile()` 父目录为回执根；`devops` 透传 `AbortSignal`；`board_finish` 校验相对 `dependency_paths`，`wait_for` 支持任务 ID 与 `condition:` 键；Auditor 仅作防呆（独立 `/tmp/herd-audit-<slug>-<case>-<batch>`，无写工具，`call` 属信任边界，无 bwrap）。
 - **跨进程事件驱动锁**：写门 `$W$` 与 S5 看板事务统一走 `src/herd/lock_daemon.cljs`（`node:net` 按需单例守护进程，连接即持锁、`SIGKILL` 秒级释锁、零轮询、无陈旧锁），同进程写操作先经 FIFO 队列接力防自踩。写门等待默认 500ms（`HERD_LOCK_WAIT_MS` 50–5000ms，`:LOCK_BUSY`）；`glob` 跳过 `node_modules`/`.git`/`.herd`（20k/2s）；`where` 最近行 1M cells/150ms；`cat`/`write` 单文件 2 MiB；`guard-source!` 拒绝 `console`/stdio 直接访问（`:CAPABILITY_DENIED`）；`HERD_TRACE=1` / `HERD_CACHE_PROBE=1` 默认关闭（1 MiB 上限）。
-- **当前验证与未验收边界**：开发者测试当前为 `tests/cljs-suite.test.mjs` 221 pass / 0 fail（全量同数），`biome check .` 0 errors；真实 `omp 18.20.0` + `tmux` + Mock OpenAI 的 S1 面板四态（pending/revise/deny/approve）、角色探测（`Plan DevOps`/`Reviewer`/`Swarm Worker`/`Manual Auditor`）、S1→S5 完整使命与 K=5 路审计均已实测通过并记录于 `docs/manual-acceptance/clean-break/report.md`；16.x/17.x 本机无二进制，以能力探测与 fail-closed 单测覆盖。
+- **当前验证与未验收边界**：开发者测试当前为 `tests/cljs-suite.test.mjs` 221 pass / 0 fail（全量同数），`biome check .` 0 errors；TicketStation clean-break 后的真实 `omp 18.20.0` + `tmux` S1→S5 与 K=5 路审计尚未重跑。`docs/manual-acceptance/clean-break/report.md` 是 clean-break 前的历史记录，不能作为当前实现验收证据；16.x/17.x 本机无二进制，以能力探测与 fail-closed 单测覆盖。
 
 ## 5 宿主边界、平台实测与受控绕行（原 HACK.md）
 
@@ -125,7 +125,7 @@ herd/swarm/store ── herd/swarm/{edn,model}
 ### 5.3 `omp` Hooks、`sessionManager` 与 `runSubprocess`
 
 - `before_agent_start`：`event.systemPrompt` 在真实宿主为 `string[]`（须同时兼容 `string`）；`ctx.signal` 为 `undefined`（取消信号取 `execute` 第 3 参数、`runSubprocess` signal 与 `AbortController` 树）；`ctx.agent` 在 18.x 存在（`{kind, id, name, depth}`），17.x/16.x 未保证。
-- `context` 钩子与深拷贝：`context` 事件的 `ctx.sessionManager` 可能缺失，持久化状态在 `session_start` 捕获。真实宿主在调 `context` 前会深拷贝消息对象（`!==`），因此 `src/bridge/hack-context.mjs` 先按引用再按末尾 `deepEqual` 定位持久化前缀；`appendCompaction` / `appendResetBoundary` 写下的边界后只能追加、不可 `rewriteSession`。
+- `context` 钩子与深拷贝：`context` 事件的 `ctx.sessionManager` 可能缺失，持久化状态在 `session_start` 捕获。真实宿主在调 `context` 前会深拷贝消息对象（`!==`），因此 `src/bridge/hack_context.cljs` 先按引用再按末尾 `deepEqual` 定位持久化前缀；`appendCompaction` / `appendResetBoundary` 写下的边界后只能追加、不可 `rewriteSession`。
 - `runSubprocess`：`agent` 须传完整 `AgentDefinition`；`artifactsDir` 是子会话 transcript 落盘唯一开关；`sessionFile` 在 18.16+ 写入 `SessionHeader.parentSession`（17.3.5 忽略）；`parentAgentId` 与 `parentToolCallId` 随选项透传。
 
 ### 5.4 `nbb`、`pi-tui` 与 `highlight.js`
