@@ -322,3 +322,9 @@ clean-break 不删除、不改写以下既有资料：
 - **症状**：`omp/18.20.2` 加载已链接插件时依次报 `Unable to resolve symbol: pp/pprint`、`Cannot find module '@chrisoakman/standard-clojure-style'`、`Extension does not export a valid factory function`、`Unable to resolve symbol: herd.entry/activate`、`Unable to resolve symbol: herd.errors/herd-error` 与 `fact`。
 - **修复**：入口改为从去掉 query/hash 的真实文件路径 `createRequire` 加载插件自带 nbb，formatter 保持宿主静态 import；导出改为默认 async 工厂包装 `herd.entry/activate`；bootstrap 加载 `native_runner` 与 `entry`；`entry` boot-body 先 require `herd.errors`/`herd.host`/`bridge.command-host`/`bridge.hack-context`/`herd.main`；`herd.host` 修复 `fact` 自引用与无 UI/无 sessionManager 的 ctx 守卫。入口压缩到 48 行。
 - **证据**：`omp/18.20.2` + 已链接本工作区，`omp -p '只回复 ok'` stdout 为 `Working... ok`，无 `Failed to load extension`；日志 `/tmp/herd-omp-smoke12.log`。完整 S1→S5 与 K 路审计未重跑。
+
+## 2026-11-15 /herd 真实命令面与 session log flush
+- **症状**：tmux 中执行 `/herd test` 报 `创建任务失败：the session log could not be read`。
+- **修复**：`session-log` 增加 `ensure-journal!` / `flush-journal!`；`store/create-mission!` 在追加控制条目后 flush 再读，`store/update-mission!` 在读回前 flush。
+- **证据**：`omp/18.20.2` 的 tmux 会话执行 `/herd test` 输出 `任务 01a1ddfb-850b-7797-974e-64e9f7e15cef 已创建，进入 S1。`，并生成 `herd/<sessionId>/board.edn`。
+- **范围**：验证命令注册、session 任务绑定与 board 初始化；S1→S5 仍未重跑。

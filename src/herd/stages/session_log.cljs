@@ -96,6 +96,30 @@
                    {:reason (or (.-code error) :read-failed)
                     :error (str error)}))))))
 
+(defn ^:async ensure-journal! [ctx]
+  (let [m (manager ctx)]
+    (if (and m (fn? (.-ensureOnDisk m)))
+      (try
+        (await (.ensureOnDisk m))
+        {:ok true}
+        (catch :default error
+          (failure :SESSION_LOG_UNAVAILABLE
+                   "the session log could not be prepared"
+                   {:error (str error)})))
+      {:ok true})))
+
+(defn ^:async flush-journal! [ctx]
+  (let [m (manager ctx)]
+    (if (and m (fn? (.-flush m)))
+      (try
+        (await (.flush m))
+        {:ok true}
+        (catch :default error
+          (failure :SESSION_LOG_UNAVAILABLE
+                   "the session log could not be flushed"
+                   {:error (str error)})))
+      {:ok true})))
+
 (defn last-of [entries custom-type]
   (last (filter (fn [entry] (= custom-type (:type entry))) entries)))
 

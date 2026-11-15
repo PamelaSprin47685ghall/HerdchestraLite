@@ -259,6 +259,7 @@ Create this session's task by appending task/seed/mode entries.
               (if-not ctx
                 {:ok true :mission mission :path nil :existed false}
                 (let [timestamp (:created-at mission)
+                      _ (await (session-log/ensure-journal! ctx))
                       task (session-log/append!
                              ctx "herd.task"
                              {:sessionId slug :createdAt timestamp})]
@@ -274,7 +275,7 @@ Create this session's task by appending task/seed/mode entries.
                                      {:mode "herd" :at timestamp})]
                           (if-not (:ok mode)
                             mode
-                            (let [read (await (read-mission root slug ctx))]
+                            (let [read (do (await (session-log/flush-journal! ctx)) (await (read-mission root slug ctx)))]
                               (if (:ok read)
                                 (assoc read :existed false)
                                 read))))))))))))))))
@@ -381,4 +382,4 @@ Translate a control patch into append-only custom entries.
                                (:error result)))))]
              (if error
                {:ok false :error error}
-               (await (read-mission root slug target))))))))))
+               (do (await (session-log/flush-journal! target)) (await (read-mission root slug target)))))))))))

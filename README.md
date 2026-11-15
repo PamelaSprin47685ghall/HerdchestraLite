@@ -6,7 +6,7 @@ Herdchestra Lite 是面向 `omp` 终端宿主的轻量多智能体研发插件�
 >
 > **TUI 看板面板已按用户 2026-11-14 指令整体移除。** `src/tui/*` 与旧 `src/main.mjs` 已从源码树删除；本轮 clean-break 以 `tests/cljs/architecture_test.cljs` 锁定 mjs 自举、门卫同步与旧入口清除；看板挂载路径已不存在。
 >
-> 2026-11-15 已在 `omp/18.20.2` 完成扩展加载冒烟（`Working... ok`，无加载错误）；但真实 tmux 中的 S1→S5 手工验收尚未完成（`DEBT.md` 的运行时真实 S5 条目）；当前架构下没有 `herd/<sessionId>/s5-report.md` 的真实运行；`docs/manual-acceptance/clean-break/report.md` 是 clean-break 前的历史记录，不能作为 TicketStation 实现验收。不得把测试或冒烟写成验收。
+> 2026-11-15 已在 `omp/18.20.2` 完成扩展加载冒烟（`Working... ok`，无加载错误），并在真实 tmux 中通过 `/herd test` 创建任务与 `herd/<sessionId>/board.edn`；但真实 tmux 中的 S1→S5 手工验收尚未完成（`DEBT.md` 的运行时真实 S5 条目）；当前架构下没有 `herd/<sessionId>/s5-report.md` 的真实运行；`docs/manual-acceptance/clean-break/report.md` 是 clean-break 前的历史记录，不能作为 TicketStation 实现验收。不得把测试或冒烟写成验收。
 >
 > 唯一规格仍是根 `AGENTS.md`；未关闭缺口在 `DEBT.md`；架构装配与宿主/依赖实测在 `src/AGENTS.md`。本 README 只描述当前可核对的事实。
 
@@ -43,7 +43,7 @@ omp plugin link /absolute/path/to/HerdchestraLite
 omp plugin list --json
 ```
 
-之后启动 `omp`。当前已在 `omp/18.20.2` 完成扩展加载冒烟：`omp -p '只回复 ok'` stdout 为 `Working... ok`，无 `Failed to load extension`；入口 `src/clj-main.mjs` 48 行。完整 S1→S5 仍未重跑；16.x/17.x 未实测。
+之后启动 `omp`。当前已在 `omp/18.20.2` 完成扩展加载冒烟：`omp -p '只回复 ok'` stdout 为 `Working... ok`，无 `Failed to load extension`；入口 `src/clj-main.mjs` 48 行。真实 tmux 中 `/herd test` 已创建任务与 `herd/<sessionId>/board.edn`；完整 S1→S5 仍未重跑；16.x/17.x 未实测。
 
 ## 使用
 
