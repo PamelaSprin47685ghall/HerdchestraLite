@@ -72,11 +72,11 @@ omp plugin list --json
 env -u BUN_OPTIONS bun test tests --parallel
 ```
 
-当前结果：`env -u BUN_OPTIONS bun test tests --parallel` 228 pass / 0 fail / 1 file（约 3s）；`env -u BUN_OPTIONS ./node_modules/.bin/biome check .` exit 0（0 errors / 0 warnings）。测试入口只剩 `tests/cljs-suite.test.mjs`。
+当前结果：`env -u BUN_OPTIONS bun test tests --parallel` 229 pass / 0 fail / 1 file（约 3s）；`env -u BUN_OPTIONS ./node_modules/.bin/biome check .` exit 0（0 errors / 0 warnings）。测试入口只剩 `tests/cljs-suite.test.mjs`。
 
 关键测试覆盖：
 
-- `tests/cljs/architecture_test.cljs`、`tests/cljs/ticket_naming_test.cljs`：唯一 mjs 自举、station 仅 run-ticket 异步、门卫同步、旧 board 入口清除、死代码 review 模块不存在、工单显式命名。
+- `tests/cljs/architecture_test.cljs`、`tests/cljs/ticket_naming_test.cljs`、`tests/cljs/bootstrap_contract_test.cljs`：唯一 mjs 自举、station 仅 run-ticket 异步、门卫同步、旧 board 入口清除、死代码 review 模块不存在、工单显式命名，以及入口 ≤50 行、默认 async 工厂、插件 nbb 与 bootstrap 加载 entry。
 - `tests/cljs/station_test.cljs`、`board_store_test.cljs`、`board_tools_test.cljs`：station 服务台/工单内核、持久化、看板工具。
 - `tests/cljs/file_matrix_test.cljs`、`lock_contention_test.cljs`：stamp 复核、写锁与跨进程竞争。
 - `tests/cljs/devops_sandbox_test.cljs`、`sandbox_limits_test.cljs`、`console_guard_test.cljs`：沙箱、where/park/wait、输出上限与 console/stdio 防呆。
